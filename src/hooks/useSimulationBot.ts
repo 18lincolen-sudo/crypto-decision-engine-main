@@ -132,6 +132,7 @@ export interface SimBotConfig {
   slippagePercent: number;
   executionDelaySec: number;
   minConfidenceOverride?: number;
+  positionPercent?: number;
 }
 
 // A snapshot the engine can hydrate from (server-shared state may omit hourlyHistory).

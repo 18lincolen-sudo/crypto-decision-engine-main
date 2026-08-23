@@ -326,7 +326,8 @@ const DEFAULT_SIM_CONFIG = {
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
-  minConfidenceOverride: 0
+  minConfidenceOverride: 0,
+  positionPercent: 10
 };
 const simState = {
   running: false,

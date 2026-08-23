@@ -147,6 +147,7 @@ interface SimBotConfig {
   slippagePercent: number;
   executionDelaySec: number;
   minConfidenceOverride?: number;
+  positionPercent?: number;
 }
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -289,10 +290,44 @@ export function createSimEngine() {
       );
     });
 
-    // NOTE: Bybit-only candles. CoinGecko historical is intentionally NOT used
-    // here: the free tier rate-limits aggressively, and fetching ~100 symbols
-    // serially would block the engine for minutes. Symbols without Bybit spot
-    // klines are simply skipped (the bot trades the ~85 that are available).
+    // 2) Fallback: CoinGecko historical candles for symbols Bybit could NOT
+    // serve (delisted / unsupported spot pairs like TON, NEO, MATIC→POL,
+    // RNDR→RENDER, FTM→SONIC, etc.). This keeps all ~100 symbols tradeable
+    // instead of silently dropping ~20 of them. CoinGecko free tier rate-limits
+    // aggressively, so we only hit the symbols that are still missing after the
+    // Bybit pass, in small batches with a short delay between batches.
+    const missing = symbols.filter((s) => !next[s] || next[s].length < 2);
+    if (missing.length) {
+      await chunked(missing, 3, async (batch) => {
+        await Promise.all(
+          batch.map(async (symbol) => {
+            try {
+              const coinId = coinGeckoApi.getCoinId(symbol);
+              const hist = await coinGeckoApi.getHistoricalPrices(coinId, 60);
+              if (hist && hist.length >= 2) {
+                next[symbol] = hist.map((h, i) => {
+                  const open = i === 0 ? h.price : hist[i - 1].price;
+                  const close = h.price;
+                  return {
+                    timestamp: h.timestamp,
+                    open,
+                    high: Math.max(open, close),
+                    low: Math.min(open, close),
+                    close,
+                    volume: h.volume
+                  };
+                });
+              }
+            } catch {
+              /* keep last-known-good candles on CoinGecko failure */
+            }
+          })
+        );
+        // Gentle pause so we don't trip CoinGecko's free-tier rate limit.
+        await new Promise((r) => setTimeout(r, 1200));
+      });
+    }
+
     liveCandles = next;
   }
 
@@ -334,7 +369,8 @@ export function createSimEngine() {
         trades.map((t) => ({ pnl: t.pnl || 0 })),
         openPos.length,
         futuresCount,
-        totalLeveragedExposureUsd
+        totalLeveragedExposureUsd,
+        typeof config.positionPercent === 'number' ? config.positionPercent / 100 : 0.03
       );
 
       let status = '';
@@ -349,12 +385,76 @@ export function createSimEngine() {
       else if (layer2.type === 'FUTURES' && hasExistingFutures) status = 'קיימת כבר פוזיציית Futures פתוחה';
       else if (layer2.type === 'SPOT' && layer2.side === 'SELL' && !isHeld) status = 'מכירת Spot חשופה אסורה — אין החזקה בתיק';
       else if (layer2.type === 'SPOT' && isHeld && layer2.side === 'BUY') status = 'כבר מוחזק בתיק (Spot)';
-      else if (!riskParams || riskParams.betSizeUsd < 5) status = 'חריגת חשיפה ממונפת (מקס\' 20%) או מזומן לא מספיק';
+      else if (layer0.atr <= 0 || currentPrice <= 0) status = 'אין נתוני מחיר/תנודתיות (ATR) — לא ניתן לחשב סיכון';
+      else if (!riskParams) status = 'חריגת חשיפה ממונפת (מקס\' 20% מהתיק)';
+      else if (riskParams.betSizeUsd < 5) status = 'הון נמוך מדי לפתיחת פוזיציה (מינימום $5)';
       else {
         willExecute = true;
         status = layer2.type === 'FUTURES'
           ? `מבצע Futures ${riskParams.leverage}x ${layer2.side} ($${riskParams.betSizeUsd})`
           : `מבצע Spot ${layer2.side} ($${riskParams.betSizeUsd})`;
+      }
+
+      // Build the 6-layer decision breakdown for UI transparency (the
+      // "פירוט 6 שכבות החלטה" panel reads rec.factors).
+      const factors: { label: string; value: string; impact: 'positive' | 'negative' | 'neutral'; note: string }[] = [
+        {
+          label: 'משטר שוק (ADX 14) — Layer 0',
+          value: `${layer0.regime} (ADX ${layer0.adx})`,
+          impact: layer0.regime === 'TRENDING' ? 'positive' : layer0.regime === 'RANGING' ? 'neutral' : 'negative',
+          note: layer0.regime === 'TRENDING' ? 'שוק מגמתי מובהק — תומך ב-Futures' : layer0.regime === 'RANGING' ? 'שוק ציר/דשדוש — רק Spot' : 'משטר מעבר — חסום'
+        },
+        {
+          label: 'תנודתיות (ATR%) — Layer 0',
+          value: `${layer0.volatility} (${layer0.atrPercent}%)`,
+          impact: layer0.volatility === 'HIGH' ? 'negative' : 'positive',
+          note: layer0.volatility === 'HIGH' ? 'תנודתיות גבוהה מעל 5% — אסור לפתוח Futures' : 'תנודתיות מתאימה'
+        },
+        {
+          label: 'Supertrend (10, 3) — Layer 0',
+          value: `$${layer0.supertrend.value.toFixed(2)} (${layer0.supertrend.direction})`,
+          impact: layer0.supertrend.direction === 'BULL' ? 'positive' : 'negative',
+          note: `מגמת Supertrend: ${layer0.supertrend.direction}`
+        }
+      ];
+
+      // Layer 1 — Signal engine indicators
+      for (const sig of layer1.signals) {
+        factors.push({
+          label: sig.name,
+          value: sig.value,
+          impact: sig.signal === 'BUY' ? 'positive' : sig.signal === 'SELL' ? 'negative' : 'neutral',
+          note: sig.reason
+        });
+      }
+      for (const p of layer1.penalties) {
+        factors.push({ label: 'התאמת ביטחון', value: p, impact: 'negative', note: 'ענישת פילטר' });
+      }
+
+      // Layer 2 — Trade type router
+      factors.push({
+        label: 'ניתוב עסקה (Spot/Futures) — Layer 2',
+        value: layer2.type === 'HOLD' ? 'HOLD' : `${layer2.type} ${layer2.side}`,
+        impact: layer2.type === 'HOLD' ? 'neutral' : 'positive',
+        note: layer2.reason
+      });
+
+      // Layer 3 — Risk management (SL/TP/leverage/sizing)
+      if (riskParams) {
+        const tp = riskParams.takeProfit ?? riskParams.takeProfit1 ?? 0;
+        factors.push({
+          label: 'ניהול סיכונים (SL/TP/מינוף) — Layer 3',
+          value: `SL $${riskParams.stopLoss} • TP $${tp} • ${riskParams.leverage}x • $${riskParams.betSizeUsd}`,
+          impact: 'positive',
+          note: `יחס סיכוי/סיכון ${riskParams.riskRewardRatio} • ${riskParams.positionPercentOfPortfolio}% מהתיק`
+        });
+      } else {
+        factors.push({
+          label: 'ניהול סיכונים (SL/TP/מינוף) — Layer 3',
+          value: 'נחסם',
+          impact: 'negative',
+          note: 'חריגת חשיפה ממונפת (מקס\' 20%) או הון נמוך מדי (מינימום $5)'
+        });
       }
 
       results.push({
@@ -368,7 +468,7 @@ export function createSimEngine() {
         reasoning: layer2.reason,
         status,
         willExecute,
-        factors: [],
+        factors,
         confidenceGap: layer1.confidence - (layer2.type === 'FUTURES'
           ? (config.riskLevel === 'high' ? 42 : config.riskLevel === 'low' ? 56 : 46)
           : (config.riskLevel === 'high' ? 35 : config.riskLevel === 'low' ? 48 : 40)),
