@@ -54,6 +54,7 @@
     "cmdk": "^1.0.0",
     "crypto-js": "^4.2.0",
     "date-fns": "^3.6.0",
+    "dotenv": "^16.4.5",
     "embla-carousel-react": "^8.3.0",
     "esbuild": "^0.21.5",
     "input-otp": "^1.2.4",

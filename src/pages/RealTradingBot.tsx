@@ -220,7 +220,7 @@ const RealTradingBot = () => {
               totalInvestedUsd={0}
               totalLeveragedExposureUsd={0}
               openPositionsCount={botState?.openedSymbols?.length ?? 0}
-              maxPositions={5}
+              maxPositions={botState?.maxOpenPositions ?? 5}
               openFuturesCount={account?.openFuturesCount ?? 0}
               maxFutures={2}
               dailyDrawdownPercent={0}

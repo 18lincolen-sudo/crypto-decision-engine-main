@@ -114,7 +114,7 @@ const SimulationBot = () => {
           totalInvestedUsd={positionsValue}
           totalLeveragedExposureUsd={totalLeveragedExposureUsd}
           openPositionsCount={positions.length}
-          maxPositions={5}
+          maxPositions={botConfig.maxPositions}
           openFuturesCount={openFuturesCount}
           maxFutures={2}
           dailyDrawdownPercent={dailyDrawdownPercent}

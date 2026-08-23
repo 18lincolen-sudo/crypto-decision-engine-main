@@ -42,6 +42,7 @@ export interface WorkerBotState {
   skippedSymbols: WorkerSkippedSymbol[];
   health: WorkerHealth;
   openedSymbols?: string[];
+  maxOpenPositions?: number;
 }
 
 export interface WorkerAccountSummary {
