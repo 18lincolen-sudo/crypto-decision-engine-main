@@ -7,10 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "build:worker": "esbuild src/workers/tradingWorker.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --format=esm --external:dotenv",
+    "build:worker": "npx esbuild src/workers/tradingWorker.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --format=esm --external:dotenv",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
+    "typecheck:worker": "tsc --noEmit -p tsconfig.worker.json",
     "preview": "vite preview",
     "start": "node dist/worker.js",
     "worker": "node dist/worker.js"

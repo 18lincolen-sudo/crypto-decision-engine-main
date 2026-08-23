@@ -168,7 +168,7 @@ class LocalKV {
 
   async set(key: string, value: string): Promise<void> {
     try {
-      await mkdir(DATA_DIR, { recursive: true });
+      await mkdir(dirname(this.file), { recursive: true });
       const existing = await this.get(key);
       const data: Record<string, string> = existing ? { [key]: value } : {};
       // Read full file to preserve other keys

@@ -11,7 +11,6 @@
 // ===================================================================
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import dotenv from 'dotenv';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -29,8 +28,6 @@ loadEnv({ path: join(__dirname, '..', '.env') });
 
 // Load .env (local dev). On Render, dashboard env vars are already present in
 // process.env and dotenv will NOT override them (it only fills missing keys).
-dotenv.config({ path: join(__dirname, '.env') });
-
 const DATA_DIR = join(__dirname, '.data');
 const STATE_FILE = join(DATA_DIR, 'bot-state.json');
 
@@ -38,7 +35,7 @@ const STATE_FILE = join(DATA_DIR, 'bot-state.json');
 const port = Number(process.env.PORT || 3001);
 const apiKey = process.env.BYBIT_API_KEY || '';
 const secretKey = process.env.BYBIT_SECRET_KEY || '';
-const testnet = process.env.BYBIT_TESTNET !== 'false'; // default true
+const testnet = process.env.BYBIT_TESTNET === 'true'; // default false (mainnet)
 const dryRun = process.env.BOT_DRY_RUN !== 'false'; // default true (safe)
 const adminToken = process.env.BOT_ADMIN_TOKEN || '';
 const autostart = process.env.BOT_AUTOSTART === 'true';

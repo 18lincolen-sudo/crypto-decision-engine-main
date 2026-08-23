@@ -320,5 +320,7 @@ export class RealBybitAPI {
   }
 }
 
-export const realBybitApi = new RealBybitAPI({ apiKey: '', secretKey: '', testnet: true });
+export function createRealBybitApi(apiKey: string, secretKey: string, testnet: boolean): RealBybitAPI {
+  return new RealBybitAPI({ apiKey, secretKey, testnet });
+}
 export default RealBybitAPI;
