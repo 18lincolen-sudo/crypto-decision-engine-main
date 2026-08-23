@@ -3,11 +3,13 @@ services:
     name: crypto-trading-worker
     runtime: node
     plan: free
-    buildCommand: npm run build:worker
+    buildCommand: npm install --include=dev && npm run build:worker
     startCommand: node dist/worker.js
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
       - key: BYBIT_API_KEY
         sync: false
       - key: BYBIT_SECRET_KEY
@@ -19,11 +21,11 @@ services:
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: BYBIT_TESTNET
-        value: "true"
+        value: "false"
       - key: BOT_DRY_RUN
         value: "true"
       - key: BOT_AUTOSTART
-        value: "false"
+        value: "true"
       - key: BOT_RISK_LEVEL
         value: "medium"
       - key: BOT_SYMBOLS
