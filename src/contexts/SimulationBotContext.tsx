@@ -5,6 +5,7 @@ import {
   stopSim,
   resetSim,
   setSimConfig,
+  pushSimState,
   SimBotSnapshot,
   SimBotStateResponse
 } from '../services/tradingApiClient';
