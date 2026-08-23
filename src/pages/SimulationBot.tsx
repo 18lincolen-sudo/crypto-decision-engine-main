@@ -437,12 +437,14 @@ const SimulationBot = () => {
                     {positions.map((pos) => {
                       const isFutures = pos.type === 'FUTURES';
                       const isLong = pos.side === 'LONG' || pos.side === 'BUY';
+                      const liveAsset = cryptoData?.find(
+                        (c) => c.symbol.toUpperCase() === pos.symbol.toUpperCase()
+                      );
+                      const livePrice = liveAsset?.current_price ?? pos.currentPrice ?? pos.entryPrice;
                       const priceDiff = isLong
-                        ? pos.currentPrice - pos.entryPrice
-                        : pos.entryPrice - pos.currentPrice;
-                      const changePercent = (priceDiff / pos.entryPrice) * 100 * pos.leverage;
-                      const pnl = priceDiff * pos.quantity * pos.leverage;
-                      const value = pos.quantity * pos.currentPrice;
+                        ? livePrice - pos.entryPrice
+                        : pos.entryPrice - livePrice;
+                      const pnl = priceDiff * pos.quantity * (pos.leverage || 1);
 
                       return (
                         <div key={pos.id} className="space-y-2">
@@ -451,7 +453,8 @@ const SimulationBot = () => {
                             type={pos.type}
                             side={pos.side}
                             entryPrice={pos.entryPrice}
-                            currentPrice={pos.currentPrice}
+                            currentPrice={livePrice}
+                            quantity={pos.quantity}
                             stopLoss={pos.stopLoss}
                             takeProfit={pos.takeProfit}
                             takeProfit1={pos.takeProfit1}

@@ -806,6 +806,20 @@ export function createSimEngine() {
     }
     await refreshMarketData();
     for (const c of cryptoData) lastPrices[c.symbol.toUpperCase()] = c.current_price;
+
+    // Mark-to-market live price updates on each tick for open positions
+    positions = positions.map((p) => {
+      const live = priceFor(p.symbol) ?? p.currentPrice;
+      return {
+        ...p,
+        currentPrice: live,
+        highestPrice: Math.max(p.highestPrice || p.entryPrice, live),
+        lowestPrice: Math.min(p.lowestPrice || p.entryPrice, live),
+        highestPriceSinceTP1: p.tp1Hit ? Math.max(p.highestPriceSinceTP1 || live, live) : undefined,
+        lowestPriceSinceTP1: p.tp1Hit ? Math.min(p.lowestPriceSinceTP1 || live, live) : undefined
+      };
+    });
+
     const evalResult = evaluate(config, fearGreed);
     lastEvaluations = evalResult.results;
     const we = evalResult.results.filter((r) => r.willExecute).length;
