@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "build:worker": "npx esbuild src/workers/tradingWorker.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --format=esm --banner:js=\"import { createRequire as topLevelCreateRequire } from 'module'; const require = topLevelCreateRequire(import.meta.url);\"",
+    "build:worker": "npm install --include=dev && npx esbuild src/workers/tradingWorker.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --format=esm --banner:js=\"import { createRequire as topLevelCreateRequire } from 'module'; const require = topLevelCreateRequire(import.meta.url);\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
