@@ -189,7 +189,7 @@ export class AdvancedTradingService {
     // 3. Max Open Positions Check (Max 5 total, Max 2 Futures)
     const positions = await this.bybitApi.getPositions('linear');
     const openFutures = positions.filter(p => parseFloat(p.size) > 0);
-    
+
     if (openFutures.length >= 2) {
       this.addAlert('warning', 'הגעת למספר המקסימלי של פוזיציות Futures פתוחות (2)');
     }
@@ -232,7 +232,7 @@ export class AdvancedTradingService {
       }
 
       const currentPrice = await this.bybitApi.getCurrentPrice(bybitSymbol, 'linear');
-      
+
       // Fetch live Fear & Greed Index
       try {
         const fng = await fearGreedApi.getFearGreedIndex();
@@ -291,7 +291,7 @@ export class AdvancedTradingService {
         layer2.side,
         layer0.atr,
         layer0.volatility,
-        layer1.signalScore,
+        layer1.,
         totalBalance,
         this.tradeHistory.map(t => ({ pnl: t.pnl })),
         totalOpenPositions,
@@ -353,7 +353,7 @@ export class AdvancedTradingService {
           breakEvenPrice: breakEven
         });
 
-        this.addAlert('success', 
+        this.addAlert('success',
           `🚀 נפתחה פוזיציית FUTURES ${leverage}x ${layer2.side}: ${qty} ${bybitSymbol} ב-$${currentPrice.toFixed(2)} (SL: $${riskParams.stopLoss}, TP1: $${riskParams.takeProfit1}, Break-Even: $${breakEven.toFixed(2)})`,
           bybitSymbol, currentPrice
         );

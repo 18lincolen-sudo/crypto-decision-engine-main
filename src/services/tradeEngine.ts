@@ -690,12 +690,12 @@ export function evaluateSignals(
 // ═══════════════════════════════════════════════════════
 // LAYER 2 — TRADE ROUTER & HARD GATES
 // Hard Gate Order:
-// 1. Weekly Drawdown Lock (>= 15%)
-// 2. Daily Drawdown Block (>= 8%)
+// 1. Weekly Drawdown Lock (>= 13%)
+// 2. Daily Drawdown Block (>= 6%)
 // 3. Transitional Market Regime Block (20 <= ADX <= 25)
 // 4. Same-Asset Cross-Market Block (No dual Spot + Futures)
 // 5. High Volatility Futures Block (ATR% > 5%)
-// 6. Routing Thresholds (Futures >= 72 & TRENDING; Spot >= 60 [or >= 68 in High Vol])
+// 6. Routing Thresholds (Futures >= 70 & TRENDING; Spot >= 58 [or >= 62 in High Vol])
 // ═══════════════════════════════════════════════════════
 
 export interface TradeRouterOptions {
@@ -724,7 +724,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'WEEKLY_DRAWDOWN_LOCK',
-      reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני'
+      reason: 'נעילת מערכת שבועית (הפסד >= 13%) — נדרש שחרור ידני'
     };
   }
 
@@ -735,7 +735,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'DAILY_DRAWDOWN_BLOCK',
-      reason: 'הגנת תיק יומית (הפסד >= 8%) — חסימת כניסות חדשות עד יום המסחר הבא'
+      reason: 'הגנת תיק יומית (הפסד >= 6%) — חסימת כניסות חדשות עד יום המסחר הבא'
     };
   }
 
@@ -795,7 +795,7 @@ export function routeTradeType(
   const isSupertrendDirectionMatched =
     (action === 'BUY' && layer0.supertrend.direction === 'BULL') ||
     (action === 'SELL' && layer0.supertrend.direction === 'BEAR');
-  const isFuturesScorePassed = signalScore >= 72;
+  const isFuturesScorePassed = signalScore >= 70;
 
   if (isTrending && isVolatilitySafeForFutures && isSupertrendDirectionMatched && isFuturesScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'LONG' : 'SHORT';
@@ -810,24 +810,24 @@ export function routeTradeType(
   // SPOT ROUTING EVALUATION (Evaluated independently)
   // Conditions:
   // 1. Regime in ['TRENDING', 'RANGING'] (Never TRANSITIONAL)
-  // 2. In LOW/NORMAL Volatility: SignalScore >= 60
-  // 3. In HIGH Volatility: SignalScore >= 68
+  // 2. In LOW/NORMAL Volatility: SignalScore >= 58
+  // 3. In HIGH Volatility: SignalScore >= 62
   // ═══════════════════════════════════════════════════════
   const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING';
-  const requiredSpotScore = layer0.volatility === 'HIGH' ? 68 : 60;
+  const requiredSpotScore = layer0.volatility === 'HIGH' ? 62 : 58;
   const isSpotScorePassed = signalScore >= requiredSpotScore;
 
   if (isSpotRegimeValid && isSpotScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'BUY' : 'SELL';
     let reason = `עסקת Spot מאושרת: SignalScore ${signalScore} >= ${requiredSpotScore} במצב ${layer0.regime} (${layer0.volatility} VOL)`;
     if (layer0.volatility === 'HIGH') {
-      reason += ' [HIGH VOL: Futures חסום, Spot מאושר בסף מוגבר 68]';
+      reason += ' [HIGH VOL: Futures חסום, Spot מאושר בסף מוגבר 62]';
     } else if (!isTrending) {
       reason += ' [Ranging: רק Spot מותר]';
     } else if (!isSupertrendDirectionMatched) {
       reason += ` [Supertrend ${layer0.supertrend.direction} לא תואם Futures — Spot מאושר]`;
-    } else if (signalScore < 72) {
-      reason += ` [ציון ${signalScore} מתחת ל-72 של Futures — Spot מאושר]`;
+    } else if (signalScore < 70) {
+      reason += ` [ציון ${signalScore} מתחת ל-70 של Futures — Spot מאושר]`;
     }
     return {
       type: 'SPOT',
@@ -845,15 +845,15 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'SPOT_SCORE_BELOW_HIGH_VOL_THRESHOLD',
-      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש 68 בתנודתיות גבוהה (${layer0.atrPercent}%)`
+      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש 62 בתנודתיות גבוהה (${layer0.atrPercent}%)`
     };
   }
 
-  if (signalScore < 60) {
+  if (signalScore < 58) {
     return {
       type: 'HOLD',
       side: 'NONE',
-      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (60)`
+      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (58)`
     };
   }
 

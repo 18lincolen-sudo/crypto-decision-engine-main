@@ -219,7 +219,7 @@ const AlertsSystem = () => {
                   <div 
                     className={`h-1 rounded-full ${
                       alert.confidence >= 80 ? 'bg-green-500' : 
-                      alert.confidence >= 60 ? 'bg-yellow-500' : 'bg-red-500'
+                      alert.confidence >= 58 ? 'bg-yellow-500' : 'bg-red-500'
                     }`}
                     style={{ width: `${alert.confidence}%` }}
                   />

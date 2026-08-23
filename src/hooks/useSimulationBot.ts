@@ -631,7 +631,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
       const requiredThreshold = layer2.type === 'FUTURES'
         ? 72
-        : (layer0.volatility === 'HIGH' ? 68 : 60);
+        : (layer0.volatility === 'HIGH' ? 62 : 58);
 
       results.push({
         symbol,
