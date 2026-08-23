@@ -291,7 +291,7 @@ export class AdvancedTradingService {
         layer2.side,
         layer0.atr,
         layer0.volatility,
-        layer1.,
+        layer1.signalScore,
         totalBalance,
         this.tradeHistory.map(t => ({ pnl: t.pnl })),
         totalOpenPositions,

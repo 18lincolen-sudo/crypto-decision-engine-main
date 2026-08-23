@@ -74,9 +74,9 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
   // ─────────────────────────────────────────────────────────────
   // Test 2 — HIGH VOL
   // ADX = 36, ATR% = 7.3, SignalScore = 80, Supertrend = BULL, BUY
-  // Expected: FUTURES = BLOCKED, SPOT = candidate only if SignalScore >= 68
+  // Expected: FUTURES = BLOCKED, SPOT = candidate only if SignalScore >= 62
   // ─────────────────────────────────────────────────────────────
-  it('Test 2: HIGH VOL — Futures blocked, Spot eligible with Score >= 68', () => {
+  it('Test 2: HIGH VOL — Futures blocked, Spot eligible with Score >= 62', () => {
     const regime = makeRegime({
       adx: 36,
       atrPercent: 7.3,
@@ -95,9 +95,9 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
   // ─────────────────────────────────────────────────────────────
   // Test 3 — HIGH VOL + weak signal
   // ADX = 36, ATR% = 7.3, SignalScore = 55
-  // Expected: HOLD (both Futures blocked and Spot < 68)
+  // Expected: HOLD (both Futures blocked and Spot < 62)
   // ─────────────────────────────────────────────────────────────
-  it('Test 3: HIGH VOL + weak signal (55 < 68) — Returns HOLD', () => {
+  it('Test 3: HIGH VOL + weak signal (55 < 62) — Returns HOLD', () => {
     const regime = makeRegime({
       adx: 36,
       atrPercent: 7.3,
@@ -160,10 +160,10 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
 
   // ─────────────────────────────────────────────────────────────
   // Test 6 — Below Spot threshold
-  // ADX = 32, ATR = 3, SignalScore = 59
-  // Expected: HOLD (59 < 60)
+  // ADX = 32, ATR = 3, SignalScore = 55
+  // Expected: HOLD (55 < 58)
   // ─────────────────────────────────────────────────────────────
-  it('Test 6: Below Spot threshold (59 < 60) — Returns HOLD', () => {
+  it('Test 6: Below Spot threshold (55 < 58) — Returns HOLD', () => {
     const regime = makeRegime({
       adx: 32,
       atr: 3,
@@ -172,17 +172,17 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
       regime: 'TRENDING',
       supertrend: { value: 95, direction: 'BULL' }
     });
-    const signal = makeSignal({ action: 'BUY', signalScore: 59 });
+    const signal = makeSignal({ action: 'BUY', signalScore: 55 });
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('HOLD');
-    expect(result.reason).toContain('60');
+    expect(result.reason).toContain('58');
   });
 
   // ─────────────────────────────────────────────────────────────
   // Test 7 — Supertrend mismatch
   // ADX = 32, ATR = 3%, SignalScore = 73, BUY, Supertrend = BEAR
-  // Expected: FUTURES = BLOCKED, SPOT BUY eligible (Score 73 >= 60)
+  // Expected: FUTURES = BLOCKED, SPOT BUY eligible (Score 73 >= 58)
   // ─────────────────────────────────────────────────────────────
   it('Test 7: Supertrend mismatch — Blocks Futures and routes to SPOT BUY', () => {
     const regime = makeRegime({
@@ -225,10 +225,10 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
 
   // ─────────────────────────────────────────────────────────────
   // Test 9 — Daily circuit breaker
-  // Daily Drawdown = 8%
+  // Daily Drawdown = 6%
   // Expected: NEW ENTRIES = BLOCKED
   // ─────────────────────────────────────────────────────────────
-  it('Test 9: Daily circuit breaker (Drawdown >= 8%) — Blocks all new entries', () => {
+  it('Test 9: Daily circuit breaker (Drawdown >= 6%) — Blocks all new entries', () => {
     const regime = makeRegime({
       adx: 36,
       atrPercent: 1.5,
@@ -250,10 +250,10 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
 
   // ─────────────────────────────────────────────────────────────
   // Test 10 — Weekly circuit breaker
-  // Weekly Drawdown = 15%
+  // Weekly Drawdown = 13%
   // Expected: SYSTEM LOCK = TRUE, manual reset required
   // ─────────────────────────────────────────────────────────────
-  it('Test 10: Weekly circuit breaker (Drawdown >= 15%) — Returns SYSTEM LOCK', () => {
+  it('Test 10: Weekly circuit breaker (Drawdown >= 13%) — Returns SYSTEM LOCK', () => {
     const regime = makeRegime({
       adx: 36,
       atrPercent: 1.5,

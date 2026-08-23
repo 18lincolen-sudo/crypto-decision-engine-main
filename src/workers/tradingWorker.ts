@@ -635,7 +635,7 @@ async function scan(): Promise<void> {
             candles = state.candleCache[symbol];
             if (!candles || candles.length < 2) {
               state.skippedSymbols.push({ symbol, reason: 'אין נרות חיים (סמל לא נתמך או ללא נתונים)' });
-              return { symbol, action: 'HOLD' as const, side: 'NONE', confidence: 0, reason: 'אין נרות חיים', layer0: {} as ScanResult['layer0'], layer1: { action: 'HOLD', confidence: 0, signals: [], rawConfidence: 0, penalties: [], reason: 'אין נרות חיים' }, layer2: { type: 'HOLD', side: 'NONE', reason: 'אין נרות חיים' }, currentPrice: 0, skipped: undefined };
+              return { symbol, action: 'HOLD' as const, side: 'NONE', confidence: 0, reason: 'אין נרות חיים', layer0: {} as ScanResult['layer0'], layer1: { action: 'HOLD', confidence: 0, signals: [], rawConfidence: 0, penalties: [], reason: 'אין נרות חיים' }, layer2: { type: 'HOLD', side: 'NONE', reason: 'אין נרות חיים' }, currentPrice: 0, candles: [], skipped: undefined };
             }
           }
           if (candles.length >= 2) state.candleCache[symbol] = candles;
