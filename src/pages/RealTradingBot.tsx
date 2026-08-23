@@ -31,10 +31,21 @@ interface WorkerConfig {
 const ENV_API_URL = (import.meta.env.VITE_TRADING_API_URL as string | undefined) || '';
 
 const RealTradingBot = () => {
-  const [config, setConfig] = useState<WorkerConfig>(() => ({
-    baseUrl: ENV_API_URL,
-    adminToken: ''
-  }));
+  const [config, setConfig] = useState<WorkerConfig>(() => {
+    let baseUrl = ENV_API_URL;
+    let adminToken = '';
+    try {
+      const saved = localStorage.getItem('workerConfig');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.baseUrl) baseUrl = parsed.baseUrl;
+        if (parsed.adminToken) adminToken = parsed.adminToken;
+      }
+      const token = localStorage.getItem('workerAdminToken');
+      if (token && !adminToken) adminToken = token;
+    } catch { /* ignore */ }
+    return { baseUrl, adminToken };
+  });
   const [botState, setBotState] = useState<WorkerBotState | null>(null);
   const [account, setAccount] = useState<WorkerAccountSummary | null>(null);
   const [online, setOnline] = useState(false);
@@ -74,7 +85,7 @@ const RealTradingBot = () => {
       setAccount(null);
       setError(e instanceof Error ? e.message : 'שגיאת חיבור ל-Worker');
     }
-  }, [config.adminToken]);
+  }, [config.baseUrl, config.adminToken]);
 
   useEffect(() => {
     void refresh();
@@ -83,10 +94,16 @@ const RealTradingBot = () => {
   }, [refresh]);
 
   const saveConfig = () => {
-    if (!config.baseUrl || !config.adminToken) {
-      alert('נא להזין כתובת Worker ו-Token');
+    if (!config.baseUrl) {
+      alert('נא להזין כתובת Worker');
       return;
     }
+    try {
+      localStorage.setItem('workerConfig', JSON.stringify({ baseUrl: config.baseUrl, adminToken: config.adminToken }));
+      if (config.adminToken) {
+        localStorage.setItem('workerAdminToken', config.adminToken);
+      }
+    } catch { /* ignore */ }
     void refresh();
   };
 

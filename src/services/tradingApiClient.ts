@@ -180,10 +180,18 @@ export async function setSimConfig(config: SimBotConfig): Promise<SimBotStateRes
 }
 
 function resolveBaseUrl(configured?: string): string {
+  let savedUrl = '';
+  try {
+    const saved = localStorage.getItem('workerConfig');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.baseUrl) savedUrl = parsed.baseUrl;
+    }
+  } catch { /* ignore */ }
   const fromEnv = import.meta.env.VITE_TRADING_API_URL as string | undefined;
-  // Prefer an explicitly configured (manually entered) URL over the build-time
+  // Prefer an explicitly configured (manually entered/saved) URL over the build-time
   // VITE_TRADING_API_URL, so a saved Worker address is actually used.
-  const base = (configured || fromEnv || '').replace(/\/$/, '');
+  const base = (configured || savedUrl || fromEnv || '').replace(/\/$/, '');
   return base;
 }
 
