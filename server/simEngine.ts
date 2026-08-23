@@ -164,6 +164,7 @@ export function createSimEngine() {
   let totalFees = 0;
   let totalSlippageCost = 0;
   let lastEvaluation = '';
+  let lastEvaluations: SimEvaluationResult[] = [];
 
   let liveCandles: Record<string, Candle[]> = {};
   let cryptoData: CryptoData[] = [];
@@ -671,6 +672,7 @@ export function createSimEngine() {
     await refreshMarketData();
     for (const c of cryptoData) lastPrices[c.symbol.toUpperCase()] = c.current_price;
     const evalResult = evaluate(config, fearGreed);
+    lastEvaluations = evalResult.results;
     const we = evalResult.results.filter((r) => r.willExecute).length;
     console.log(`[sim-engine] evals=${evalResult.results.length} willExecute=${we} pending=${pending.length} pos=${positions.length} cash=${cash.toFixed(2)}`);
     generateOrders(evalResult, config);
@@ -700,7 +702,7 @@ export function createSimEngine() {
       totalTrades: trades.length,
       closedTrades: closedTrades.length,
       lastEvaluation,
-      evaluations: [],
+      evaluations: lastEvaluations,
       minConfidence: 40,
       hasSavedSession: trades.length > 0 || positions.length > 0,
       nextTickAt: Date.now() + TICK_MS,
@@ -736,6 +738,7 @@ export function createSimEngine() {
     totalFees = 0;
     totalSlippageCost = 0;
     lastEvaluation = '';
+    lastEvaluations = [];
   }
 
   return { tick, getSnapshot, hydrate, reset };

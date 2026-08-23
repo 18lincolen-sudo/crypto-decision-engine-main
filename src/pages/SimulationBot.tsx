@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Bot, Play, Pause, Square, Zap, Settings, ArrowDownCircle, ArrowUpCircle, RefreshCw, ChevronDown, FileText, Target, Shield } from 'lucide-react';
 import Navigation from '../components/Navigation';
@@ -148,6 +148,9 @@ const SimulationBot = () => {
                   <Zap className="w-5 h-5" />
                   מנוע ההחלטות בזמן אמת ({evaluations?.length || 0})
                 </DialogTitle>
+                <DialogDescription className="sr-only">
+                  רשימת הערכות מנוע ההחלטות בזמן אמת לכל מטבע
+                </DialogDescription>
               </DialogHeader>
               {!evaluations?.length ? (
                 <div className="text-muted-foreground text-sm text-center py-4 font-mono">
