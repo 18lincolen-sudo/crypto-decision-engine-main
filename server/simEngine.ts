@@ -678,7 +678,7 @@ export function createSimEngine() {
     generateOrders(evalResult, config);
     executeDueOrders();
     recordEquity();
-    lastEvaluation = new Date().toLocaleTimeString('he-IL');
+    lastEvaluation = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
     return getSnapshot();
   }
 
