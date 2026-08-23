@@ -4,6 +4,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -86,6 +87,9 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
             ניתוח מפורט - {crypto.symbol}
             {rsiSignal.urgent && <AlertTriangle className="w-5 h-5 text-orange-500" />}
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            ניתוח טכני ואינדיקטורים מפורטים עבור {crypto.symbol}
+          </DialogDescription>
         </DialogHeader>
         
         <div className="space-y-4">

@@ -161,7 +161,7 @@ const CANDLE_REFRESH_MS = 5 * 60_000;
 const COINGECKO_CANDLE_TTL = 6 * 60 * 60_000;
 
 export function createSimEngine() {
-  let cash = 0;
+  let cash = 10000;
   let positions: SimPosition[] = [];
   let trades: SimTrade[] = [];
   let history: SimPoint[] = [];
@@ -800,7 +800,10 @@ export function createSimEngine() {
   }
 
   async function tick(config: SimBotConfig, fearGreed = 50) {
-    initialAmount = config.initialAmount;
+    initialAmount = config.initialAmount || 10000;
+    if ((cash === 0 || !Number.isFinite(cash)) && positions.length === 0 && trades.length === 0) {
+      cash = initialAmount;
+    }
     await refreshMarketData();
     for (const c of cryptoData) lastPrices[c.symbol.toUpperCase()] = c.current_price;
     const evalResult = evaluate(config, fearGreed);

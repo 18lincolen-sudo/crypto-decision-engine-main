@@ -129,12 +129,16 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const source: any = serverSnapshot || {};
+  const initialCash = config.initialAmount || 10000;
+  const hasActivity = (source.positions && source.positions.length > 0) || (source.trades && source.trades.length > 0);
+  const currentCash = typeof source.cash === 'number' && (source.cash > 0 || hasActivity) ? source.cash : initialCash;
+  const currentEquity = typeof source.equity === 'number' && (source.equity > 0 || hasActivity) ? source.equity : currentCash;
 
   const value: SimulationBotContextValue = {
-    cash: source.cash ?? 0,
+    cash: currentCash,
     positions: source.positions ?? [],
     positionsValue: source.positionsValue ?? 0,
-    equity: source.equity ?? source.cash ?? 0,
+    equity: currentEquity,
     trades: source.trades ?? [],
     history: source.history ?? [],
     pending: source.pending ?? [],
@@ -146,7 +150,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     lastEvaluation: source.lastEvaluation ?? '',
     evaluations: source.evaluations ?? [],
     minConfidence: source.minConfidence ?? 40,
-    hasSavedSession: source.hasSavedSession ?? false,
+    hasSavedSession: source.hasSavedSession ?? hasActivity,
     nextTickAt: source.nextTickAt ?? 0,
     totalLeveragedExposureUsd: source.totalLeveragedExposureUsd ?? 0,
     dailyDrawdownPercent: source.dailyDrawdownPercent ?? 0,

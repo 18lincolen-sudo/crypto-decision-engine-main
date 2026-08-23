@@ -52,16 +52,22 @@ const SimulationBot = () => {
   const [openLogs, setOpenLogs] = useState<string[]>([]);
   const [countdown, setCountdown] = useState(0);
 
-  // Countdown timer to next tick
+  // Countdown timer to next tick (4s tick interval)
   useEffect(() => {
-    if (!isRunning || !nextTickAt) {
+    if (!isRunning) {
       setCountdown(0);
       return;
     }
-    const id = setInterval(() => {
+    const updateCountdown = () => {
+      if (!nextTickAt) {
+        setCountdown(4);
+        return;
+      }
       const remaining = Math.max(0, nextTickAt - Date.now());
-      setCountdown(Math.ceil(remaining / 1000));
-    }, 200);
+      setCountdown(remaining > 0 ? Math.min(4, Math.ceil(remaining / 1000)) : 1);
+    };
+    updateCountdown();
+    const id = setInterval(updateCountdown, 250);
     return () => clearInterval(id);
   }, [isRunning, nextTickAt]);
 
@@ -272,6 +278,9 @@ const SimulationBot = () => {
                   <Settings className="w-5 h-5" />
                   הגדרות בוט ומסחר
                 </DialogTitle>
+                <DialogDescription className="sr-only">
+                  הגדרות פרופיל סיכון, הון התחלתי, עמלות והחלקה
+                </DialogDescription>
               </DialogHeader>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -400,7 +409,7 @@ const SimulationBot = () => {
             {
               label: 'טיקט הבא',
               value: isRunning ? `${countdown}s` : '—',
-              hint: 'דופק 5 שניות',
+              hint: 'דופק 4 שניות',
             },
           ]}
         />

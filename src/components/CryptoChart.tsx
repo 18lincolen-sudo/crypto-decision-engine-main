@@ -5,6 +5,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
@@ -64,6 +65,9 @@ const CryptoChart = ({ symbol, isOpen, onClose }: CryptoChartProps) => {
           <DialogTitle className="text-center">
             גרפי {symbol} - 30 ימים אחרונים
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            גרף מחיר ונפח עבור {symbol} ל-30 הימים האחרונים
+          </DialogDescription>
         </DialogHeader>
         
         {isLoading ? (
