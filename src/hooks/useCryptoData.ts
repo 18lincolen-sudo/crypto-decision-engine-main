@@ -6,7 +6,7 @@ import { binancePublicApi } from '../services/binancePublicApi';
 import { fearGreedApi } from '../services/fearGreedApi';
 import { calculateTechnicalIndicators } from '../utils/technicalAnalysis';
 import { generateSmartRecommendation } from '../utils/smartRecommendationEngine';
-import { CryptoData, CryptoRecommendation } from '../types/crypto';
+import { CryptoData, CryptoRecommendation, HistoricalPrice } from '../types/crypto';
 import { TARGET_SYMBOLS } from '../shared/targetSymbols';
 
 /** Map a Bybit USDT symbol to our internal symbol name (e.g. BTCUSDT → btc) */
@@ -110,7 +110,7 @@ export function useCryptoData() {
         try {
           console.log(`🔍 Processing ${crypto.symbol}... (${i + 1}/${Math.min(cryptoData.length, 5)})`);
 
-          let historicalData: { timestamp: number; price: number }[] = [];
+          let historicalData: HistoricalPrice[] = [];
           let volumes: number[] = [];
 
           // 1) Try Bybit klines first
@@ -124,7 +124,8 @@ export function useCryptoData() {
             if (bybitKlineData && bybitKlineData.length > 0) {
               historicalData = bybitKlineData.map(kline => ({
                 timestamp: parseInt(kline.openTime),
-                price: parseFloat(kline.close)
+                price: parseFloat(kline.close),
+                volume: parseFloat(kline.volume)
               }));
               volumes = bybitKlineData.map(kline => parseFloat(kline.volume));
             }
@@ -138,7 +139,11 @@ export function useCryptoData() {
                 new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 4000))
               ]);
               if (bklines && bklines.length > 0) {
-                historicalData = bklines.map(k => ({ timestamp: k.timestamp, price: k.close }));
+                historicalData = bklines.map(k => ({
+                  timestamp: k.timestamp,
+                  price: k.close,
+                  volume: k.volume
+                }));
                 volumes = bklines.map(k => k.volume);
               }
             } catch { /* fall through */ }
