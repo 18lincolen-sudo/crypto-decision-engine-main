@@ -6,8 +6,24 @@ interface UseBackgroundWorkerOptions {
   onTick: (timestamp: number) => void;
 }
 
+const TIMER_WORKER_SCRIPT = `
+let timerId = null;
+self.onmessage = function(e) {
+  if (e.data && e.data.action === 'START') {
+    if (timerId) clearInterval(timerId);
+    const interval = e.data.interval || 5000;
+    timerId = setInterval(function() {
+      self.postMessage({ type: 'TICK', timestamp: Date.now() });
+    }, interval);
+  } else if (e.data && e.data.action === 'STOP') {
+    if (timerId) clearInterval(timerId);
+    timerId = null;
+  }
+};
+`;
+
 export function useBackgroundWorker({
-  intervalMs = 4000,
+  intervalMs = 5000,
   enabled = true,
   onTick
 }: UseBackgroundWorkerOptions) {
@@ -17,13 +33,12 @@ export function useBackgroundWorker({
   onTickRef.current = onTick;
 
   const start = useCallback(() => {
-    if (typeof Worker !== 'undefined') {
+    if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
       try {
         if (!workerRef.current) {
-          workerRef.current = new Worker(
-            new URL('../workers/tradingWorker.ts', import.meta.url),
-            { type: 'module' }
-          );
+          const blob = new Blob([TIMER_WORKER_SCRIPT], { type: 'application/javascript' });
+          const blobUrl = URL.createObjectURL(blob);
+          workerRef.current = new Worker(blobUrl);
 
           workerRef.current.onmessage = (e: MessageEvent) => {
             if (e.data?.type === 'TICK') {
@@ -62,15 +77,8 @@ export function useBackgroundWorker({
     } else {
       stop();
     }
-
-    return () => {
-      stop();
-      if (workerRef.current) {
-        workerRef.current.terminate();
-        workerRef.current = null;
-      }
-    };
+    return () => stop();
   }, [enabled, start, stop]);
 
-  return { start, stop };
+  return { isRunning: enabled, start, stop };
 }

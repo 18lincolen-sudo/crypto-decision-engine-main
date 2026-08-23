@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode, useRef } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import {
   getSimState,
   startSim,
@@ -8,14 +8,16 @@ import {
   SimBotSnapshot,
   SimBotStateResponse
 } from '../services/tradingApiClient';
-import type { SimBotConfig } from '../hooks/useSimulationBot';
+import { useSimulationBot, SimBotConfig } from '../hooks/useSimulationBot';
+import { useCryptoData } from '../hooks/useCryptoData';
+import { fearGreedApi } from '../services/fearGreedApi';
 
 const DEFAULT_CONFIG: SimBotConfig = {
   riskLevel: 'medium',
   initialAmount: 10000,
   stopLoss: 4.2,
   takeProfit: 3,
-  maxPositions: 5,
+  maxPositions: 7,
   maxFuturesPositions: 2,
   feePercent: 0.1,
   slippagePercent: 0.05,
@@ -23,12 +25,11 @@ const DEFAULT_CONFIG: SimBotConfig = {
   minConfidenceOverride: 0
 };
 
-const POLL_INTERVAL_MS = 2000; // viewers: read shared state
+const POLL_INTERVAL_MS = 5000;
 
 export type SimStatus = 'running' | 'paused' | 'idle';
 
 export interface SimulationBotContextValue {
-  // Live state from the bot engine (server-side, shared by every viewer)
   cash: number;
   positions: any[];
   positionsValue: number;
@@ -50,7 +51,6 @@ export interface SimulationBotContextValue {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   candleCount: number;
-  // Config + lifecycle control
   config: SimBotConfig;
   setConfig: (c: SimBotConfig) => void;
   status: SimStatus;
@@ -66,27 +66,43 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   const [config, setConfigState] = useState<SimBotConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<SimStatus>('idle');
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
+  const [fearGreedIndex, setFearGreedIndex] = useState(50);
 
   const isRunning = status === 'running';
 
-  // Clear any legacy per-device localStorage so the server is the only source of truth.
+  // Fetch live market data for simulation
+  const { cryptoData } = useCryptoData();
+
   useEffect(() => {
-    try {
-      localStorage.removeItem('simulation-bot-state-v2');
-      localStorage.removeItem('simulation-bot-state-v1');
-    } catch {
-      /* ignore */
+    fearGreedApi.getFearGreedIndex()
+      .then(fg => {
+        if (fg?.value) setFearGreedIndex(fg.value);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Run autonomous client-side simulation engine
+  const localSim = useSimulationBot({
+    config,
+    isRunning,
+    cryptoData: cryptoData || [],
+    fearGreedIndex,
+    persist: true
+  });
+
+  const applyServerState = useCallback((st: SimBotStateResponse) => {
+    if (st.snapshot) {
+      setServerSnapshot(st.snapshot);
+    }
+    if (typeof st.running === 'boolean') {
+      setStatus(st.running ? 'running' : 'idle');
+    }
+    if (st.config) {
+      setConfigState(st.config as SimBotConfig);
     }
   }, []);
 
-  const applyServerState = useCallback((st: SimBotStateResponse) => {
-    setServerSnapshot(st.snapshot);
-    setStatus(st.running ? 'running' : 'idle');
-    if (st.config) setConfigState(st.config as SimBotConfig);
-  }, []);
-
-  // Poll the shared state so every device shows the SAME bot. The engine runs
-  // server-side and advances 24/7; clients are pure viewers.
+  // Poll server state if a dedicated worker backend is present
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
@@ -95,7 +111,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         applyServerState(st);
       } catch {
-        /* worker unreachable */
+        /* no backend server; client engine runs locally */
       }
     };
     poll();
@@ -107,55 +123,57 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   }, [applyServerState]);
 
   const start = useCallback(() => {
-    startSim()
-      .then(() => setStatus('running'))
-      .catch(() => setStatus('running'));
+    setStatus('running');
+    startSim().catch(() => {});
   }, []);
 
   const pause = useCallback(() => {
-    stopSim().catch(() => {});
     setStatus('idle');
+    stopSim().catch(() => {});
   }, []);
 
   const resetAll = useCallback(() => {
-    resetSim().catch(() => {});
     setStatus('idle');
+    localSim.reset();
     setServerSnapshot(null);
-  }, []);
+    resetSim().catch(() => {});
+  }, [localSim]);
 
   const setConfig = useCallback((c: SimBotConfig) => {
     setConfigState(c);
     setSimConfig(c).catch(() => {});
   }, []);
 
-  const source: any = serverSnapshot || {};
-  const initialCash = config.initialAmount || 10000;
-  const hasActivity = (source.positions && source.positions.length > 0) || (source.trades && source.trades.length > 0);
-  const currentCash = typeof source.cash === 'number' && (source.cash > 0 || hasActivity) ? source.cash : initialCash;
-  const currentEquity = typeof source.equity === 'number' && (source.equity > 0 || hasActivity) ? source.equity : currentCash;
+  // If server has an active snapshot with data, use server data; otherwise use local client simulation engine
+  const useServer = serverSnapshot !== null && (
+    (serverSnapshot.positions && (serverSnapshot.positions as any[]).length > 0) ||
+    (serverSnapshot.trades && (serverSnapshot.trades as any[]).length > 0)
+  );
+
+  const activeSource: any = useServer ? serverSnapshot : localSim;
 
   const value: SimulationBotContextValue = {
-    cash: currentCash,
-    positions: source.positions ?? [],
-    positionsValue: source.positionsValue ?? 0,
-    equity: currentEquity,
-    trades: source.trades ?? [],
-    history: source.history ?? [],
-    pending: source.pending ?? [],
-    totalFees: source.totalFees ?? 0,
-    totalSlippageCost: source.totalSlippageCost ?? 0,
-    winRate: source.winRate ?? 0,
-    totalTrades: source.totalTrades ?? 0,
-    closedTrades: source.closedTrades ?? 0,
-    lastEvaluation: source.lastEvaluation ?? '',
-    evaluations: source.evaluations ?? [],
-    minConfidence: source.minConfidence ?? 40,
-    hasSavedSession: source.hasSavedSession ?? hasActivity,
-    nextTickAt: source.nextTickAt ?? 0,
-    totalLeveragedExposureUsd: source.totalLeveragedExposureUsd ?? 0,
-    dailyDrawdownPercent: source.dailyDrawdownPercent ?? 0,
-    weeklyDrawdownPercent: source.weeklyDrawdownPercent ?? 0,
-    candleCount: source.candleCount ?? 0,
+    cash: activeSource.cash ?? 10000,
+    positions: activeSource.positions ?? [],
+    positionsValue: activeSource.positionsValue ?? 0,
+    equity: activeSource.equity ?? 10000,
+    trades: activeSource.trades ?? [],
+    history: activeSource.history ?? [],
+    pending: activeSource.pending ?? [],
+    totalFees: activeSource.totalFees ?? 0,
+    totalSlippageCost: activeSource.totalSlippageCost ?? 0,
+    winRate: activeSource.winRate ?? 0,
+    totalTrades: activeSource.totalTrades ?? 0,
+    closedTrades: activeSource.closedTrades ?? 0,
+    lastEvaluation: activeSource.lastEvaluation ?? '',
+    evaluations: activeSource.evaluations ?? [],
+    minConfidence: activeSource.minConfidence ?? 40,
+    hasSavedSession: activeSource.hasSavedSession ?? false,
+    nextTickAt: activeSource.nextTickAt ?? 0,
+    totalLeveragedExposureUsd: activeSource.totalLeveragedExposureUsd ?? 0,
+    dailyDrawdownPercent: activeSource.dailyDrawdownPercent ?? 0,
+    weeklyDrawdownPercent: activeSource.weeklyDrawdownPercent ?? 0,
+    candleCount: activeSource.candleCount ?? 0,
     config,
     setConfig,
     status,
@@ -174,8 +192,6 @@ export function useSimulationBotContext(): SimulationBotContextValue {
   return ctx;
 }
 
-// Non-throwing variant: returns null when no provider is mounted (defensive for
-// components that may render outside the provider tree).
 export function useSimulationBotContextSafe(): SimulationBotContextValue | null {
   return useContext(SimulationBotContext);
 }

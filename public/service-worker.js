@@ -1,4 +1,4 @@
-const CACHE_NAME = 'crypto-decision-engine-v2';
+const CACHE_NAME = 'crypto-decision-engine-v3';
 
 self.addEventListener('install', () => {
   self.skipWaiting();
@@ -21,26 +21,50 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // Always use network for APIs, Bybit, CoinGecko and navigation.
+  // Navigation requests: Network-first, fallback to /index.html
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(async () => {
+        const cached = await caches.match('/index.html');
+        return cached || fetch('/index.html');
+      })
+    );
+    return;
+  }
+
+  // APIs, Bybit, Binance, CoinGecko, and external requests
   if (
     url.pathname.startsWith('/api/') ||
     url.origin !== self.location.origin ||
     url.hostname.includes('bybit.com') ||
-    url.hostname.includes('coingecko.com') ||
-    event.request.mode === 'navigate'
+    url.hostname.includes('binance.com') ||
+    url.hostname.includes('coingecko.com')
   ) {
-    event.respondWith(fetch(event.request));
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        return new Response(JSON.stringify({ error: 'Network offline', status: 503 }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      })
+    );
     return;
   }
 
-  // Network-first for application assets.
+  // Network-first for static application assets with cache fallback
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        if (response.status === 200) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
         return response;
       })
-      .catch(async () => (await caches.match(event.request)) || Response.error())
+      .catch(async () => {
+        const cached = await caches.match(event.request);
+        if (cached) return cached;
+        return caches.match('/index.html');
+      })
   );
 });
