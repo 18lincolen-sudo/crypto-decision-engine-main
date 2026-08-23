@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: crypto-trading-worker
+    runtime: node
+    plan: free
+    buildCommand: npm run build:worker
+    startCommand: node dist/worker.js
+    healthCheckPath: /health
+    autoDeploy: true

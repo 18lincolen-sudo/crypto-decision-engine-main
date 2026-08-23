@@ -1,0 +1,42 @@
+{
+  "running": false,
+  "config": {
+    "riskLevel": "medium",
+    "initialAmount": 10000,
+    "stopLoss": 4.2,
+    "takeProfit": 3,
+    "maxPositions": 5,
+    "maxFuturesPositions": 2,
+    "feePercent": 0.1,
+    "slippagePercent": 0.05,
+    "executionDelaySec": 3,
+    "minConfidenceOverride": 0
+  },
+  "snapshot": {
+    "cash": 10000,
+    "positions": [],
+    "positionsValue": 0,
+    "equity": 10000,
+    "trades": [],
+    "history": [],
+    "pending": [],
+    "totalFees": 0,
+    "totalSlippageCost": 0,
+    "winRate": 0,
+    "totalTrades": 0,
+    "closedTrades": 0,
+    "lastEvaluation": "",
+    "evaluations": [],
+    "minConfidence": 40,
+    "hasSavedSession": false,
+    "nextTickAt": 1787469209557,
+    "totalLeveragedExposureUsd": 0,
+    "dailyDrawdownPercent": 0,
+    "weeklyDrawdownPercent": 0,
+    "candleCount": 80
+  },
+  "leaderId": null,
+  "leaderHeartbeat": 0,
+  "updatedAt": 1787469205557,
+  "epoch": 6
+}

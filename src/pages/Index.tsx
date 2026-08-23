@@ -1,0 +1,185 @@
+
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useCryptoData } from '../hooks/useCryptoData';
+import { usePortfolio } from '../hooks/usePortfolio';
+import CryptoCard from '../components/CryptoCard';
+import FearGreedIndicator from '../components/FearGreedIndicator';
+import CryptoDetailModal from '../components/CryptoDetailModal';
+import Navigation from '../components/Navigation';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { AlertCircle, BarChart3, TrendingUp, DollarSign, Target } from 'lucide-react';
+import SmartTipsPanel from '../components/SmartTipsPanel';
+import { ExecutiveDashboard } from '../components/dashboard/ExecutiveDashboard';
+import { CryptoRecommendation } from '../types/crypto';
+
+const Index = () => {
+  const { cryptoData, fearGreedData, recommendations, isLoading, error } = useCryptoData();
+  const { portfolio } = usePortfolio();
+  const [selectedCrypto, setSelectedCrypto] = useState<CryptoRecommendation | null>(null);
+  // Filter recommendations based on user's portfolio
+  const filteredRecommendations = recommendations?.filter(rec => {
+    // Show buy recommendations for all cryptocurrencies
+    if (rec.recommendation === 'buy') return true;
+    
+    // Show sell/hold recommendations only for cryptocurrencies user owns
+    if (rec.recommendation === 'sell' || rec.recommendation === 'hold') {
+      return portfolio?.items.some(item => item.symbol.toLowerCase() === rec.symbol.toLowerCase());
+    }
+    
+    return false;
+  }) || [];
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="flex items-center justify-center p-6">
+            <div className="text-center">
+              <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold mb-2 font-mono">שגיאה בטעינת הנתונים</h2>
+              <p className="text-muted-foreground mb-4 font-mono">
+                נתקלנו בבעיה בטעינת הנתונים. אנא רענן את הדף או נסה שוב מאוחר יותר.
+              </p>
+              <Button onClick={() => window.location.reload()} className="font-mono">
+                רענן דף
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      <Navigation />
+      
+      <div className="max-w-7xl mx-auto p-4">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold mb-4 text-primary font-mono">
+            🚀 מנוע החלטות קריפטו AI
+          </h1>
+          <p className="text-xl text-muted-foreground mb-6 font-mono">
+            ניתוח טכני מתקדם • נתונים בזמן אמת • המלצות חכמות מבוססות AI
+          </p>
+          <div className="flex justify-center gap-4 flex-wrap">
+            <Link to="/portfolio">
+              <Button size="lg" className="flex items-center gap-2 font-mono">
+                <BarChart3 className="w-5 h-5" />
+                עבור לתיק השקעות
+              </Button>
+            </Link>
+            <Link to="/advanced-analysis">
+              <Button variant="outline" size="lg" className="flex items-center gap-2 font-mono">
+                <TrendingUp className="w-5 h-5" />
+                ניתוח מתקדם
+              </Button>
+            </Link>
+          </div>
+        </div>
+
+        {/* Executive Command Dashboard: Bybit Live Balance, Bots Status & Active Positions */}
+        <ExecutiveDashboard />
+
+        {fearGreedData && (
+          <div className="mb-8 max-w-md mx-auto">
+            <FearGreedIndicator fearGreedData={fearGreedData} />
+          </div>
+        )}
+
+        {cryptoData && cryptoData.length > 0 && filteredRecommendations && (
+          <div className="mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+              <Card className="bg-background border-primary/30">
+                <CardContent className="p-4 text-center">
+                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
+                    <Target className="w-6 h-6" />
+                    {filteredRecommendations.filter(r => r.recommendation === 'buy').length}
+                  </div>
+                  <div className="text-sm text-primary/80 font-mono">המלצות קנייה חזקות</div>
+                </CardContent>
+              </Card>
+              <Card className="bg-background border-primary/30">
+                <CardContent className="p-4 text-center">
+                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
+                    <BarChart3 className="w-6 h-6" />
+                    {filteredRecommendations.filter(r => r.recommendation === 'hold').length}
+                  </div>
+                  <div className="text-sm text-primary/80 font-mono">המלצות המתנה</div>
+                </CardContent>
+              </Card>
+              <Card className="bg-background border-primary/30">
+                <CardContent className="p-4 text-center">
+                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
+                    <TrendingUp className="w-6 h-6" />
+                    {filteredRecommendations.filter(r => r.recommendation === 'sell').length}
+                  </div>
+                  <div className="text-sm text-primary/80 font-mono">המלצות מכירה</div>
+                </CardContent>
+              </Card>
+              <Card className="bg-background border-primary/30">
+                <CardContent className="p-4 text-center">
+                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
+                    <DollarSign className="w-6 h-6" />
+                    {filteredRecommendations.length}
+                  </div>
+                  <div className="text-sm text-primary/80 font-mono">המלצות רלוונטיות</div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-8">
+          <h3 className="text-2xl font-semibold mb-6 flex items-center gap-2 font-mono text-primary">
+            <BarChart3 className="w-6 h-6" />
+            ניתוח מטבעות קריפטו מתקדם
+          </h3>
+          
+          {filteredRecommendations && filteredRecommendations.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredRecommendations.map((recommendation) => (
+                <div key={recommendation.symbol} onClick={() => setSelectedCrypto(recommendation)}>
+                  <CryptoCard recommendation={recommendation} isClickable />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Card className="bg-background border-primary/30">
+              <CardContent className="p-8 text-center">
+                <BarChart3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-semibold mb-2 font-mono">טוען נתוני ניתוח...</h3>
+                <p className="text-muted-foreground font-mono">
+                  מעבד נתונים טכניים ויוצר המלצות השקעה חכמות
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+        <div className="mb-8">
+          <SmartTipsPanel />
+        </div>
+
+        <div className="mt-12 text-center text-sm text-muted-foreground font-mono">
+          <p className="mb-2">
+            🔄 נתונים מתעדכנים כל דקה • 📊 מדד פחד וחמדנות מתעדכן כל שעה
+          </p>
+          <p>
+            🤖 המלצות מבוססות AI וניתוח טכני מתקדם • ⚠️ לא מהווה ייעוץ השקעות
+          </p>
+        </div>
+
+        <CryptoDetailModal 
+          crypto={selectedCrypto}
+          isOpen={!!selectedCrypto}
+          onClose={() => setSelectedCrypto(null)}
+        />
+      </div>
+    </div>
+  );
+};
+
+export default Index;

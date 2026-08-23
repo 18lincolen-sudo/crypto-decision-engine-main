@@ -1,0 +1,11 @@
+{
+  "name": "crypto-trading-worker",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": { "start": "npx tsx index.mjs" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
+}
