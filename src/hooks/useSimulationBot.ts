@@ -3,6 +3,7 @@ import { CryptoData, CryptoRecommendation, MarketRegimeResult, TradeType, TradeS
 import { useBackgroundWorker } from './useBackgroundWorker';
 import { bybitApi } from '../services/bybitApi';
 import { coinGeckoApi } from '../services/coinGeckoApi';
+import { binancePublicApi } from '../services/binancePublicApi';
 import {
   detectMarketRegime,
   evaluateSignals,
@@ -322,7 +323,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       const symbols = cryptoData.map(c => c.symbol.toUpperCase());
       // Start from last-known-good candles so a transient source failure never wipes data.
       const next: Record<string, Candle[]> = { ...liveCandlesRef.current };
-      const sources: Record<string, 'bybit' | 'coingecko'> = {};
+      const sources: Record<string, 'bybit' | 'binance' | 'coingecko'> = {};
 
       // 1) Primary: real Bybit OHLC klines (fast, includes volume). Always re-fetch on interval.
       await Promise.all(symbols.map(async (symbol) => {
@@ -345,18 +346,42 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         }
       }));
 
-      // 2) Fallback: live CoinGecko historical prices for any symbol still missing candles
-      const missing = symbols.filter(s => !(next[s] && next[s].length > 0));
-      const CONCURRENCY = 4;
-      for (let i = 0; i < missing.length; i += CONCURRENCY) {
-        if (cancelled) break;
-        const batch = missing.slice(i, i + CONCURRENCY);
-        await Promise.all(batch.map(async (symbol) => {
-          const before = next[symbol]?.length || 0;
-          await buildFromCoinGecko(symbol, next);
-          if ((next[symbol]?.length || 0) > before) sources[symbol] = 'coingecko';
+      // 2) Binance klines for symbols Bybit couldn't serve (free, 1200 req/min)
+      const afterBybit = symbols.filter(s => !(next[s] && next[s].length > 0));
+      if (afterBybit.length > 0) {
+        await Promise.all(afterBybit.map(async (symbol) => {
+          try {
+            const bklines = await binancePublicApi.getKlines(symbol, '1d', 60);
+            if (bklines && bklines.length > 0) {
+              next[symbol] = bklines.map(k => ({
+                timestamp: k.timestamp,
+                open: k.open,
+                high: k.high,
+                low: k.low,
+                close: k.close,
+                volume: k.volume
+              }));
+              sources[symbol] = 'binance';
+            }
+          } catch { /* keep last-known-good */ }
         }));
         if (!cancelled) setLiveCandles({ ...next });
+      }
+
+      // 3) CoinGecko fallback — SEQUENTIAL, 1 at a time with 4s pause between each
+      //    to avoid blowing the shared 30 req/min rate limit.
+      const missing = symbols.filter(s => !(next[s] && next[s].length > 0));
+      for (let i = 0; i < missing.length; i++) {
+        if (cancelled) break;
+        const symbol = missing[i];
+        const before = next[symbol]?.length || 0;
+        await buildFromCoinGecko(symbol, next);
+        if ((next[symbol]?.length || 0) > before) sources[symbol] = 'coingecko';
+        if (!cancelled) setLiveCandles({ ...next });
+        // Pause between CoinGecko calls to respect rate limit
+        if (i < missing.length - 1) {
+          await new Promise(r => setTimeout(r, 4000));
+        }
       }
 
       if (!cancelled) {

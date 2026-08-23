@@ -14,6 +14,7 @@ import {
 } from '../src/services/tradeEngine';
 import { coinGeckoApi } from '../src/services/coinGeckoApi';
 import { bybitApi } from '../src/services/bybitApi';
+import { getAggregatedPrices, getAggregatedCandles } from '../src/services/cryptoPriceAggregator';
 import { CryptoData, ActivePosition } from '../src/types/crypto';
 
 interface SimEvaluationResult {
@@ -152,7 +153,7 @@ interface SimBotConfig {
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const TICK_MS = 4000;
-const CRYPTO_REFRESH_MS = 30_000;
+const CRYPTO_REFRESH_MS = 60_000;  // 60s — Bybit/Binance are fast, no need to hammer CoinGecko
 const CANDLE_REFRESH_MS = 5 * 60_000;
 // CoinGecko fallback candles are cached; re-fetch at most this often. Daily
 // candles don't change meaningfully within a day, and the free tier is shared
@@ -243,7 +244,8 @@ export function createSimEngine() {
     const now = Date.now();
     if (now - cryptoRefreshAt > CRYPTO_REFRESH_MS || cryptoData.length === 0) {
       try {
-        const data = await coinGeckoApi.getCurrentPrices();
+        // Use multi-source aggregator: Bybit → Binance → CoinGecko (rate-gated)
+        const data = await getAggregatedPrices();
         if (data && data.length) {
           cryptoData = data;
           cryptoRefreshAt = now;
@@ -295,15 +297,32 @@ export function createSimEngine() {
       );
     });
 
-    // 2) Fallback: CoinGecko historical candles for symbols Bybit could NOT
-    // serve (delisted / unsupported spot pairs like TON, NEO, MATIC→POL,
+    // 2) Binance klines for symbols Bybit could NOT serve (free, 1200 req/min — no rate limit concern)
+    const afterBybit = symbols.filter((s) => !next[s] || next[s].length < 2);
+    if (afterBybit.length > 0) {
+      await chunked(afterBybit, 10, async (batch) => {
+        await Promise.all(
+          batch.map(async (symbol) => {
+            try {
+              const candles = await getAggregatedCandles(symbol, 60);
+              if (candles && candles.length >= 2) {
+                next[symbol] = candles;
+              }
+            } catch { /* keep last-known-good */ }
+          })
+        );
+      });
+    }
+
+    // 3) Fallback: CoinGecko historical candles for symbols neither Bybit nor Binance
+    // could serve (delisted / unsupported spot pairs like TON, NEO, MATIC→POL,
     // RNDR→RENDER, FTM→SONIC, etc.). This keeps all ~100 symbols tradeable
     // instead of silently dropping ~20 of them.
     //
     // CoinGecko's FREE tier is heavily rate-limited AND is shared with the
-    // primary price feed (getCurrentPrices, every 30s). To avoid starving that
-    // feed, the fallback is gated behind COINGECKO_CANDLE_TTL (runs at most
-    // every 6h), fetched sequentially, and fails FAST on 429 (retries=0) so a
+    // primary price feed (getCurrentPrices, min 2-min TTL). To avoid starving
+    // that feed, this fallback is gated behind COINGECKO_CANDLE_TTL (runs at
+    // most every 6h), fetched sequentially, and fails FAST on 429 so a
     // rate-limited cycle doesn't burn the shared budget with long backoff
     // waits. Daily candles are cached in liveCandles, so once fetched they
     // persist across cycles.

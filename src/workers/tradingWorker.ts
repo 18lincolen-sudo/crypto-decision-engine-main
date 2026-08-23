@@ -785,11 +785,18 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   // Server-side simulation loop: advance the shared bot while it is running.
   let simTickInProgress = false;
+  let cachedSimFearGreed = 50;
+  let lastFgFetchAt = 0;
   setInterval(async () => {
     if (!simState.running || simTickInProgress) return;
     simTickInProgress = true;
     try {
-      const snap = await simEngine.tick(simState.config, 50);
+      const now = Date.now();
+      if (now - lastFgFetchAt > 15 * 60 * 1000) {
+        cachedSimFearGreed = await fetchFearGreed();
+        lastFgFetchAt = now;
+      }
+      const snap = await simEngine.tick(simState.config, cachedSimFearGreed);
       simState.snapshot = snap;
       simState.updatedAt = Date.now();
       await persistSim();
