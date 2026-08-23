@@ -121,11 +121,11 @@ export const coinGeckoApi = {
     return mappedData;
   },
 
-  async getHistoricalPrices(coinId: string, days: number = 60): Promise<HistoricalPrice[]> {
+  async getHistoricalPrices(coinId: string, days: number = 60, retries: number = 2): Promise<HistoricalPrice[]> {
     const url = `${COINGECKO_BASE_URL}/coins/${coinId}/market_chart?vs_currency=usd&days=${days}&interval=daily`;
-    
+
     console.log(`Fetching historical prices for ${coinId}...`);
-    const data = await apiCall<CoinGeckoMarketChart>(url, 2, 3000);
+    const data = await apiCall<CoinGeckoMarketChart>(url, retries, 3000);
     
     if (!data || !data.prices || data.prices.length === 0) {
       throw new Error(`No live historical data for ${coinId}`);

@@ -154,6 +154,10 @@ const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slic
 const TICK_MS = 4000;
 const CRYPTO_REFRESH_MS = 30_000;
 const CANDLE_REFRESH_MS = 5 * 60_000;
+// CoinGecko fallback candles are cached; re-fetch at most this often. Daily
+// candles don't change meaningfully within a day, and the free tier is shared
+// with the primary price feed, so we must NOT hit it every candle cycle.
+const COINGECKO_CANDLE_TTL = 6 * 60 * 60_000;
 
 export function createSimEngine() {
   let cash = 0;
@@ -173,6 +177,7 @@ export function createSimEngine() {
   let cryptoRefreshAt = 0;
   let candleRefreshAt = 0;
   let candleRefreshing = false;
+  let coinGeckoCandleRefreshAt = 0;
   let initialAmount = 10000;
 
   async function chunked<T>(items: T[], size: number, fn: (batch: T[]) => Promise<void>) {
@@ -293,17 +298,25 @@ export function createSimEngine() {
     // 2) Fallback: CoinGecko historical candles for symbols Bybit could NOT
     // serve (delisted / unsupported spot pairs like TON, NEO, MATIC→POL,
     // RNDR→RENDER, FTM→SONIC, etc.). This keeps all ~100 symbols tradeable
-    // instead of silently dropping ~20 of them. CoinGecko free tier rate-limits
-    // aggressively, so we only hit the symbols that are still missing after the
-    // Bybit pass, in small batches with a short delay between batches.
+    // instead of silently dropping ~20 of them.
+    //
+    // CoinGecko's FREE tier is heavily rate-limited AND is shared with the
+    // primary price feed (getCurrentPrices, every 30s). To avoid starving that
+    // feed, the fallback is gated behind COINGECKO_CANDLE_TTL (runs at most
+    // every 6h), fetched sequentially, and fails FAST on 429 (retries=0) so a
+    // rate-limited cycle doesn't burn the shared budget with long backoff
+    // waits. Daily candles are cached in liveCandles, so once fetched they
+    // persist across cycles.
+    const now = Date.now();
     const missing = symbols.filter((s) => !next[s] || next[s].length < 2);
-    if (missing.length) {
-      await chunked(missing, 3, async (batch) => {
+    if (missing.length && now - coinGeckoCandleRefreshAt > COINGECKO_CANDLE_TTL) {
+      coinGeckoCandleRefreshAt = now;
+      await chunked(missing, 1, async (batch) => {
         await Promise.all(
           batch.map(async (symbol) => {
             try {
               const coinId = coinGeckoApi.getCoinId(symbol);
-              const hist = await coinGeckoApi.getHistoricalPrices(coinId, 60);
+              const hist = await coinGeckoApi.getHistoricalPrices(coinId, 60, 0);
               if (hist && hist.length >= 2) {
                 next[symbol] = hist.map((h, i) => {
                   const open = i === 0 ? h.price : hist[i - 1].price;
@@ -324,7 +337,7 @@ export function createSimEngine() {
           })
         );
         // Gentle pause so we don't trip CoinGecko's free-tier rate limit.
-        await new Promise((r) => setTimeout(r, 1200));
+        await new Promise((r) => setTimeout(r, 3000));
       });
     }
 
