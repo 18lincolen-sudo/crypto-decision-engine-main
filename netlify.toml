@@ -4,7 +4,6 @@
 
 [build.environment]
   NODE_VERSION = "18"
-  VITE_TRADING_API_URL = "https://cryptom-dyk8.onrender.com"
 
 [[headers]]
   for = "/assets/*"

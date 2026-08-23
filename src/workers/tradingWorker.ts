@@ -15,12 +15,13 @@ import dotenv from 'dotenv';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { config as loadEnv } from 'dotenv';
 // Server-side simulation engine (runs the bot 24/7 without a browser).
 import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3.
 import { calculateEMA, calculateATR, calculateADX, calculateSupertrend, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters } from '../services/tradeEngine';
+import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { createKVStore } from './kvStore';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Local development reads the repository .env; Render variables retain precedence.
@@ -67,6 +68,12 @@ const allowedOrigins = corsOriginEnv.split(',').map(s => s.trim()).filter(Boolea
 const RATE_LIMIT_MAX = Math.floor(boundedNumber('BOT_RATE_LIMIT_MAX', 120, 1, 10000));
 const RATE_LIMIT_WINDOW_MS = boundedNumber('BOT_RATE_LIMIT_WINDOW_MS', 60000, 1000, 3600000);
 const REQUEST_TIMEOUT_MS = boundedNumber('BOT_REQUEST_TIMEOUT_MS', 15000, 1000, 120000);
+
+// FIX #4: not found in git history. If this refers to a specific fix (e.g. additional
+// rate-limit validation, request signature validation, or order size rounding),
+// please provide the context so it can be implemented. The gap between FIX #3
+// (rate-bucket pruning) and FIX #5 (public candles from Mainnet) is currently
+// unfilled in the commit log.
 
 // ── HTTP helpers: CORS, rate limiting, timeouts ────────────────────────────
 function clientIp(req: { headers: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } }): string {
@@ -153,20 +160,6 @@ const EXEC_BASE = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit
 // Shorter intervals (4h='240', 1h='60') detect trends far more often, letting
 // the existing Futures routing/leverage logic actually engage. Configurable.
 const klineInterval = process.env.BOT_KLINE_INTERVAL || '240';
-
-// Full supported Bybit universe (mirrors src/services/bybitApi.ts TARGET_SYMBOLS).
-const TARGET_SYMBOLS = [
-  'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','TONUSDT','ADAUSDT','AVAXUSDT','TRXUSDT',
-  'DOTUSDT','BCHUSDT','NEARUSDT','MATICUSDT','ICPUSDT','UNIUSDT','LTCUSDT','ETCUSDT','APTUSDT','SHIBUSDT',
-  'LINKUSDT','XLMUSDT','ATOMUSDT','FILUSDT','HBARUSDT','ARBUSDT','OPUSDT','IMXUSDT','MKRUSDT','INJUSDT',
-  'GRTUSDT','SUIUSDT','SEIUSDT','TIAUSDT','RNDRUSDT','FETUSDT','THETAUSDT','FTMUSDT','AAVEUSDT','ALGOUSDT',
-  'FLOWUSDT','AXSUSDT','SANDUSDT','MANAUSDT','SNXUSDT','LDOUSDT','EGLDUSDT','XTZUSDT','EOSUSDT','NEOUSDT',
-  'GALAUSDT','CHZUSDT','APEUSDT','CRVUSDT','LRCUSDT','ENAUSDT','WLDUSDT','STXUSDT','MINAUSDT','CFXUSDT',
-  'RUNEUSDT','COMPUSDT','DYDXUSDT','GMXUSDT','KAVAUSDT','ZILUSDT','IOTAUSDT','CAKEUSDT','1INCHUSDT','MASKUSDT',
-  'PENDLEUSDT','ARUSDT','BLURUSDT','WOOUSDT','SKLUSDT','CELOUSDT','KSMUSDT','ZRXUSDT','YFIUSDT','BATUSDT',
-  'ENSUSDT','SSVUSDT','ANKRUSDT','BANDUSDT','OGNUSDT','ONTUSDT','WAVESUSDT','STORJUSDT','ONEUSDT','HOTUSDT',
-  'IOSTUSDT','VETUSDT','DASHUSDT','ZENUSDT','QTUMUSDT','ZECUSDT','ICXUSDT','RVNUSDT','GLMRUSDT','BNTUSDT'
-];
 
 // `BOT_SYMBOLS=100` (or unset) means the full supported universe; any other
 // value is treated as a comma-separated list of explicit symbols.
@@ -314,26 +307,11 @@ async function getAccountContext(): Promise<{ available: number; total: number; 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PERSISTENCE — BotStateStore adapter (local file fallback; Firestore-ready)
+// PERSISTENCE — KV Store (Firestore in production, local file in dev)
 // ═══════════════════════════════════════════════════════════════════════════
 
-class BotStateStore {
-  file: string;
-  constructor(file: string) { this.file = file; }
-  async load(): Promise<Record<string, unknown> | null> {
-    try { return JSON.parse(await readFile(this.file, 'utf8')); } catch { return null; }
-  }
-  async save(snapshot: unknown): Promise<void> {
-    try {
-      await mkdir(DATA_DIR, { recursive: true });
-      await writeFile(this.file, JSON.stringify(snapshot, null, 2), 'utf8');
-    } catch (e: unknown) {
-      console.warn('[store] save failed:', e instanceof Error ? e.message : String(e));
-    }
-  }
-}
-
-const store = new BotStateStore(STATE_FILE);
+const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
+const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
 
 // ── Shared Simulation Bot state ───────────────────────────────────────────────
 // The simulation engine runs in exactly ONE browser (the "leader"); it pushes its
@@ -367,27 +345,10 @@ const simState = {
 // It is the single source of truth; clients are pure viewers.
 const simEngine = createSimEngine();
 
-class SimStateStore {
-  file: string;
-  constructor(file: string) { this.file = file; }
-  async load(): Promise<Record<string, unknown> | null> {
-    try { return JSON.parse(await readFile(this.file, 'utf8')); } catch { return null; }
-  }
-  async save(snapshot: unknown): Promise<void> {
-    try {
-      await mkdir(DATA_DIR, { recursive: true });
-      await writeFile(this.file, JSON.stringify(snapshot, null, 2), 'utf8');
-    } catch (e: unknown) {
-      console.warn('[sim-store] save failed:', e instanceof Error ? e.message : String(e));
-    }
-  }
-}
-const simStore = new SimStateStore(SIM_STATE_FILE);
-
 async function hydrateSim() {
-  const saved = await simStore.load();
+  const saved = await simStore.get('state');
   if (!saved) return;
-  const s = saved as Record<string, unknown>;
+  const s = JSON.parse(saved) as Record<string, unknown>;
   simState.running = typeof s.running === 'boolean' ? s.running : false;
   simState.config = { ...DEFAULT_SIM_CONFIG, ...(typeof s.config === 'object' && s.config !== null ? s.config as Record<string, unknown> : {}) };
   simState.snapshot = s.snapshot ?? null;
@@ -398,7 +359,7 @@ async function hydrateSim() {
 }
 
 async function persistSim() {
-  await simStore.save({
+  await simStore.set('state', JSON.stringify({
     running: simState.running,
     config: simState.config,
     snapshot: simState.snapshot,
@@ -406,11 +367,11 @@ async function persistSim() {
     leaderHeartbeat: simState.leaderHeartbeat,
     updatedAt: simState.updatedAt,
     epoch: simState.epoch
-  });
+  }));
 }
 
-function serializeState(): Record<string, unknown> {
-  return {
+function serializeState(): string {
+  return JSON.stringify({
     running: state.running,
     lastScanAt: state.lastScanAt,
     lastError: state.lastError,
@@ -418,18 +379,17 @@ function serializeState(): Record<string, unknown> {
     startedAt: state.startedAt,
     decisions: state.decisions,
     orders: state.orders,
-    // FIX #1: persist the Map as an object of symbol -> { at, type }.
     openedSymbols: Object.fromEntries(state.openedSymbols),
     candleCache: state.candleCache,
     skippedSymbols: state.skippedSymbols,
     health
-  };
+  });
 }
 
 async function hydrate(): Promise<void> {
-  const saved = await store.load();
+  const saved = await store.get('state');
   if (!saved) return;
-  const s = saved as Record<string, unknown>;
+  const s = JSON.parse(saved) as Record<string, unknown>;
   state.running = typeof s.running === 'boolean' ? s.running : state.running;
   state.lastScanAt = typeof s.lastScanAt === 'string' ? s.lastScanAt : null;
   state.lastError = typeof s.lastError === 'string' ? s.lastError : null;
@@ -613,11 +573,11 @@ async function scan(): Promise<void> {
     state.scans++;
     health.lastScanAt = state.lastScanAt;
     state.orders = state.orders.slice(0, 50);
-    await store.save(serializeState());
+    await store.set('state', serializeState());
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown scan error';
     state.lastError = errorMessage;
-    await store.save(serializeState());
+    await store.set('state', serializeState());
     void sendTelegramAlert(errorMessage);
   } finally {
     scanInProgress = false;
@@ -723,14 +683,14 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   if (req.method === 'POST' && url.pathname === '/api/bot/start') {
     state.running = true;
-    await store.save(serializeState());
+    await store.set('state', serializeState());
     await scan();
     return json(res, 200, { ...state, openedSymbols: Object.fromEntries(state.openedSymbols), dryRun, testnet, health });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/bot/stop') {
     state.running = false;
-    await store.save(serializeState());
+    await store.set('state', serializeState());
     return json(res, 200, { ...state, openedSymbols: Object.fromEntries(state.openedSymbols), dryRun, testnet, health });
   }
 

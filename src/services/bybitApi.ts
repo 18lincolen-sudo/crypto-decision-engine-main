@@ -55,33 +55,7 @@ async function bybitApiCall<T>(endpoint: string, params: Record<string, string> 
 // because they never produce trading signals.
 // Wrapped tokens (WBTC) excluded — same price action as underlying.
 
-const TARGET_SYMBOLS = [
-  // Tier 1 — Top 10 by Market Cap
-  'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
-  'DOGEUSDT', 'TONUSDT', 'ADAUSDT', 'AVAXUSDT', 'TRXUSDT',
-  // Tier 2 — Top 11-25
-  'DOTUSDT', 'BCHUSDT', 'NEARUSDT', 'MATICUSDT', 'ICPUSDT',
-  'UNIUSDT', 'LTCUSDT', 'ETCUSDT', 'APTUSDT', 'SHIBUSDT',
-  'LINKUSDT', 'XLMUSDT', 'ATOMUSDT', 'FILUSDT', 'HBARUSDT',
-  // Tier 3 — Top 26-50
-  'ARBUSDT', 'OPUSDT', 'IMXUSDT', 'MKRUSDT', 'INJUSDT',
-  'GRTUSDT', 'SUIUSDT', 'SEIUSDT', 'TIAUSDT', 'RNDRUSDT',
-  'FETUSDT', 'THETAUSDT', 'FTMUSDT', 'AAVEUSDT', 'ALGOUSDT',
-  'FLOWUSDT', 'AXSUSDT', 'SANDUSDT', 'MANAUSDT', 'SNXUSDT',
-  'LDOUSDT', 'EGLDUSDT', 'XTZUSDT', 'EOSUSDT', 'NEOUSDT',
-  // Tier 4 — Top 51-75 (High Volatility / Altcoins)
-  'GALAUSDT', 'CHZUSDT', 'APEUSDT', 'CRVUSDT', 'LRCUSDT',
-  'ENAUSDT', 'WLDUSDT', 'STXUSDT', 'MINAUSDT', 'CFXUSDT',
-  'RUNEUSDT', 'COMPUSDT', 'DYDXUSDT', 'GMXUSDT', 'KAVAUSDT',
-  'ZILUSDT', 'IOTAUSDT', 'CAKEUSDT', '1INCHUSDT', 'MASKUSDT',
-  'PENDLEUSDT', 'ARUSDT', 'BLURUSDT', 'WOOUSDT', 'SKLUSDT',
-  // Tier 5 — Top 76-100 (Micro-cap / Momentum)
-  'CELOUSDT', 'KSMUSDT', 'ZRXUSDT', 'YFIUSDT', 'BATUSDT',
-  'ENSUSDT', 'SSVUSDT', 'ANKRUSDT', 'BANDUSDT', 'OGNUSDT',
-  'ONTUSDT', 'WAVESUSDT', 'STORJUSDT', 'ONEUSDT', 'HOTUSDT',
-  'IOSTUSDT', 'VETUSDT', 'DASHUSDT', 'ZENUSDT', 'QTUMUSDT',
-  'ZECUSDT', 'ICXUSDT', 'RVNUSDT', 'GLMRUSDT', 'BNTUSDT'
-];
+import { TARGET_SYMBOLS } from '../shared/targetSymbols';
 
 // Internal symbol to Bybit symbol mapping (auto-generated from TARGET_SYMBOLS)
 function toInternalSymbol(bybitSymbol: string): string {

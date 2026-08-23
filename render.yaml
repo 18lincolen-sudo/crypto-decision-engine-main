@@ -7,3 +7,46 @@ services:
     startCommand: node dist/worker.js
     healthCheckPath: /health
     autoDeploy: true
+    envVars:
+      - key: BYBIT_API_KEY
+        sync: false
+      - key: BYBIT_SECRET_KEY
+        sync: false
+      - key: BOT_ADMIN_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: BYBIT_TESTNET
+        value: "true"
+      - key: BOT_DRY_RUN
+        value: "true"
+      - key: BOT_AUTOSTART
+        value: "false"
+      - key: BOT_RISK_LEVEL
+        value: "medium"
+      - key: BOT_SYMBOLS
+        value: "100"
+      - key: BOT_MIN_CONFIDENCE
+        value: "60"
+      - key: BOT_POSITION_PERCENT
+        value: "10"
+      - key: BOT_MAX_OPEN_POSITIONS
+        value: "9"
+      - key: BOT_SCAN_CONCURRENCY
+        value: "5"
+      - key: BOT_SCAN_INTERVAL_SECONDS
+        value: "300"
+      - key: BOT_KLINE_INTERVAL
+        value: "240"
+      - key: BOT_RATE_LIMIT_MAX
+        value: "120"
+      - key: BOT_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: BOT_REQUEST_TIMEOUT_MS
+        value: "15000"
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: PORT
+        value: "3001"

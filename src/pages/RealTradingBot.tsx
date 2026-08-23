@@ -28,19 +28,13 @@ interface WorkerConfig {
   adminToken: string;
 }
 
-const WORKER_CONFIG_KEY = 'workerConfig';
-
-// Prefer the build-time tunnel URL; otherwise fall back to a saved manual URL.
 const ENV_API_URL = (import.meta.env.VITE_TRADING_API_URL as string | undefined) || '';
 
 const RealTradingBot = () => {
-  const [config, setConfig] = useState<WorkerConfig>(() => {
-    try {
-      const raw = localStorage.getItem(WORKER_CONFIG_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch { /* ignore */ }
-    return { baseUrl: ENV_API_URL, adminToken: '' };
-  });
+  const [config, setConfig] = useState<WorkerConfig>(() => ({
+    baseUrl: ENV_API_URL,
+    adminToken: ''
+  }));
   const [botState, setBotState] = useState<WorkerBotState | null>(null);
   const [account, setAccount] = useState<WorkerAccountSummary | null>(null);
   const [online, setOnline] = useState(false);
@@ -93,8 +87,6 @@ const RealTradingBot = () => {
       alert('נא להזין כתובת Worker ו-Token');
       return;
     }
-    localStorage.setItem(WORKER_CONFIG_KEY, JSON.stringify(config));
-    localStorage.setItem('workerAdminToken', config.adminToken);
     void refresh();
   };
 
@@ -185,6 +177,12 @@ const RealTradingBot = () => {
           </TabsList>
 
           <TabsContent value="connection" className="space-y-4">
+            <Alert className="border-orange-500 bg-orange-500/10">
+              <AlertTriangle className="h-4 w-4 text-orange-500 flex-shrink-0" />
+              <AlertDescription className="font-mono text-orange-300 text-sm leading-relaxed">
+                <strong>אזהרת אבטחה:</strong> BOT_ADMIN_TOKEN נשמר בזיכרון בלבד ולא נכתב ל-localStorage. יש להזין אותו מחדש בכל טעינת עמוד. אל תשתמשו במחשב משותף.
+              </AlertDescription>
+            </Alert>
             <div className="border border-primary/30 bg-card/50 backdrop-blur rounded-lg p-5 space-y-3 font-mono">
               <div className="flex items-center gap-2 text-primary font-bold">
                 <Server className="w-5 h-5" /> הגדרת חיבור ל-Worker
