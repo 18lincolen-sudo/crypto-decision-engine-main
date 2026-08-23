@@ -86,8 +86,9 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     config,
     isRunning,
     cryptoData: cryptoData || [],
-    fearGreedIndex,
-    persist: true
+    persist: (state) => {
+      pushSimState('browser-leader', state as any).catch(() => {});
+    }
   });
 
   const applyServerState = useCallback((st: SimBotStateResponse) => {

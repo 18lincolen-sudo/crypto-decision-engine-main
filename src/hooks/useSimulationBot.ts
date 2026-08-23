@@ -248,9 +248,8 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   tradesRef.current = trades;
   historyRef.current = history;
 
-  // Persist state via the provided callback (server-backed shared state when leader).
+  // Persist state via localStorage and optional callback (server-backed shared state when leader).
   useEffect(() => {
-    if (!persist) return;
     // Never push a default/fresh state over real shared state.
     const meaningful = cash !== configRef.current.initialAmount || positions.length > 0 || trades.length > 0;
     if (!meaningful) return;
@@ -265,7 +264,16 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       totalSlippageCost,
       savedAt: Date.now(),
     };
-    persist(state);
+
+    try {
+      localStorage.setItem(SIM_BOT_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      /* ignore */
+    }
+
+    if (typeof persist === 'function') {
+      persist(state);
+    }
   }, [cash, positions, trades, history, hourlyHistory, pending, totalFees, totalSlippageCost, persist]);
 
   // Hydrate from a shared snapshot (server-backed) when one is provided.
