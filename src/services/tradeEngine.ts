@@ -716,6 +716,186 @@ export function routeTradeType(
 }
 
 // ═══════════════════════════════════════════════════════
+// LAYER 3.5 — ENTRY TIMING VALIDATOR
+// Determines the optimal limit price and validates that
+// market conditions are suitable for entry right now.
+// Prevents buying at local peaks (RSI overbought, price
+// at BB upper, price far above EMA20).
+// ═══════════════════════════════════════════════════════
+
+export interface EntryTimingResult {
+  /** Whether conditions are right to place an entry order now */
+  shouldEnterNow: boolean;
+  /** Optimal limit price (ATR-based pullback from current price) */
+  entryPrice: number;
+  /** Human-readable reason for the decision */
+  reason: string;
+  /** Computed indicators used for the decision */
+  indicators: {
+    rsi: number;
+    ema20: number;
+    bbUpper: number;
+    bbLower: number;
+    atrPullback: number;
+  };
+}
+
+/**
+ * Compute entry timing indicators from candle data.
+ * Reuses the same math already in evaluateSignals but exposed
+ * as a standalone helper so executeOrder can call it.
+ */
+export function computeEntryIndicators(
+  candles: Candle[],
+  currentPrice: number
+): { rsi: number; ema20: number; bbUpper: number; bbLower: number } {
+  const closes = candles.map(c => c.close);
+
+  // RSI(14)
+  let rsi = 50;
+  if (closes.length >= 15) {
+    let gains = 0;
+    let losses = 0;
+    for (let i = 1; i <= 14; i++) {
+      const diff = closes[i] - closes[i - 1];
+      if (diff >= 0) gains += diff;
+      else losses += Math.abs(diff);
+    }
+    let avgGain = gains / 14;
+    let avgLoss = losses / 14;
+    for (let i = 15; i < closes.length; i++) {
+      const diff = closes[i] - closes[i - 1];
+      const gain = diff > 0 ? diff : 0;
+      const loss = diff < 0 ? Math.abs(diff) : 0;
+      avgGain = (avgGain * 13 + gain) / 14;
+      avgLoss = (avgLoss * 13 + loss) / 14;
+    }
+    rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+
+  // EMA20
+  const ema20Series = calculateEMA(closes, 20);
+  const ema20 = ema20Series[ema20Series.length - 1] || currentPrice;
+
+  // Bollinger Bands (20, 2)
+  const bbPeriod = 20;
+  const recentCloses = closes.slice(-bbPeriod);
+  const bbMean = recentCloses.reduce((a, b) => a + b, 0) / Math.max(1, recentCloses.length);
+  const bbStdDev = Math.sqrt(
+    recentCloses.reduce((sum, val) => sum + Math.pow(val - bbMean, 2), 0) / Math.max(1, recentCloses.length)
+  );
+  const bbUpper = bbMean + 2 * bbStdDev;
+  const bbLower = bbMean - 2 * bbStdDev;
+
+  return { rsi, ema20, bbUpper, bbLower };
+}
+
+/**
+ * Layer 3.5 — Entry Timing Validator
+ *
+ * Validates that this is a good moment to enter a trade (not at a local peak)
+ * and computes an optimal limit price using an ATR-based pullback.
+ *
+ * Rules for BUY / LONG:
+ *   - RSI must be < 72 (not overbought — avoid chasing)
+ *   - Price must be < BB_Upper × 0.999 (not at the top of the band)
+ *   - Price must be < EMA20 + 1.5×ATR  (not excessively extended)
+ *   - Limit price = currentPrice − ATR × pullbackFactor (default 0.35)
+ *
+ * Rules for SELL / SHORT:
+ *   - RSI must be > 28 (not oversold — avoid shorting the bottom)
+ *   - Price must be > BB_Lower × 1.001 (not at the bottom of the band)
+ *   - Price must be > EMA20 − 1.5×ATR  (not excessively compressed)
+ *   - Limit price = currentPrice + ATR × pullbackFactor
+ */
+export function calculateOptimalEntry(
+  currentPrice: number,
+  atr: number,
+  side: 'BUY' | 'LONG' | 'SELL' | 'SHORT',
+  candles: Candle[],
+  /** ATR multiplier for the pullback distance (default 0.35 = gentle limit) */
+  pullbackFactor: number = 0.35
+): EntryTimingResult {
+  const isBuy = side === 'BUY' || side === 'LONG';
+
+  // Derive indicators (safe even with short candle history)
+  const { rsi, ema20, bbUpper, bbLower } = computeEntryIndicators(candles, currentPrice);
+  const atrPullback = atr * pullbackFactor;
+
+  if (isBuy) {
+    // ── Rejection gates for BUY/LONG ──────────────────────────────
+    if (rsi > 72) {
+      return {
+        shouldEnterNow: false,
+        entryPrice: currentPrice,
+        reason: `RSI קנוי-יתר (${rsi.toFixed(1)} > 72) — ממתין לקירור לפני כניסה`,
+        indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+      };
+    }
+    if (currentPrice > bbUpper * 0.999) {
+      return {
+        shouldEnterNow: false,
+        entryPrice: currentPrice,
+        reason: `מחיר מעל/בשיא רצועת Bollinger עליונה ($${bbUpper.toFixed(4)}) — ממתין לנסיגה`,
+        indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+      };
+    }
+    if (currentPrice > ema20 + atr * 1.5) {
+      return {
+        shouldEnterNow: false,
+        entryPrice: currentPrice,
+        reason: `מחיר מורחק יותר מ-1.5×ATR מ-EMA20 ($${ema20.toFixed(4)}) — ממתין לנסיגה לממוצע`,
+        indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+      };
+    }
+
+    // ── Optimal limit price: slight pullback below current price ───
+    const entryPrice = Math.max(0.0001, currentPrice - atrPullback);
+    return {
+      shouldEnterNow: true,
+      entryPrice: Number(entryPrice.toFixed(8)),
+      reason: `Limit BUY @ $${entryPrice.toFixed(4)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR מתחת למחיר הנוכחי) | RSI=${rsi.toFixed(1)}`,
+      indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+    };
+  } else {
+    // ── Rejection gates for SELL/SHORT ────────────────────────────
+    if (rsi < 28) {
+      return {
+        shouldEnterNow: false,
+        entryPrice: currentPrice,
+        reason: `RSI מכירת-יתר (${rsi.toFixed(1)} < 28) — ממתין לעלייה קלה לפני שורט`,
+        indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+      };
+    }
+    if (currentPrice < bbLower * 1.001) {
+      return {
+        shouldEnterNow: false,
+        entryPrice: currentPrice,
+        reason: `מחיר בשפל רצועת Bollinger תחתונה ($${bbLower.toFixed(4)}) — ממתין לעלייה`,
+        indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+      };
+    }
+    if (currentPrice < ema20 - atr * 1.5) {
+      return {
+        shouldEnterNow: false,
+        entryPrice: currentPrice,
+        reason: `מחיר מורחק יותר מ-1.5×ATR מתחת ל-EMA20 ($${ema20.toFixed(4)}) — ממתין לעלייה`,
+        indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+      };
+    }
+
+    // ── Optimal limit price: slight bounce above current price ─────
+    const entryPrice = currentPrice + atrPullback;
+    return {
+      shouldEnterNow: true,
+      entryPrice: Number(entryPrice.toFixed(8)),
+      reason: `Limit SELL/SHORT @ $${entryPrice.toFixed(4)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR מעל המחיר הנוכחי) | RSI=${rsi.toFixed(1)}`,
+      indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+    };
+  }
+}
+
+// ═══════════════════════════════════════════════════════
 // LAYER 3 — RISK MANAGEMENT ENGINE
 // ═══════════════════════════════════════════════════════
 

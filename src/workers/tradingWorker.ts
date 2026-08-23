@@ -18,7 +18,7 @@ import { config as loadEnv } from 'dotenv';
 // Server-side simulation engine (runs the bot 24/7 without a browser).
 import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3.
-import { calculateEMA, calculateATR, calculateADX, calculateSupertrend, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters } from '../services/tradeEngine';
+import { calculateEMA, calculateATR, calculateADX, calculateSupertrend, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters, calculateOptimalEntry } from '../services/tradeEngine';
 import { TARGET_SYMBOLS } from '../shared/targetSymbols';
 import { createKVStore } from './kvStore';
 
@@ -183,7 +183,10 @@ const state = {
   orders: [] as { at: string; dryRun: boolean; symbol: string; side: string; reason?: string; error?: string; result?: unknown }[],
   openedSymbols: new Map<string, { at: number; type: 'SPOT' | 'FUTURES' }>(),
   candleCache: {} as Record<string, { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]>,
-  skippedSymbols: [...unsupportedSymbols] as { symbol: string; reason: string }[]
+  skippedSymbols: [...unsupportedSymbols] as { symbol: string; reason: string }[],
+  // Pending Limit Orders: symbol → { orderId, placedAt, expiresAt }
+  // Auto-cancelled after LIMIT_ORDER_TTL_MS if not filled.
+  pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>()
 };
 
 function json(res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }, status: number, body: unknown): void {
@@ -380,6 +383,7 @@ function serializeState(): string {
     openedSymbols: Object.fromEntries(state.openedSymbols),
     candleCache: state.candleCache,
     skippedSymbols: state.skippedSymbols,
+    pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
     health
   });
 }
@@ -405,6 +409,15 @@ async function hydrate(): Promise<void> {
   }
   state.candleCache = typeof s.candleCache === 'object' && s.candleCache !== null ? s.candleCache as Record<string, { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]> : {};
   state.skippedSymbols = Array.isArray(s.skippedSymbols) ? s.skippedSymbols as { symbol: string; reason: string }[] : [];
+  // Restore pending limit orders (if any survived a restart)
+  const savedPending = s.pendingLimitOrders;
+  if (savedPending && typeof savedPending === 'object') {
+    state.pendingLimitOrders = new Map(
+      Object.entries(savedPending as Record<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>)
+    );
+  } else {
+    state.pendingLimitOrders = new Map();
+  }
   health.lastScanAt = typeof (s.health as Record<string, unknown> | undefined)?.lastScanAt === 'string' ? (s.health as Record<string, unknown> | undefined)?.lastScanAt as string : null;
 }
 
@@ -426,8 +439,11 @@ async function fetchFearGreed(): Promise<number> {
 // SCAN + EXECUTION ENGINE
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function executeOrder(d: { symbol: string; side: string; currentPrice: number; layer0: { atr: number; volatility: string }; layer1: { confidence: number; reason: string }; layer2: { type: string; side: string } }, ctx: { available: number } | null, runningTotals: { totalOpen: number; futuresOpen: number }): Promise<{ opened: boolean; skipped?: string }> {
-  const { symbol, side, currentPrice, layer0, layer1, layer2 } = d;
+// How long a Limit Order is kept alive before auto-cancellation.
+const LIMIT_ORDER_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+async function executeOrder(d: { symbol: string; side: string; currentPrice: number; candles: { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]; layer0: { atr: number; volatility: string }; layer1: { confidence: number; reason: string }; layer2: { type: string; side: string } }, ctx: { available: number } | null, runningTotals: { totalOpen: number; futuresOpen: number }): Promise<{ opened: boolean; skipped?: string }> {
+  const { symbol, side, currentPrice, candles, layer0, layer1, layer2 } = d;
 
   if (layer2.type === 'SPOT' && side === 'SELL') {
     if (dryRun) {
@@ -437,11 +453,34 @@ async function executeOrder(d: { symbol: string; side: string; currentPrice: num
     return { opened: false, skipped: 'live spot SELL disabled until lot-size rounding' };
   }
 
+  // ── Layer 3.5: Entry Timing Validation ─────────────────────────────────────
+  // Validate market conditions and calculate optimal limit entry price.
+  // This prevents entering at local peaks (overbought RSI, BB upper, EMA distance).
+  const entrySide = (side === 'LONG' || side === 'SHORT') ? side : (side === 'BUY' ? 'BUY' : 'SELL') as 'BUY' | 'LONG' | 'SELL' | 'SHORT';
+  const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, entrySide, candles);
+
+  if (!entryTiming.shouldEnterNow) {
+    // Log the rejection to orders list so it's visible in the UI
+    state.orders.unshift({
+      at: new Date().toISOString(),
+      dryRun,
+      symbol,
+      side,
+      reason: `[Layer 3.5] ${entryTiming.reason}`
+    });
+    return { opened: false, skipped: `[Entry Timing] ${entryTiming.reason}` };
+  }
+
+  // Use the ATR-based limit price computed by Layer 3.5
+  const limitEntryPrice = entryTiming.entryPrice;
+
   const budget = Math.max(5, (ctx?.available ?? 0) * (positionPercent / 100));
   if (budget < 5) return { opened: false, skipped: 'יתרה לא מספיקה' };
 
+  // Risk parameters are computed against the limit price (not currentPrice)
+  // so that SL/TP levels are anchored to the actual entry we're targeting.
   const risk = calculateRiskParameters(
-    currentPrice, layer2.type as 'SPOT' | 'FUTURES' | 'HOLD', layer2.side as 'LONG' | 'SHORT' | 'BUY' | 'SELL', layer0.atr, layer0.volatility as 'LOW' | 'NORMAL' | 'HIGH',
+    limitEntryPrice, layer2.type as 'SPOT' | 'FUTURES' | 'HOLD', layer2.side as 'LONG' | 'SHORT' | 'BUY' | 'SELL', layer0.atr, layer0.volatility as 'LOW' | 'NORMAL' | 'HIGH',
     layer1.confidence, ctx?.available ?? 0, [], runningTotals.totalOpen, runningTotals.futuresOpen, 0, positionPercent / 100
   );
   if (!risk) return { opened: false, skipped: 'סירוב פרמטרי סיכון' };
@@ -451,23 +490,61 @@ async function executeOrder(d: { symbol: string; side: string; currentPrice: num
   // the configured budget, even if the risk model would size larger.
   const betSizeUsd = Math.min(risk.betSizeUsd, budget);
   const notional = betSizeUsd * leverage;
-  const qty = notional / currentPrice;
+  const qty = notional / limitEntryPrice;
   if (!(qty > 0) || !isFinite(qty)) return { opened: false, skipped: 'כמות לא חוקית' };
 
+  // ── Build Limit Order (not Market) ──────────────────────────────────────────
+  // GTC = Good Till Cancelled. The order stays live on Bybit until filled or
+  // we explicitly cancel it (see the TTL cleanup in scan()).
+  const formattedLimitPrice = limitEntryPrice.toFixed(8).replace(/\.?0+$/, '').slice(0, 20);
   const order = layer2.type === 'FUTURES'
-    ? { category: 'linear', symbol, side: side === 'LONG' ? 'Buy' : 'Sell', orderType: 'Market', qty: qty.toFixed(4), stopLoss: risk.stopLoss.toString(), takeProfit: risk.takeProfit1?.toString(), tpslMode: 'Partial', tpOrderType: 'Market', slOrderType: 'Market', leverage: String(leverage) }
-    : { category: 'spot', symbol, side: 'Buy', orderType: 'Market', qty: qty.toFixed(4) };
+    ? {
+        category: 'linear', symbol,
+        side: side === 'LONG' ? 'Buy' : 'Sell',
+        orderType: 'Limit',
+        price: formattedLimitPrice,
+        timeInForce: 'GTC',
+        qty: qty.toFixed(4),
+        stopLoss: risk.stopLoss.toString(),
+        takeProfit: risk.takeProfit1?.toString(),
+        tpslMode: 'Partial',
+        tpOrderType: 'Market',
+        slOrderType: 'Market',
+        leverage: String(leverage)
+      }
+    : {
+        category: 'spot', symbol,
+        side: 'Buy',
+        orderType: 'Limit',
+        price: formattedLimitPrice,
+        timeInForce: 'GTC',
+        qty: qty.toFixed(4)
+      };
+
+  const entryReason = `${layer1.reason} | ${entryTiming.reason}`;
 
   if (dryRun) {
-    state.orders.unshift({ at: new Date().toISOString(), dryRun: true, ...order, reason: layer1.reason });
+    state.orders.unshift({ at: new Date().toISOString(), dryRun: true, ...order, reason: entryReason });
     return { opened: true };
   }
   try {
     if (layer2.type === 'FUTURES') {
       await bybitExec('/v5/position/set-leverage', 'POST', { category: 'linear', symbol, buyLeverage: String(leverage), sellLeverage: String(leverage) });
     }
-    const result = await bybitExec('/v5/order/create', 'POST', order);
+    const result = await bybitExec('/v5/order/create', 'POST', order) as { orderId?: string };
+    const orderId = result?.orderId || '';
     state.orders.unshift({ at: new Date().toISOString(), dryRun: false, ...order, result });
+
+    // Track the pending limit order for TTL-based cancellation
+    if (orderId) {
+      const placedAt = Date.now();
+      state.pendingLimitOrders.set(symbol, {
+        orderId,
+        symbol,
+        placedAt,
+        expiresAt: placedAt + LIMIT_ORDER_TTL_MS
+      });
+    }
     return { opened: true };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -486,6 +563,8 @@ interface ScanResult {
   layer1: { action: string; confidence: number; signals: unknown[]; rawConfidence: number; penalties: string[]; reason: string };
   layer2: { type: 'HOLD' | 'SPOT' | 'FUTURES'; side: string; reason: string };
   currentPrice: number;
+  /** Raw candle data passed to executeOrder for Layer 3.5 entry timing */
+  candles: { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[];
   skipped?: string;
 }
 
@@ -502,11 +581,40 @@ async function scan(): Promise<void> {
     const runningTotals = { totalOpen: ctx ? ctx.openFuturesCount : 0, futuresOpen: ctx ? ctx.openFuturesCount : 0 };
     const fearGreed = await fetchFearGreed();
 
+    const now = Date.now();
+
+    // ── TTL: cancel stale Limit Orders that were never filled ──────────────────
+    // If the price didn't reach our limit within LIMIT_ORDER_TTL_MS, cancel the
+    // order on Bybit and remove the re-entry block so the next scan can try again.
+    if (!dryRun) {
+      for (const [sym, pending] of state.pendingLimitOrders) {
+        if (now >= pending.expiresAt) {
+          try {
+            // Attempt to cancel on Bybit; ignore errors (order may already be filled/cancelled)
+            const category = ctx?.openFutures.some(p => p.symbol === sym) ? 'linear' : 'spot';
+            await bybitExec('/v5/order/cancel', 'POST', { category, symbol: sym, orderId: pending.orderId });
+            console.log(`[TTL] Cancelled expired limit order ${pending.orderId} for ${sym}`);
+          } catch {
+            // Silently ignore — order may have already been filled or rejected
+          }
+          state.pendingLimitOrders.delete(sym);
+          // Release the re-entry block so the bot can re-evaluate next scan
+          state.openedSymbols.delete(sym);
+          state.orders.unshift({
+            at: new Date().toISOString(),
+            dryRun: false,
+            symbol: sym,
+            side: 'N/A',
+            reason: `[TTL] פקודת Limit בוטלה אחרי ${LIMIT_ORDER_TTL_MS / 3600000}h ללא מילוי (orderId: ${pending.orderId})`
+          });
+        }
+      }
+    }
+
     // FIX #1: expire re-entry blocks instead of holding them forever.
     // - FUTURES: verified directly against the exchange's open positions.
     // - SPOT: no equivalent "position list" here, so we release the block
     //   after REENTRY_COOLDOWN_MS as a best-effort cooldown.
-    const now = Date.now();
     for (const [sym, meta] of state.openedSymbols) {
       if (meta.type === 'FUTURES') {
         const stillOpen = ctx ? ctx.openFutures.some(p => p.symbol === sym) : true;
@@ -538,11 +646,11 @@ async function scan(): Promise<void> {
           const layer2 = layer1.confidence < minConfidence
             ? { type: 'HOLD' as const, side: 'NONE', reason: `ביטחון נמוך (${layer1.confidence}% < ${minConfidence}%)` }
             : routeTradeType(layer1, layer0, hasExistingFutures, riskLevel as 'low' | 'medium' | 'high');
-          return { symbol, action: layer2.type, side: layer2.side, confidence: layer1.confidence, reason: layer2.reason, layer0, layer1: { ...layer1, reason: layer2.reason }, layer2: { ...layer2, type: layer2.type as 'HOLD' | 'SPOT' | 'FUTURES' }, currentPrice, skipped: undefined };
+          return { symbol, action: layer2.type, side: layer2.side, confidence: layer1.confidence, reason: layer2.reason, layer0, layer1: { ...layer1, reason: layer2.reason }, layer2: { ...layer2, type: layer2.type as 'HOLD' | 'SPOT' | 'FUTURES' }, currentPrice, candles, skipped: undefined };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           state.skippedSymbols.push({ symbol, reason: `שגיאה בסריקה: ${msg}` });
-          return { symbol, action: 'HOLD' as const, side: 'NONE', confidence: 0, reason: `שגיאה: ${msg}`, layer0: {} as ScanResult['layer0'], layer1: { action: 'HOLD', confidence: 0, signals: [], rawConfidence: 0, penalties: [], reason: `שגיאה: ${msg}` }, layer2: { type: 'HOLD', side: 'NONE', reason: `שגיאה: ${msg}` }, currentPrice: 0, skipped: undefined };
+          return { symbol, action: 'HOLD' as const, side: 'NONE', confidence: 0, reason: `שגיאה: ${msg}`, layer0: {} as ScanResult['layer0'], layer1: { action: 'HOLD', confidence: 0, signals: [], rawConfidence: 0, penalties: [], reason: `שגיאה: ${msg}` }, layer2: { type: 'HOLD', side: 'NONE', reason: `שגיאה: ${msg}` }, currentPrice: 0, candles: [], skipped: undefined };
         }
       }));
 
