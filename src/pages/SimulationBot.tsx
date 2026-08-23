@@ -455,6 +455,8 @@ const SimulationBot = () => {
                             entryPrice={pos.entryPrice}
                             currentPrice={livePrice}
                             quantity={pos.quantity}
+                            openedAt={pos.openedAt}
+                            openTimestamp={pos.openTimestamp}
                             stopLoss={pos.stopLoss}
                             takeProfit={pos.takeProfit}
                             takeProfit1={pos.takeProfit1}

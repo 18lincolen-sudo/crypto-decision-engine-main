@@ -8,9 +8,10 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  ReferenceLine
+  ReferenceLine,
+  ReferenceDot
 } from 'recharts';
-import { Target, ShieldAlert, Crosshair, DollarSign, Loader2, Activity } from 'lucide-react';
+import { Target, ShieldAlert, Crosshair, DollarSign, Loader2, Activity, ShoppingBag } from 'lucide-react';
 import { formatFullPrice } from '@/utils/formatPrice';
 import { getAggregatedCandles } from '@/services/cryptoPriceAggregator';
 
@@ -21,6 +22,8 @@ export interface LivePositionChartProps {
   entryPrice: number;
   currentPrice: number;
   quantity?: number;
+  openedAt?: string;
+  openTimestamp?: number;
   stopLoss?: number;
   takeProfit?: number;
   takeProfit1?: number;
@@ -37,6 +40,8 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
   entryPrice,
   currentPrice,
   quantity = 0,
+  openedAt,
+  openTimestamp,
   stopLoss,
   takeProfit,
   takeProfit1,
@@ -100,6 +105,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
     const slice = activeCandles.slice(-24).map((c, i) => ({
       index: i,
       time: new Date(c.timestamp).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+      timestamp: c.timestamp,
       price: c.close,
       high: c.high,
       low: c.low
@@ -116,6 +122,22 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
     return slice;
   }, [activeCandles, currentPrice]);
 
+  // Find nearest candle for entry marker if available
+  const entryTimeKey = React.useMemo(() => {
+    if (!chartData.length || !openTimestamp) return chartData[0]?.time;
+    // Find closest candle in time
+    let closest = chartData[0];
+    let minDiff = Math.abs(closest.timestamp - openTimestamp);
+    for (const pt of chartData) {
+      const diff = Math.abs(pt.timestamp - openTimestamp);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = pt;
+      }
+    }
+    return closest?.time || chartData[0]?.time;
+  }, [chartData, openTimestamp]);
+
   // Distance to targets calculation for fallback / visual bar
   const slDistancePercent = stopLoss && entryPrice > 0
     ? Math.abs((entryPrice - stopLoss) / entryPrice) * 100
@@ -124,17 +146,74 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
     ? Math.abs((effectiveTP - entryPrice) / entryPrice) * 100
     : 0;
 
+  // Custom SVG Buy Tag label on the Reference Line
+  const renderBuyTagLabel = (props: any) => {
+    const { viewBox } = props;
+    const x = viewBox?.x || 10;
+    const y = viewBox?.y || 20;
+    const buyTagText = isLong
+      ? `🟢 נקנה ב-$${formatFullPrice(entryPrice)}${openedAt ? ` (${openedAt})` : ''}`
+      : `🔴 כניסה SHORT ב-$${formatFullPrice(entryPrice)}${openedAt ? ` (${openedAt})` : ''}`;
+    const boxWidth = Math.min(220, buyTagText.length * 6.8 + 24);
+
+    return (
+      <g transform={`translate(${x + 10}, ${y - 12})`}>
+        {/* Glow effect */}
+        <rect
+          x={-1}
+          y={-1}
+          width={boxWidth + 2}
+          height={24}
+          rx={6}
+          fill={isLong ? '#10b981' : '#f43f5e'}
+          opacity={0.3}
+        />
+        {/* Main tag background */}
+        <rect
+          x={0}
+          y={0}
+          width={boxWidth}
+          height={22}
+          rx={5}
+          fill={isLong ? '#064e3b' : '#881337'}
+          stroke={isLong ? '#34d399' : '#fb7185'}
+          strokeWidth={1.5}
+          filter="drop-shadow(0 2px 4px rgba(0,0,0,0.6))"
+        />
+        {/* Buy Tag text */}
+        <text
+          x={boxWidth / 2}
+          y={15}
+          textAnchor="middle"
+          fill="#ffffff"
+          fontSize={10.5}
+          fontWeight="bold"
+          fontFamily="monospace"
+          letterSpacing="0.2px"
+        >
+          {buyTagText}
+        </text>
+      </g>
+    );
+  };
+
   return (
     <Card className="border border-border/40 bg-card/60 backdrop-blur-md overflow-hidden transition-all duration-200 hover:border-primary/40">
       <CardHeader className="p-3 pb-2 border-b border-border/30 bg-muted/20">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-mono font-bold text-base">{symbol}</span>
             <Badge variant="outline" className={type === 'FUTURES' ? 'border-purple-500/50 text-purple-400 bg-purple-500/10' : 'border-cyan-500/50 text-cyan-400 bg-cyan-500/10'}>
               {type} {effectiveLeverage > 1 ? `${effectiveLeverage}x` : ''}
             </Badge>
             <Badge className={isLong ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' : 'bg-rose-500/20 text-rose-400 border-rose-500/40'}>
               {side}
+            </Badge>
+            {/* Purchase confirmation badge */}
+            <Badge className="bg-primary/20 text-primary border border-primary/40 font-mono text-xs flex items-center gap-1">
+              <ShoppingBag className="w-3 h-3" />
+              <span>נקנה: ${formatFullPrice(entryPrice)}</span>
+              {openedAt && <span className="opacity-80">({openedAt})</span>}
             </Badge>
           </div>
 
@@ -157,7 +236,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
         ) : chartData.length > 2 ? (
           <div className="h-44 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 18, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id={`grad-${symbol}`} x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor={isProfitable ? '#10b981' : '#f43f5e'} stopOpacity={0.4} />
@@ -172,22 +251,70 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
                 />
                 <Area type="monotone" dataKey="price" stroke={isProfitable ? '#10b981' : '#f43f5e'} strokeWidth={2} fill={`url(#grad-${symbol})`} />
 
-                {/* Entry Price Reference */}
-                <ReferenceLine y={entryPrice} stroke="#3b82f6" strokeDasharray="3 3" label={{ value: `כניסה: $${formatFullPrice(entryPrice)}`, fill: '#60a5fa', fontSize: 10, position: 'insideTopLeft' }} />
+                {/* Entry / Buy Price Reference with Custom Tag Badge */}
+                <ReferenceLine
+                  y={entryPrice}
+                  stroke={isLong ? '#10b981' : '#f43f5e'}
+                  strokeDasharray="4 4"
+                  strokeWidth={1.5}
+                  label={renderBuyTagLabel}
+                />
+
+                {/* Entry Dot Marker on the chart */}
+                {entryTimeKey && (
+                  <ReferenceDot
+                    x={entryTimeKey}
+                    y={entryPrice}
+                    r={5}
+                    fill={isLong ? '#10b981' : '#f43f5e'}
+                    stroke="#ffffff"
+                    strokeWidth={2}
+                  />
+                )}
 
                 {/* Stop Loss Reference */}
                 {stopLoss && (
-                  <ReferenceLine y={stopLoss} stroke="#ef4444" strokeWidth={1.5} label={{ value: `SL: $${formatFullPrice(stopLoss)}`, fill: '#f87171', fontSize: 10, position: 'insideBottomLeft' }} />
+                  <ReferenceLine
+                    y={stopLoss}
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
+                    label={{
+                      value: `SL: $${formatFullPrice(stopLoss)}`,
+                      fill: '#f87171',
+                      fontSize: 10,
+                      position: 'insideBottomLeft'
+                    }}
+                  />
                 )}
 
                 {/* Take Profit Reference */}
                 {effectiveTP && (
-                  <ReferenceLine y={effectiveTP} stroke="#10b981" strokeWidth={1.5} label={{ value: `TP: $${formatFullPrice(effectiveTP)}`, fill: '#34d399', fontSize: 10, position: 'insideTopRight' }} />
+                  <ReferenceLine
+                    y={effectiveTP}
+                    stroke="#10b981"
+                    strokeWidth={1.5}
+                    label={{
+                      value: `TP: $${formatFullPrice(effectiveTP)}`,
+                      fill: '#34d399',
+                      fontSize: 10,
+                      position: 'insideTopRight'
+                    }}
+                  />
                 )}
 
                 {/* Break-Even Reference */}
                 {breakEvenPrice && (
-                  <ReferenceLine y={breakEvenPrice} stroke="#a855f7" strokeDasharray="2 2" label={{ value: `Break-Even: $${formatFullPrice(breakEvenPrice)}`, fill: '#c084fc', fontSize: 10, position: 'insideBottomRight' }} />
+                  <ReferenceLine
+                    y={breakEvenPrice}
+                    stroke="#a855f7"
+                    strokeDasharray="2 2"
+                    label={{
+                      value: `BE: $${formatFullPrice(breakEvenPrice)}`,
+                      fill: '#c084fc',
+                      fontSize: 10,
+                      position: 'insideBottomRight'
+                    }}
+                  />
                 )}
               </ComposedChart>
             </ResponsiveContainer>
@@ -199,6 +326,9 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
               <div className="flex items-center gap-2">
                 <Activity className="w-4 h-4 text-primary" />
                 <span className="text-muted-foreground">מעקב מחיר שוק לפוזיציה</span>
+                <Badge className="bg-primary/20 text-primary border-primary/30 text-[11px] px-1.5 py-0">
+                  נקנה: ${formatFullPrice(entryPrice)}
+                </Badge>
               </div>
               <span className={isProfitable ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
                 {isProfitable ? 'רווח נוכחי: +' : 'הפסד נוכחי: '}{pnlPercent.toFixed(2)}%
@@ -209,7 +339,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
             <div className="space-y-1.5">
               <div className="flex justify-between text-[11px] font-mono text-muted-foreground">
                 <span className="text-rose-400">SL: ${formatFullPrice(stopLoss || entryPrice * (isLong ? 0.95 : 1.05))}</span>
-                <span className="text-blue-400">כניסה: ${formatFullPrice(entryPrice)}</span>
+                <span className="text-emerald-400 font-bold">🟢 כניסה: ${formatFullPrice(entryPrice)}</span>
                 <span className="text-emerald-400">TP: ${formatFullPrice(effectiveTP || entryPrice * (isLong ? 1.05 : 0.95))}</span>
               </div>
               <div className="relative h-2 w-full bg-muted/40 rounded-full overflow-hidden">
