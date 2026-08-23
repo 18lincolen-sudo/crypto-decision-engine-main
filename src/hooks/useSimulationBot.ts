@@ -230,7 +230,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   const [nextTickAt, setNextTickAt] = useState<number>(0);
   const [activeMarketRegimes, setActiveMarketRegimes] = useState<Record<string, MarketRegimeResult>>({});
   const [candleRefreshAt, setCandleRefreshAt] = useState<number>(0);
-  const [candleSourceHealth, setCandleSourceHealth] = useState<{ bybit: number; coingecko: number; failed: number }>({ bybit: 0, coingecko: 0, failed: 0 });
+  const [candleSourceHealth, setCandleSourceHealth] = useState<{ bybit: number; binance: number; coingecko: number; failed: number }>({ bybit: 0, binance: 0, coingecko: 0, failed: 0 });
 
   const cashRef = useRef(cash);
   const positionsRef = useRef(positions);
@@ -398,6 +398,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         const withCandles = symbols.filter(s => next[s] && next[s].length > 0).length;
         setCandleSourceHealth({
           bybit: Object.values(sources).filter(s => s === 'bybit').length,
+          binance: Object.values(sources).filter(s => s === 'binance').length,
           coingecko: Object.values(sources).filter(s => s === 'coingecko').length,
           failed: symbols.length - withCandles
         });
@@ -423,6 +424,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     setTotalFees(0);
     setTotalSlippageCost(0);
     setLastEvaluation('');
+    setActiveMarketRegimes({});
     try {
       localStorage.removeItem(SIM_BOT_STORAGE_KEY);
       localStorage.removeItem('simulation-bot-state-v1');
@@ -509,8 +511,8 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     const maxTotalPositions = config.maxPositions || 7;
     const maxFutures = 2;
     const futuresCount = openPos.filter(p => p.type === 'FUTURES').length;
-    const isCircuitBreakerDaily = dailyDrawdownPercent >= 8;
-    const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 15;
+    const isCircuitBreakerDaily = dailyDrawdownPercent >= 6;   // 6% daily circuit breaker
+    const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 13; // 13% weekly circuit breaker
 
     const results: SignalEvaluation[] = [];
     const updatedRegimes: Record<string, MarketRegimeResult> = {};
@@ -607,9 +609,9 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       if (!isRunning) {
         status = 'הבוט מושבת';
       } else if (isCircuitBreakerWeekly) {
-        status = 'נעילת מערכת שבועית (הפסד >= 15%) — מושבת עד איפוס ידני';
+        status = 'נעילת מערכת שבועית (הפסד >= 13%) — מושבת עד איפוס ידני';
       } else if (isCircuitBreakerDaily) {
-        status = 'הגנת תיק יומית (הפסד >= 8%) — חסום לכניסות חדשות';
+        status = 'הגנת תיק יומית (הפסד >= 6%) — חסום לכניסות חדשות';
       } else if (isQueued) {
         status = 'פקודה כבר נמצאת בתור ביצוע';
       } else if (layer2.hardGateBlocked) {
@@ -638,7 +640,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       }
 
       const requiredThreshold = layer2.type === 'FUTURES'
-        ? 72
+        ? 70
         : (layer0.volatility === 'HIGH' ? 62 : 58);
 
       results.push({
@@ -665,6 +667,15 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
     return results;
   }, [cryptoData, positions, pending, isRunning, equity, trades, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, liveCandles, fearGreedIndex, config]);
+
+  // Sync activeMarketRegimes state from the latest evaluation pass
+  useEffect(() => {
+    const regimes: Record<string, MarketRegimeResult> = {};
+    for (const ev of evaluations) {
+      if (ev.regime) regimes[ev.symbol] = ev.regime;
+    }
+    setActiveMarketRegimes(regimes);
+  }, [evaluations]);
 
   // ═══════════════════════════════════════════════════════
   // 1. Order Generator & Exit Engine Tick
@@ -770,41 +781,11 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     setNextTickAt(Date.now() + 5000);
   }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, liveCandles]);
 
-  // Heartbeat & Portfolio record
+  // Heartbeat — reset countdown timer when bot starts/stops.
+  // Equity recording is handled exclusively by the background worker below to avoid duplicates.
   useEffect(() => {
     if (!isRunning) return;
     setNextTickAt(Date.now() + 5000);
-
-    const recordEquity = () => {
-      const now = Date.now();
-      const timeStr = new Date(now).toLocaleTimeString('he-IL');
-      const equityNow = cashRef.current + positionsRef.current.reduce((sum, p) => {
-        const live = priceForRef.current(p.symbol) ?? p.currentPrice;
-        if (p.type === 'SPOT') return sum + p.quantity * live;
-        const pnl = p.side === 'LONG'
-          ? (live - p.entryPrice) * p.quantity * p.leverage
-          : (p.entryPrice - live) * p.quantity * p.leverage;
-        return sum + Math.max(0, p.marginUsd + pnl);
-      }, 0);
-
-      setHistory((prev) => {
-        const next = [...prev, { timestamp: timeStr, at: now, portfolio: equityNow }];
-        return next.length > 720 ? next.slice(-720) : next;
-      });
-
-      setHourlyHistory((prev) => {
-        const last = prev[prev.length - 1];
-        const lastHour = last ? Math.floor(last.at / (60 * 60 * 1000)) : -1;
-        const currentHour = Math.floor(now / (60 * 60 * 1000));
-        if (currentHour > lastHour) {
-          const next = [...prev, { timestamp: timeStr, at: now, portfolio: equityNow }];
-          return next.length > 720 ? next.slice(-720) : next;
-        }
-        return prev;
-      });
-    };
-
-    recordEquity();
   }, [isRunning]);
 
   // Use background Web Worker to drive heartbeats even when browser tab is in the background
@@ -815,7 +796,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       setHeartbeat((h) => h + 1);
       setNextTickAt(Date.now() + 5000);
 
-      // Record equity on tick
+      // Record equity on every tick (single source of truth for history)
       const now = Date.now();
       const timeStr = new Date(now).toLocaleTimeString('he-IL');
       const equityNow = cashRef.current + positionsRef.current.reduce((sum, p) => {
@@ -827,9 +808,22 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         return sum + Math.max(0, p.marginUsd + pnl);
       }, 0);
 
+      // Minute-resolution portfolio history (720 points = 1 hour of ticks at 5s intervals)
       setHistory((prev) => {
         const next = [...prev, { timestamp: timeStr, at: now, portfolio: equityNow }];
         return next.length > 720 ? next.slice(-720) : next;
+      });
+
+      // Hourly snapshot history — capped at 168 entries (1 week)
+      setHourlyHistory((prev) => {
+        const last = prev[prev.length - 1];
+        const lastHour = last ? Math.floor(last.at / (60 * 60 * 1000)) : -1;
+        const currentHour = Math.floor(now / (60 * 60 * 1000));
+        if (currentHour > lastHour) {
+          const next = [...prev, { timestamp: timeStr, at: now, portfolio: equityNow }];
+          return next.length > 168 ? next.slice(-168) : next;
+        }
+        return prev;
       });
     }
   });
@@ -1058,8 +1052,9 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
   const displayHistory = useMemo(() => {
     const map = new Map<number, SimPoint>();
+    // 1-minute buckets prevent hourly snapshots and frequent ticks from colliding
     [...hourlyHistory, ...history].forEach((p) => {
-      const key = Math.floor(p.at / 5000);
+      const key = Math.floor(p.at / 60_000);
       map.set(key, p);
     });
     return Array.from(map.values()).sort((a, b) => a.at - b.at);
