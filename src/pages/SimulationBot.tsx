@@ -52,7 +52,7 @@ const SimulationBot = () => {
   const [openLogs, setOpenLogs] = useState<string[]>([]);
   const [countdown, setCountdown] = useState(0);
 
-  // Countdown timer to next tick (4s tick interval)
+  // Countdown timer to next tick (5s tick interval)
   useEffect(() => {
     if (!isRunning) {
       setCountdown(0);
@@ -60,14 +60,14 @@ const SimulationBot = () => {
     }
     const updateCountdown = () => {
       if (!nextTickAt) {
-        setCountdown(4);
+        setCountdown(5);
         return;
       }
       const remaining = Math.max(0, nextTickAt - Date.now());
-      setCountdown(remaining > 0 ? Math.min(4, Math.ceil(remaining / 1000)) : 1);
+      setCountdown(remaining > 0 ? Math.min(5, Math.ceil(remaining / 1000)) : 1);
     };
     updateCountdown();
-    const id = setInterval(updateCountdown, 250);
+    const id = setInterval(updateCountdown, 200);
     return () => clearInterval(id);
   }, [isRunning, nextTickAt]);
 
@@ -103,7 +103,7 @@ const SimulationBot = () => {
               </span>
             </div>
             <div className="text-sm font-mono text-muted-foreground">
-              סף Spot: <span className="text-cyan-400 font-bold">{botConfig.riskLevel === 'high' ? 50 : botConfig.riskLevel === 'low' ? 64 : 60}%</span> | סף Futures: <span className="text-purple-400 font-bold">{botConfig.riskLevel === 'high' ? 56 : botConfig.riskLevel === 'low' ? 72 : 68}%</span>
+              סף Spot: <span className="text-cyan-400 font-bold">60%</span> (גבוהה: <span className="text-yellow-400 font-bold">68%</span>) | סף Futures: <span className="text-purple-400 font-bold">72%</span>
               {lastEvaluation && <span className="ml-3">בדיקה: {lastEvaluation}</span>}
               {isRunning && countdown > 0 && (
                 <span className="ml-3 text-primary font-bold">
@@ -120,7 +120,7 @@ const SimulationBot = () => {
           totalInvestedUsd={positionsValue}
           totalLeveragedExposureUsd={totalLeveragedExposureUsd}
           openPositionsCount={positions.length}
-          maxPositions={botConfig.maxPositions}
+          maxPositions={7}
           openFuturesCount={openFuturesCount}
           maxFutures={2}
           dailyDrawdownPercent={dailyDrawdownPercent}
@@ -387,7 +387,7 @@ const SimulationBot = () => {
             },
             {
               label: 'פוזיציות פתוחות',
-              value: `${positions.length}/5`,
+              value: `${positions.length}/7`,
               hint: `${openFuturesCount} פיוצ'רס • ${positions.length - openFuturesCount} ספוט`,
             },
             {
@@ -409,7 +409,7 @@ const SimulationBot = () => {
             {
               label: 'טיקט הבא',
               value: isRunning ? `${countdown}s` : '—',
-              hint: 'דופק 4 שניות',
+              hint: 'דופק 5 שניות',
             },
           ]}
         />

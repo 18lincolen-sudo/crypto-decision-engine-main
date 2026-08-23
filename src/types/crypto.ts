@@ -199,7 +199,10 @@ export interface IndicatorSignalDetail {
 
 export interface SignalEngineResult {
   action: 'BUY' | 'SELL' | 'HOLD';
-  confidence: number; // 0 to 100
+  buyScore: number;
+  sellScore: number;
+  signalScore: number;
+  confidence: number; // 0 to 100 (alias for signalScore for backward compatibility)
   signals: IndicatorSignalDetail[];
   rawConfidence: number;
   penalties: string[];
@@ -209,6 +212,8 @@ export interface TradeRouterResult {
   type: TradeType;
   side: TradeSide;
   reason: string;
+  hardGateBlocked?: boolean;
+  blockReason?: string;
 }
 
 export interface RiskParametersResult {
@@ -221,6 +226,8 @@ export interface RiskParametersResult {
   positionPercentOfPortfolio: number;
   riskRewardRatio: number;
   kellyFraction: number;
+  maxRiskAmountUsd?: number;
+  stopDistanceUsd?: number;
 }
 
 export interface TradeEngineEvaluation {

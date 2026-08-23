@@ -9,6 +9,7 @@ import {
   evaluateSignals,
   routeTradeType,
   calculateRiskParameters,
+  calculateOptimalEntry,
   evaluateExit,
   calculateBreakEvenPrice,
   calculateATR,
@@ -20,7 +21,7 @@ export interface RiskManagementConfig {
   maxPositionSize: number; // Maximum position size as % of portfolio
   stopLossPercent: number; // Stop loss percentage
   takeProfitPercent: number; // Take profit percentage
-  maxOpenPositions: number; // Maximum number of open positions (Max 5)
+  maxOpenPositions: number; // Maximum number of open positions (Max 7)
   maxFuturesPositions: number; // Maximum Futures positions (Max 2)
   cooldownPeriod: number; // Minutes between trades for same symbol
   trailingStopEnabled: boolean;
@@ -254,18 +255,32 @@ export class AdvancedTradingService {
       // LAYER 1 — SIGNAL ENGINE (with real sentiment)
       const layer1 = evaluateSignals(candles, currentPrice, recommendation.priceChange24h || 0, layer0, this.fearGreedIndex);
 
-      // Check existing futures position
+      // Check existing positions
       const linearPositions = await this.bybitApi.getPositions('linear');
       const hasOpenFutures = linearPositions.some(p => p.symbol === bybitSymbol && parseFloat(p.size) > 0);
+      const hasOpenSpot = this.tradeHistory.some(t => t.symbol === bybitSymbol && t.type === 'SPOT');
 
-      // LAYER 2 — TRADE TYPE ROUTER
-      const layer2 = routeTradeType(layer1, layer0, hasOpenFutures);
+      // LAYER 2 — TRADE TYPE ROUTER & HARD GATES
+      const layer2 = routeTradeType(layer1, layer0, {
+        hasExistingFutures: hasOpenFutures,
+        hasExistingSpot: hasOpenSpot,
+        isDailyBlocked: this.dailyPnL <= -8,
+        isWeeklyLocked: this.weeklyDrawdown >= 15
+      });
 
       if (layer2.type === 'HOLD') {
+        this.addAlert('info', `אות ל-${bybitSymbol} לא אושר לביצוע: ${layer2.reason}`);
         return false;
       }
 
-      // LAYER 3 — RISK & SIZING
+      // LAYER 3.5 — ENTRY TIMING VALIDATOR (REAL GATE)
+      const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, layer2.side as any, candles);
+      if (!entryTiming.shouldEnterNow) {
+        this.addAlert('info', `עסקה ב-${bybitSymbol} נדחתה עקב תזמון כניסה: ${entryTiming.reason}`);
+        return false;
+      }
+
+      // LAYER 3 — RISK & SIZING (0.75% Portfolio Risk Budget)
       const openFuturesCount = linearPositions.filter(p => parseFloat(p.size) > 0).length;
       const totalOpenPositions = linearPositions.length;
       const totalLeveragedExposureUsd = linearPositions.reduce((s, p) => s + parseFloat(p.positionValue || '0'), 0);
@@ -276,7 +291,7 @@ export class AdvancedTradingService {
         layer2.side,
         layer0.atr,
         layer0.volatility,
-        layer1.confidence,
+        layer1.signalScore,
         totalBalance,
         this.tradeHistory.map(t => ({ pnl: t.pnl })),
         totalOpenPositions,
@@ -285,7 +300,7 @@ export class AdvancedTradingService {
       );
 
       if (!riskParams || riskParams.betSizeUsd < 10) {
-        this.addAlert('info', `עסקה ב-${bybitSymbol} נדחתה עקב מגבלת חשיפה או תקציב`);
+        this.addAlert('info', `עסקה ב-${bybitSymbol} נדחתה עקב מגבלת חשיפה או תקציב סיכון`);
         return false;
       }
 

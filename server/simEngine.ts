@@ -6,6 +6,7 @@ import {
   evaluateSignals,
   routeTradeType,
   calculateRiskParameters,
+  calculateOptimalEntry,
   evaluateExit,
   calculateTradingFee,
   simulateSlippage,
@@ -366,12 +367,15 @@ export function createSimEngine() {
   function evaluate(config: SimBotConfig, fearGreed: number) {
     const openPos = positions;
     const queued = pending;
-    const maxTotalPositions = config.maxPositions || 5;
+    const maxTotalPositions = config.maxPositions || 7;
     const maxFutures = 2;
     const futuresCount = openPos.filter((p) => p.type === 'FUTURES').length;
     const eq = equity();
     const { dailyDrawdownPercent, weeklyDrawdownPercent } = drawdowns(eq);
     const totalLeveragedExposureUsd = leveragedExposure();
+
+    const isCircuitBreakerDaily = dailyDrawdownPercent >= 8;
+    const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 15;
 
     const results: SimEvaluationResult[] = [];
     for (const crypto of cryptoData) {
@@ -385,7 +389,13 @@ export function createSimEngine() {
       const layer0 = detectMarketRegime(candles, currentPrice);
       const layer1 = evaluateSignals(candles, currentPrice, priceChange24h, layer0, fearGreed, config.riskLevel);
       const hasExistingFutures = openPos.some((p) => p.symbol === symbol && p.type === 'FUTURES');
-      const layer2 = routeTradeType(layer1, layer0, hasExistingFutures, config.riskLevel);
+      const hasExistingSpot = openPos.some((p) => p.symbol === symbol && p.type === 'SPOT');
+      const layer2 = routeTradeType(layer1, layer0, {
+        hasExistingFutures,
+        hasExistingSpot,
+        isDailyBlocked: isCircuitBreakerDaily,
+        isWeeklyLocked: isCircuitBreakerWeekly
+      });
 
       const isHeld = openPos.some((p) => p.symbol === symbol);
       const isQueued = queued.some((o) => o.symbol === symbol);
@@ -396,28 +406,33 @@ export function createSimEngine() {
         layer2.side,
         layer0.atr,
         layer0.volatility,
-        layer1.confidence,
+        layer1.signalScore,
         eq,
         trades.map((t) => ({ pnl: t.pnl || 0 })),
         openPos.length,
         futuresCount,
-        totalLeveragedExposureUsd,
-        typeof config.positionPercent === 'number' ? config.positionPercent / 100 : 0.03
+        totalLeveragedExposureUsd
       );
+
+      const entryTiming = (layer2.type !== 'HOLD' && !layer2.hardGateBlocked)
+        ? calculateOptimalEntry(currentPrice, layer0.atr, layer2.side as any, candles)
+        : null;
 
       let status = '';
       let willExecute = false;
 
-      if (weeklyDrawdownPercent >= 15) status = 'הגנת תיק שבועית (הפסד >= 15%) — מושבת';
-      else if (dailyDrawdownPercent >= 8) status = 'הגנת תיק יומית (הפסד >= 8%) — חסום';
+      if (isCircuitBreakerWeekly) status = 'נעילת מערכת שבועית (הפסד >= 15%) — מושבת';
+      else if (isCircuitBreakerDaily) status = 'הגנת תיק יומית (הפסד >= 8%) — חסום';
       else if (isQueued) status = 'פקודה כבר נמצאת בתור ביצוע';
-      else if (layer2.type === 'HOLD') status = `ביטחון נמוך מהסף (${layer1.confidence}%)`;
+      else if (layer2.hardGateBlocked) status = layer2.reason;
+      else if (layer2.type === 'HOLD') status = layer2.reason;
       else if (openPos.length >= maxTotalPositions) status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`;
       else if (layer2.type === 'FUTURES' && futuresCount >= maxFutures) status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`;
       else if (layer2.type === 'FUTURES' && hasExistingFutures) status = 'קיימת כבר פוזיציית Futures פתוחה';
       else if (layer2.type === 'SPOT' && layer2.side === 'SELL' && !isHeld) status = 'מכירת Spot חשופה אסורה — אין החזקה בתיק';
       else if (layer2.type === 'SPOT' && isHeld && layer2.side === 'BUY') status = 'כבר מוחזק בתיק (Spot)';
       else if (layer0.atr <= 0 || currentPrice <= 0) status = 'אין נתוני מחיר/תנודתיות (ATR) — לא ניתן לחשב סיכון';
+      else if (!entryTiming || !entryTiming.shouldEnterNow) status = `ממתין לתזמון כניסה: ${entryTiming?.reason || 'תנאי כניסה לא הבשילו'}`;
       else if (!riskParams) status = 'חריגת חשיפה ממונפת (מקס\' 20% מהתיק)';
       else if (riskParams.betSizeUsd < 5) status = 'הון נמוך מדי לפתיחת פוזיציה (מינימום $5)';
       else {

@@ -12,6 +12,7 @@ import {
   evaluateExit,
   calculateTradingFee,
   simulateSlippage,
+  calculateOptimalEntry,
   calculateATR,
   Candle
 } from '../services/tradeEngine';
@@ -497,7 +498,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
     const openPos = positions;
     const queuedOrders = pending;
-    const maxTotalPositions = config.maxPositions || 5;
+    const maxTotalPositions = config.maxPositions || 7;
     const maxFutures = 2;
     const futuresCount = openPos.filter(p => p.type === 'FUTURES').length;
     const isCircuitBreakerDaily = dailyDrawdownPercent >= 8;
@@ -520,19 +521,25 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
       const layer1 = evaluateSignals(candles, currentPrice, priceChange24h, layer0, fearGreedIndex || 50, config.riskLevel);
       const hasExistingFutures = openPos.some(p => p.symbol === symbol && p.type === 'FUTURES');
-      const layer2 = routeTradeType(layer1, layer0, hasExistingFutures, config.riskLevel);
-
+      const hasExistingSpot = openPos.some(p => p.symbol === symbol && p.type === 'SPOT');
       const isHeld = openPos.some(p => p.symbol === symbol);
       const isQueued = queuedOrders.some(o => o.symbol === symbol);
 
-      // Layer 3 Risk & Sizing calculation
+      const layer2 = routeTradeType(layer1, layer0, {
+        hasExistingFutures,
+        hasExistingSpot,
+        isDailyBlocked: isCircuitBreakerDaily,
+        isWeeklyLocked: isCircuitBreakerWeekly
+      });
+
+      // Layer 3 Risk & Sizing calculation (Risk-First 0.75% portfolio risk)
       const riskParams = calculateRiskParameters(
         currentPrice,
         layer2.type,
         layer2.side,
         layer0.atr,
         layer0.volatility,
-        layer1.confidence,
+        layer1.signalScore,
         equity,
         trades.map(t => ({ pnl: t.pnl || 0 })),
         openPos.length,
@@ -540,19 +547,24 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         totalLeveragedExposureUsd
       );
 
+      // Layer 3.5 Entry Timing Validator (Real Gate)
+      const entryTiming = (layer2.type !== 'HOLD' && !layer2.hardGateBlocked)
+        ? calculateOptimalEntry(currentPrice, layer0.atr, layer2.side as any, candles)
+        : null;
+
       // Build Decision Factors for UI transparency
       const factors: DecisionFactor[] = [
         {
           label: 'משטר שוק (ADX 14)',
           value: `${layer0.regime} (${layer0.adx})`,
           impact: layer0.regime === 'TRENDING' ? 'positive' : layer0.regime === 'RANGING' ? 'neutral' : 'negative',
-          note: layer0.regime === 'TRENDING' ? 'שוק מגמתי מובהק — תומך ב-Futures' : layer0.regime === 'RANGING' ? 'שוק ציר/דשדוש — רק Spot' : 'משטר מעבר — חסום'
+          note: layer0.regime === 'TRENDING' ? 'שוק מגמתי מובהק — תומך ב-Futures' : layer0.regime === 'RANGING' ? 'שוק דשדוש — רק Spot' : 'משטר מעבר — חסום הרמטית'
         },
         {
           label: 'תנודתיות (ATR%)',
           value: `${layer0.volatility} (${layer0.atrPercent}%)`,
           impact: layer0.volatility === 'HIGH' ? 'negative' : 'positive',
-          note: layer0.volatility === 'HIGH' ? 'תנודתיות גבוהה מעל 5% — אסור לפתוח Futures' : 'תנודתיות מתאימה'
+          note: layer0.volatility === 'HIGH' ? 'תנודתיות גבוהה מעל 5% — Futures חסום הרמטית' : 'תנודתיות מתאימה'
         },
         {
           label: 'Supertrend (10, 3)',
@@ -574,10 +586,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
       for (const p of layer1.penalties) {
         factors.push({
-          label: 'התאמת ביטחון',
+          label: 'הערת משטר/סנטימנט',
           value: p,
           impact: 'negative',
-          note: 'ענישת פילטר'
+          note: 'פילטר בטיחות'
         });
       }
 
@@ -587,14 +599,15 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       if (!isRunning) {
         status = 'הבוט מושבת';
       } else if (isCircuitBreakerWeekly) {
-        status = 'הגנת תיק שבועית (הפסד >= 15%) — מושבת';
+        status = 'נעילת מערכת שבועית (הפסד >= 15%) — מושבת עד איפוס ידני';
       } else if (isCircuitBreakerDaily) {
-        status = 'הגנת תיק יומית (הפסד >= 8%) — חסום';
+        status = 'הגנת תיק יומית (הפסד >= 8%) — חסום לכניסות חדשות';
       } else if (isQueued) {
         status = 'פקודה כבר נמצאת בתור ביצוע';
-
+      } else if (layer2.hardGateBlocked) {
+        status = layer2.reason;
       } else if (layer2.type === 'HOLD') {
-        status = `ביטחון נמוך מהסף (${layer1.confidence}%)`;
+        status = layer2.reason;
       } else if (openPos.length >= maxTotalPositions) {
         status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`;
       } else if (layer2.type === 'FUTURES' && futuresCount >= maxFutures) {
@@ -605,30 +618,34 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         status = 'מכירת Spot חשופה אסורה — אין החזקה בתיק';
       } else if (layer2.type === 'SPOT' && isHeld && layer2.side === 'BUY') {
         status = 'כבר מוחזק בתיק (Spot)';
+      } else if (!entryTiming || !entryTiming.shouldEnterNow) {
+        status = `ממתין לתזמון כניסה אופטימלי: ${entryTiming?.reason || 'תנאי כניסה לא הבשילו'}`;
       } else if (!riskParams || riskParams.betSizeUsd < 5) {
-        status = 'חריגת חשיפה ממונפת (מקס\' 20%) או מזומן לא מספיק';
+        status = 'חריגת חשיפה ממונפת (מקס\' 20%) או תקציב סיכון מתחת ל-$5';
       } else {
         willExecute = true;
         status = layer2.type === 'FUTURES'
-          ? `מבצע Futures ${riskParams.leverage}x ${layer2.side} ($${riskParams.betSizeUsd})`
-          : `מבצע Spot ${layer2.side} ($${riskParams.betSizeUsd})`;
+          ? `מבצע Futures ${riskParams.leverage}x ${layer2.side} ($${riskParams.betSizeUsd}) | Limit @ $${entryTiming.entryPrice}`
+          : `מבצע Spot ${layer2.side} ($${riskParams.betSizeUsd}) | Limit @ $${entryTiming.entryPrice}`;
       }
+
+      const requiredThreshold = layer2.type === 'FUTURES'
+        ? 72
+        : (layer0.volatility === 'HIGH' ? 68 : 60);
 
       results.push({
         symbol,
         action: layer1.action === 'BUY' ? 'buy' : layer1.action === 'SELL' ? 'sell' : 'hold',
         tradeType: layer2.type,
         tradeSide: layer2.side,
-        confidence: layer1.confidence,
+        confidence: layer1.signalScore,
         price: currentPrice,
         priceChange24h,
         reasoning: layer2.reason,
         status,
         willExecute,
         factors,
-        confidenceGap: layer1.confidence - (layer2.type === 'FUTURES'
-          ? (config.riskLevel === 'high' ? 42 : config.riskLevel === 'low' ? 56 : 46)
-          : (config.riskLevel === 'high' ? 35 : config.riskLevel === 'low' ? 48 : 40)),
+        confidenceGap: layer1.signalScore - requiredThreshold,
         regime: layer0,
         leverage: riskParams?.leverage,
         stopLoss: riskParams?.stopLoss,
@@ -712,8 +729,8 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
         : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-      const budget = ev.tradeType === 'FUTURES'
-        ? (cashRef.current * 0.05) // margin budget
+      const budget = (ev.stopLoss && ev.tradeType === 'FUTURES')
+        ? Math.min(cashRef.current * 0.05, 500)
         : Math.min(cashRef.current * 0.15, 1000);
 
       if (budget < 5) continue;
@@ -785,10 +802,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   // Use background Web Worker to drive heartbeats even when browser tab is in the background
   useBackgroundWorker({
     enabled: isRunning,
-    intervalMs: 4000,
+    intervalMs: 5000,
     onTick: () => {
       setHeartbeat((h) => h + 1);
-      setNextTickAt(Date.now() + 4000);
+      setNextTickAt(Date.now() + 5000);
 
       // Record equity on tick
       const now = Date.now();
