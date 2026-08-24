@@ -32,19 +32,19 @@ const ENV_API_URL = (import.meta.env.VITE_TRADING_API_URL as string | undefined)
 
 const RealTradingBot = () => {
   const [config, setConfig] = useState<WorkerConfig>(() => {
+    // BOT_ADMIN_TOKEN is intentionally memory-only (see security warning below) —
+    // only the non-sensitive baseUrl is ever persisted across page loads.
     let baseUrl = ENV_API_URL;
-    let adminToken = '';
     try {
       const saved = localStorage.getItem('workerConfig');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.baseUrl) baseUrl = parsed.baseUrl;
-        if (parsed.adminToken) adminToken = parsed.adminToken;
       }
-      const token = localStorage.getItem('workerAdminToken');
-      if (token && !adminToken) adminToken = token;
     } catch { /* ignore */ }
-    return { baseUrl, adminToken };
+    // Purge any admin token persisted by an older build of this page.
+    try { localStorage.removeItem('workerAdminToken'); } catch { /* ignore */ }
+    return { baseUrl, adminToken: '' };
   });
   const [botState, setBotState] = useState<WorkerBotState | null>(null);
   const [account, setAccount] = useState<WorkerAccountSummary | null>(null);
@@ -99,16 +99,22 @@ const RealTradingBot = () => {
       return;
     }
     try {
-      localStorage.setItem('workerConfig', JSON.stringify({ baseUrl: config.baseUrl, adminToken: config.adminToken }));
-      if (config.adminToken) {
-        localStorage.setItem('workerAdminToken', config.adminToken);
-      }
+      // Only baseUrl is persisted — adminToken stays memory-only, matching the
+      // security warning shown on this page.
+      localStorage.setItem('workerConfig', JSON.stringify({ baseUrl: config.baseUrl }));
     } catch { /* ignore */ }
     void refresh();
   };
 
   const startBot = async () => {
     if (!online) return;
+    const isLive = botState?.dryRun === false;
+    const confirmed = window.confirm(
+      isLive
+        ? 'הפעלת הבוט תחל מסחר אוטומטי אמיתי בכסף אמיתי (DRY-RUN כבוי). להמשיך?'
+        : 'הפעלת הבוט תחל סריקה ומסחר אוטומטי (מצב DRY-RUN — ללא ביצוע אמיתי). להמשיך?'
+    );
+    if (!confirmed) return;
     setBusy(true);
     try {
       const state = await clientRef.current.start();
@@ -148,7 +154,7 @@ const RealTradingBot = () => {
         <div className="text-center mb-4 sm:mb-8">
           <h1 className="text-2xl sm:text-4xl font-bold mb-2 sm:mb-4 text-primary font-mono flex items-center justify-center gap-2 sm:gap-3 flex-wrap">
             <Bot className="w-6 h-6 sm:w-10 sm:h-10" />
-            <span className="break-words">🚀 בוט מסחר אמיתי - Bybit (Worker)</span>
+            <span className="break-words">בוט מסחר אמיתי - Bybit (Worker)</span>
           </h1>
           <p className="text-sm sm:text-xl text-muted-foreground mb-4 sm:mb-6 font-mono px-2 leading-relaxed">
             ביצוע דרך שרת Worker מקומי מוגן • המפתח הסודי נשאר בשרת בלבד • ללא חתימה בדפדפן
