@@ -152,8 +152,8 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
     const x = viewBox?.x || 10;
     const y = viewBox?.y || 20;
     const buyTagText = isLong
-      ? `🟢 נקנה ב-$${formatFullPrice(entryPrice)}${openedAt ? ` (${openedAt})` : ''}`
-      : `🔴 כניסה SHORT ב-$${formatFullPrice(entryPrice)}${openedAt ? ` (${openedAt})` : ''}`;
+      ? `כניסה $${formatFullPrice(entryPrice)}${openedAt ? ` · ${openedAt}` : ''}`
+      : `כניסה SHORT $${formatFullPrice(entryPrice)}${openedAt ? ` · ${openedAt}` : ''}`;
     const boxWidth = Math.min(220, buyTagText.length * 6.8 + 24);
 
     return (
@@ -229,14 +229,14 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
 
       <CardContent className="p-3 pt-2">
         {loadingCandles && chartData.length === 0 ? (
-          <div className="h-44 w-full flex flex-col items-center justify-center gap-2 bg-black/20 rounded-md border border-border/20">
+          <div className="h-28 w-full flex flex-col items-center justify-center gap-2 bg-black/20 rounded-md border border-border/20">
             <Loader2 className="w-5 h-5 text-primary animate-spin" />
             <span className="text-xs font-mono text-muted-foreground">טוען גרף מחיר חי...</span>
           </div>
         ) : chartData.length > 2 ? (
-          <div className="h-44 w-full">
+          <div className="h-28 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={{ top: 18, right: 10, left: -20, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 16, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id={`grad-${symbol}`} x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor={isProfitable ? '#10b981' : '#f43f5e'} stopOpacity={0.4} />
@@ -321,7 +321,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
           </div>
         ) : (
           /* Fallback visual position tracker if candles could not be loaded */
-          <div className="h-44 w-full flex flex-col justify-center px-4 py-3 bg-card/40 rounded-lg border border-border/30 space-y-4">
+          <div className="h-28 w-full flex flex-col justify-center px-4 py-2 bg-card/40 rounded-lg border border-border/30 space-y-3">
             <div className="flex items-center justify-between text-xs font-mono">
               <div className="flex items-center gap-2">
                 <Activity className="w-4 h-4 text-primary" />
@@ -339,7 +339,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
             <div className="space-y-1.5">
               <div className="flex justify-between text-[11px] font-mono text-muted-foreground">
                 <span className="text-rose-400">SL: ${formatFullPrice(stopLoss || entryPrice * (isLong ? 0.95 : 1.05))}</span>
-                <span className="text-emerald-400 font-bold">🟢 כניסה: ${formatFullPrice(entryPrice)}</span>
+                <span className="text-emerald-400 font-bold">כניסה: ${formatFullPrice(entryPrice)}</span>
                 <span className="text-emerald-400">TP: ${formatFullPrice(effectiveTP || entryPrice * (isLong ? 1.05 : 0.95))}</span>
               </div>
               <div className="relative h-2 w-full bg-muted/40 rounded-full overflow-hidden">
