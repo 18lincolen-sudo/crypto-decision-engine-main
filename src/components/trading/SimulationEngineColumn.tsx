@@ -54,6 +54,8 @@ export default function SimulationEngineColumn({
 }: EngineColumnProps) {
   const [openLogs, setOpenLogs] = useState<string[]>([]);
   const [countdown, setCountdown] = useState(0);
+  const [evalFilter, setEvalFilter] = useState('');
+  const [evalSort, setEvalSort] = useState<'default' | 'confidence-desc' | 'confidence-asc'>('confidence-desc');
 
   useEffect(() => {
     if (!isRunning) {
@@ -75,6 +77,16 @@ export default function SimulationEngineColumn({
 
   const lastTrade = trades[0];
   const openFuturesCount = positions.filter((p) => p.type === 'FUTURES').length;
+
+  const displayedEvaluations = (() => {
+    const q = evalFilter.trim().toUpperCase();
+    const filtered = q ? evaluations.filter((rec) => rec.symbol.toUpperCase().includes(q)) : evaluations;
+    if (evalSort === 'default') return filtered;
+    const sorted = [...filtered].sort((a, b) =>
+      evalSort === 'confidence-desc' ? b.confidence - a.confidence : a.confidence - b.confidence
+    );
+    return sorted;
+  })();
 
   return (
     <div className="space-y-4">
@@ -120,7 +132,29 @@ export default function SimulationEngineColumn({
               <div className="text-muted-foreground text-sm text-center py-4 font-mono">אין נתוני מטבעות זמינים</div>
             ) : (
               <div className="space-y-3 font-mono">
-                {evaluations.map((rec) => {
+                <div className="flex items-center gap-2 flex-wrap sticky top-0 bg-background/95 backdrop-blur z-10 pb-2">
+                  <Input
+                    value={evalFilter}
+                    onChange={(e) => setEvalFilter(e.target.value)}
+                    placeholder="סינון לפי סימבול..."
+                    className="h-8 text-xs font-mono flex-1 min-w-[140px]"
+                  />
+                  <Select value={evalSort} onValueChange={(v) => setEvalSort(v as typeof evalSort)}>
+                    <SelectTrigger className="h-8 text-xs font-mono w-[160px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="confidence-desc">ביטחון: גבוה → נמוך</SelectItem>
+                      <SelectItem value="confidence-asc">ביטחון: נמוך → גבוה</SelectItem>
+                      <SelectItem value="default">סדר סריקה (ברירת מחדל)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-muted-foreground shrink-0">{displayedEvaluations.length}/{evaluations.length}</span>
+                </div>
+                {!displayedEvaluations.length && (
+                  <div className="text-muted-foreground text-sm text-center py-4">אין תוצאות תואמות לסינון</div>
+                )}
+                {displayedEvaluations.map((rec) => {
                   const isFutures = rec.tradeType === 'FUTURES';
                   const isSpot = rec.tradeType === 'SPOT';
                   const open = openLogs.includes(rec.symbol);

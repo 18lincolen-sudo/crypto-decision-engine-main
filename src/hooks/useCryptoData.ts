@@ -7,7 +7,7 @@ import { fearGreedApi } from '../services/fearGreedApi';
 import { calculateTechnicalIndicators } from '../utils/technicalAnalysis';
 import { generateSmartRecommendation } from '../utils/smartRecommendationEngine';
 import { CryptoData, CryptoRecommendation, HistoricalPrice } from '../types/crypto';
-import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { getActiveSymbols } from '../services/liveUniverse';
 
 /** Map a Bybit USDT symbol to our internal symbol name (e.g. BTCUSDT → btc) */
 const fromBybitSymbol = (s: string) => s.replace(/USDT$/i, '').toLowerCase();
@@ -17,7 +17,7 @@ export function useCryptoData() {
     queryKey: ['crypto-prices'],
     queryFn: async (): Promise<CryptoData[]> => {
       console.log('🚀 Fetching live crypto prices...');
-      const targetSet = new Set(TARGET_SYMBOLS);
+      const targetSet = new Set(await getActiveSymbols());
 
       // ── 1) Bybit spot tickers (fastest, real-time) ──────────────────────────
       try {

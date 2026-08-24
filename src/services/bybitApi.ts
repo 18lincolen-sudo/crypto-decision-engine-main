@@ -55,7 +55,8 @@ async function bybitApiCall<T>(endpoint: string, params: Record<string, string> 
 // because they never produce trading signals.
 // Wrapped tokens (WBTC) excluded — same price action as underlying.
 
-import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { getActiveSymbols } from './liveUniverse';
+import { TARGET_SYMBOLS as STATIC_TARGET_SYMBOLS } from '../shared/targetSymbols';
 
 // Internal symbol to Bybit symbol mapping (auto-generated from TARGET_SYMBOLS)
 function toInternalSymbol(bybitSymbol: string): string {
@@ -77,8 +78,9 @@ export const bybitApi = {
       return [];
     }
     
-    // Filter for our target symbols (up to 100)
-    const targetSet = new Set(TARGET_SYMBOLS);
+    // Filter for our target symbols — the live liquidity-based universe when
+    // the trading worker is reachable, else the static fallback list.
+    const targetSet = new Set(await getActiveSymbols());
     const filteredTickers = data.list.filter(ticker =>
       targetSet.has(ticker.symbol)
     );
@@ -124,6 +126,6 @@ export const bybitApi = {
   },
 
   getTargetSymbols(): string[] {
-    return [...TARGET_SYMBOLS];
+    return [...STATIC_TARGET_SYMBOLS];
   }
 };

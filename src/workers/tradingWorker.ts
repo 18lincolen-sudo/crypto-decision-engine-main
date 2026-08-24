@@ -181,15 +181,58 @@ const EXEC_BASE = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit
 const klineInterval = process.env.BOT_KLINE_INTERVAL || '240';
 
 // `BOT_SYMBOLS=100` (or unset) means the full supported universe; any other
-// value is treated as a comma-separated list of explicit symbols.
+// value is treated as an explicit comma-separated list, which pins the
+// universe and disables the automatic liquidity-based refresh below.
 const botSymbolsRaw = process.env.BOT_SYMBOLS?.trim();
-const rawSymbols = (botSymbolsRaw && botSymbolsRaw !== '100'
-  ? botSymbolsRaw.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+const isExplicitSymbolOverride = Boolean(botSymbolsRaw && botSymbolsRaw !== '100');
+const rawSymbols = (isExplicitSymbolOverride
+  ? botSymbolsRaw!.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
   : TARGET_SYMBOLS
 );
 // Unsupported symbols are recorded with a visible reason — never silently treated as a successful scan.
 const unsupportedSymbols = rawSymbols.filter(s => !s.endsWith('USDT')).map(s => ({ symbol: s, reason: 'לא מסתיים ב-USDT (לא נתמך)' }));
-const symbols = rawSymbols.filter(s => s.endsWith('USDT'));
+// Mutable: refreshUniverseIfStale() swaps this to a fresh liquidity-based list
+// (see below). Read at call time everywhere it's used, never captured once.
+let symbols = rawSymbols.filter(s => s.endsWith('USDT'));
+
+// ── Liquidity-based universe refresh ────────────────────────────────────────
+// TARGET_SYMBOLS (the static list) can drift: a coin's Bybit liquidity shifts
+// week to week. computeLiquidUniverse() re-derives the tradeable list live from
+// Bybit turnover and is persisted to Firestore (via configStore) so the SAME
+// refreshed universe survives restarts/redeploys without waiting on a fresh
+// full recompute every boot. Skipped entirely when the operator pinned an
+// explicit BOT_SYMBOLS list.
+const UNIVERSE_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const UNIVERSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // re-check staleness daily
+
+// Exposed read-only via GET /api/public/universe so the simulation frontend
+// (no admin token) can mirror the SAME live universe as the real bot.
+let universeGeneratedAt = 0;
+
+async function refreshUniverseIfStale(): Promise<void> {
+  if (isExplicitSymbolOverride) return;
+  try {
+    const cached = await configStore.get('targetSymbols');
+    const parsed = cached ? (JSON.parse(cached) as { symbols: string[]; generatedAt: number }) : null;
+    const isStale = !parsed || Date.now() - parsed.generatedAt > UNIVERSE_STALE_MS;
+
+    if (parsed && parsed.symbols.length) {
+      symbols = parsed.symbols;
+      universeGeneratedAt = parsed.generatedAt;
+    }
+    if (!isStale) return;
+
+    const { computeLiquidUniverse } = await import('../services/symbolUniverse');
+    const fresh = await computeLiquidUniverse();
+    if (!fresh.symbols.length) return; // never adopt an empty result
+    symbols = fresh.symbols;
+    universeGeneratedAt = fresh.generatedAt;
+    await configStore.set('targetSymbols', JSON.stringify({ symbols: fresh.symbols, generatedAt: fresh.generatedAt }));
+    console.log(`[universe] refreshed: ${fresh.liquid.length} liquid + ${fresh.close.length} close = ${fresh.symbols.length} symbols`);
+  } catch (e) {
+    console.warn('[universe] refresh failed, keeping current symbol list:', e instanceof Error ? e.message : String(e));
+  }
+}
 
 // ── Source health counters ─────────────────────────────────────────────────
 const health = { publicRequests: 0, publicFailures: 0, execRequests: 0, execFailures: 0, lastScanAt: null as string | null };
@@ -343,6 +386,7 @@ async function getAccountContext(): Promise<{ available: number; total: number; 
 
 const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
+const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
 // ── Shared Simulation Bot state ───────────────────────────────────────────────
 // The simulation engine runs in exactly ONE browser (the "leader"); it pushes its
@@ -845,7 +889,14 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 429, { error: 'Too many requests' });
   }
 
-  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !authorized(req)) {
+  // Public (no admin token) — lets the simulation frontend mirror the SAME
+  // liquidity-based universe the live bot trades, instead of a static list
+  // that can drift out of date.
+  if (req.method === 'GET' && url.pathname === '/api/public/universe') {
+    return json(res, 200, { symbols, generatedAt: universeGeneratedAt });
+  }
+
+  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
     return json(res, 401, { error: 'Unauthorized' });
   }
 
@@ -955,6 +1006,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
+  await refreshUniverseIfStale();
   await hydrate();
   await hydrateMarketCache();
   await hydrateSim();
@@ -962,6 +1014,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
   if (state.running) void scan();
   setInterval(() => void scan(), intervalMs);
+  setInterval(() => void refreshUniverseIfStale(), UNIVERSE_CHECK_INTERVAL_MS);
 
   // FIX #3: periodically drop rate-limit buckets for IPs with no recent hits,
   // so long-lived uptime on Render doesn't leak memory per distinct visitor IP.
