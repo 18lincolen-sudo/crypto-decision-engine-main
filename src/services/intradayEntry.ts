@@ -15,6 +15,7 @@ import { Candle, calculateATR, calculateEMA } from './tradeEngine';
 import {
   macd as macdOf,
   rsiSeries,
+  bollinger,
   sessionVwap,
   volumeStats,
   marketStructure,
@@ -32,6 +33,8 @@ export interface Entry5M {
   confirmed: boolean;
   entryScore: number;
   strong: boolean;
+  /** Number of entry confirmations met (for funnel telemetry) */
+  confirmationCount: number;
   entryPrice: number;
   orderType: 'LIMIT' | 'MARKET';
   triggerLevel: number | null;
@@ -85,6 +88,7 @@ function emptyEntry(atr5: number, price: number, blockers: string[]): Entry5M {
       bodyRatio: 0
     },
     components: { triggerQuality: 0, momentum: 0, volume: 0, vwapAlignment: 0, candle: 0, chasePenalty: 0 },
+    confirmationCount: 0,
     reasons: [],
     blockers
   };
@@ -97,6 +101,7 @@ export function confirmEntry5M(
 ): Entry5M {
   const closes = m5.map((c) => c.close);
   const price = last(closes) ?? 0;
+  const bb = bollinger(closes, 20, 2);
   const { atr } = calculateATR(m5, 14);
   const atr5 = atr > 0 ? atr : price * 0.001;
 
@@ -121,6 +126,8 @@ export function confirmEntry5M(
   const reasons: string[] = [];
   const blockers: string[] = [];
   const subConditions: boolean[] = [];
+  /** Per-setup core + confirmation gate (replaces the old hard-AND of all sub-conditions) */
+  let gatesPassed = false;
 
   let trigger: EntryTrigger = 'NONE';
   let triggerLevel: number | null = null;
@@ -153,13 +160,19 @@ export function confirmEntry5M(
       ? lastCandle.low >= level - 0.55 * atr5 && lastCandle.close > level
       : lastCandle.high <= level + 0.55 * atr5 && lastCandle.close < level;
 
+    // CORE: pullback into the zone + support/resistance held. CONFIRMATIONS: momentum
+    // recovery and/or a confirmation candle. No single one is mandatory.
+    const core = dipped && held;
+    const confirmations: string[] = [];
+    if (momentumTurn) confirmations.push('מומנטום 5M מתהפך (Momentum recovery)');
+    if (confirmationCandle) confirmations.push('נר אישור (Confirmation candle)');
     subConditions.push(dipped, held, momentumTurn, confirmationCandle);
     if (!dipped) blockers.push('לא זוהתה נסיגה לאזור הכניסה ב-5M');
     if (!held) blockers.push('התמיכה/התנגדות לא החזיקה בנר הסגור האחרון');
-    if (!momentumTurn) blockers.push('המומנטום ב-5M עוד לא התהפך לכיוון העסקה');
-    if (!confirmationCandle) blockers.push('אין נר אישור (Confirmation candle)');
-    if (dipped && held) reasons.push('נסיגה שהחזיקה את אזור התמיכה');
+    if (core && confirmations.length === 0) blockers.push('אין אישור מומנטום/נר אישור לכניסה (Confirmation)');
+    if (dipped && held) reasons.push('נסיגה שהחזיקה את אזור התמיכה (Pullback + Hold)');
     if (momentumTurn) reasons.push('מומנטום 5M מתהפך לכיוון העסקה');
+    gatesPassed = core && confirmations.length >= params.entryConfirmationsMin;
 
     stopReference = isLong
       ? Math.min(Math.min(...recent.map((c) => c.low)), level)
@@ -196,12 +209,19 @@ export function confirmEntry5M(
       (isLong ? q.bullish : q.bearish) &&
       vol.relative >= 0.9;
 
+    // CORE: breakout (closed candle) + volume expansion. CONFIRMATION: retest held
+    // OR continuation. No forced confirmation candle.
+    const core = brokeOut && volumeExpansion;
+    const confirmations: string[] = [];
+    if (retestHeld) confirmations.push('Retest של רמת הפריצה החזיק (Retest/hold)');
+    if (continuation) confirmations.push('המשכיות מעל רמת הפריצה (Continuation)');
     subConditions.push(brokeOut, volumeExpansion, retestHeld || continuation, confirmationCandle || retestHeld);
     if (!brokeOut) blockers.push('אין פריצה בנר 5M סגור מעל/מתחת לרמה');
     if (!volumeExpansion) blockers.push(`פריצה ללא התרחבות נפח (${breakoutVolume.toFixed(2)}x) — NO TRADE (§18)`);
-    if (!retestHeld && !continuation) blockers.push('אין Retest שהחזיק ואין המשכיות מאושרת');
+    if (core && confirmations.length === 0) blockers.push('אין Retest שהחזיק ואין המשכיות מאושרת');
     if (retestHeld) reasons.push('Retest של רמת הפריצה החזיק');
     if (continuation) reasons.push('המשכיות מעל רמת הפריצה');
+    gatesPassed = core && confirmations.length >= params.entryConfirmationsMin;
 
     const sinceBreak = brokeOut ? window.slice(breakoutIdx) : m5.slice(-4);
     stopReference = isLong
@@ -212,7 +232,12 @@ export function confirmEntry5M(
     const recent = m5.slice(-6);
     const rsiWindow = rsiAll.slice(-5);
     const extremeRsi = isLong ? Math.min(...rsiWindow) : Math.max(...rsiWindow);
-    const oversold = isLong ? extremeRsi <= 32 : extremeRsi >= 68;
+    // "Extreme" is flexible: RSI extreme OR Bollinger %B extreme OR VWAP deviation
+    // extreme. We do NOT force a single RSI reading for every trade type.
+    const rsiExtreme = isLong ? extremeRsi <= 32 : extremeRsi >= 68;
+    const bbExtreme = isLong ? bb.percentB <= 0.12 : bb.percentB >= 0.88;
+    const vwapExtreme = Math.abs(vwap.deviationAtr) >= params.meanReversionVwapAtr;
+    const oversold = rsiExtreme || bbExtreme || vwapExtreme;
 
     const rejection = m5.slice(-3).some((_, i, arr) => {
       const idx = m5.length - arr.length + i;
@@ -224,13 +249,21 @@ export function confirmEntry5M(
 
     triggerLevel = isLong ? Math.min(...recent.map((c) => c.low)) : Math.max(...recent.map((c) => c.high));
 
+    // CORE: extreme + rejection + momentum recovery. CONFIRMATION: a confirmation candle.
+    const core = oversold && rejection && recovery;
+    const confirmations: string[] = [];
+    if (rsiExtreme) confirmations.push('RSI קיצוני');
+    else if (bbExtreme) confirmations.push('Bollinger קיצוני');
+    else if (vwapExtreme) confirmations.push('VWAP קיצוני');
+    if (confirmationCandle) confirmations.push('נר אישור (Confirmation candle)');
     subConditions.push(oversold, rejection, recovery, confirmationCandle);
-    if (!oversold) blockers.push('5M לא הגיע לקיצון (Oversold/Overbought)');
+    if (!oversold) blockers.push('5M לא הגיע לקיצון (RSI/Bollinger/VWAP)');
     if (!rejection) blockers.push('אין דחייה (Rejection) מהקיצון');
     if (!recovery) blockers.push('אין התאוששות מאושרת');
     if (oversold && rejection) reasons.push('קיצון + דחייה זוהו ב-5M');
 
     stopReference = isLong ? Math.min(...recent.map((c) => c.low)) : Math.max(...recent.map((c) => c.high));
+    gatesPassed = core;
   }
 
   // ── Scoring (§24) ──────────────────────────────────────────────────────────
@@ -253,8 +286,7 @@ export function confirmEntry5M(
   const volumeTooLow = triggerVolumeRelative < params.minEntryRelativeVolume || vol.drying;
   if (volumeTooLow) blockers.push(`נפח 5M נמוך מדי (${triggerVolumeRelative.toFixed(2)}x) — NO TRADE (§27)`);
 
-  const allSubConditionsMet = subConditions.every(Boolean);
-  const confirmed = allSubConditionsMet && entryScore >= params.entryScoreMin && !volumeTooLow && chasePenalty === 0;
+  const confirmed = gatesPassed && entryScore >= params.entryScoreMin && !volumeTooLow && chasePenalty === 0;
 
   if (!confirmed && entryScore < params.entryScoreMin) {
     blockers.push(`EntryScore ${entryScore} מתחת לסף ${params.entryScoreMin}`);
@@ -276,6 +308,7 @@ export function confirmEntry5M(
     confirmed,
     entryScore,
     strong: entryScore >= params.entryScoreStrong,
+    confirmationCount: subConditions.filter(Boolean).length,
     entryPrice,
     orderType: 'LIMIT',
     triggerLevel,

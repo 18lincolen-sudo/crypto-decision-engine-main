@@ -174,7 +174,10 @@ export async function fetchBybitKlines(
 ): Promise<Candle[]> {
   const spec = TIMEFRAME_SPECS[tf];
   const bybitSymbol = toBybitSymbol(symbol);
-  const category = opts.category || 'spot';
+  // The bot trades USDT perpetuals (futures), so LINEAR is the correct primary
+  // market. SPOT is wrong here: many perpetuals are not listed on Bybit SPOT
+  // (rc10001 "Not supported symbols"), which forced a 100% Binance fallback.
+  const category = opts.category || 'linear';
   const collected: Candle[] = [];
   let end = opts.endTime;
   let guard = 0;
@@ -266,14 +269,34 @@ export async function fetchBinanceKlines(
   return collected;
 }
 
+export interface FetchTimeframeResult {
+  candles: Candle[];
+  source: CandleSource;
+  reason?: string;
+  issues: string[];
+  /** Raw candles received from the source before trimming/validation */
+  received: number;
+  /** Candles remaining after dropping the forming candle */
+  closed: number;
+  /** Candles remaining after validation (dedupe/sort/OHLC checks) */
+  valid: number;
+  /** Minimum candles required for this timeframe */
+  required: number;
+}
+
 /**
  * Bybit → Binance → fail. Returns validated, closed candles for one timeframe.
+ *
+ * The returned `reason` distinguishes a genuine INSUFFICIENT_CANDLES (data was
+ * received but below the minimum) from an API failure (API_ERROR / RATE_LIMIT /
+ * SYMBOL_NOT_FOUND). This prevents an outage from being mislabeled as "not
+ * enough data" (§7) and lets the telemetry show the true cause (§8).
  */
 export async function fetchTimeframe(
   symbol: string,
   tf: TimeframeKey,
-  opts: { limit?: number; now?: number; endTime?: number; requireClosed?: boolean } = {}
-): Promise<{ candles: Candle[]; source: CandleSource; reason?: string; issues: string[] }> {
+  opts: { limit?: number; now?: number; endTime?: number; requireClosed?: boolean; category?: 'spot' | 'linear' } = {}
+): Promise<FetchTimeframeResult> {
   const spec = TIMEFRAME_SPECS[tf];
   const limit = opts.limit ?? spec.targetCandles;
   const now = opts.now ?? Date.now();
@@ -282,25 +305,66 @@ export async function fetchTimeframe(
 
   const attempt = async (source: 'bybit' | 'binance'): Promise<Candle[]> =>
     source === 'bybit'
-      ? fetchBybitKlines(symbol, tf, limit, { endTime: opts.endTime })
+      ? fetchBybitKlines(symbol, tf, limit, { endTime: opts.endTime, category: opts.category })
       : fetchBinanceKlines(symbol, tf, limit, { endTime: opts.endTime });
+
+  let insufficientReason: string | null = null;
+  const errors: string[] = [];
+  let receivedCount = 0;
+  let closedCount = 0;
 
   for (const source of ['bybit', 'binance'] as const) {
     try {
       const raw = await attempt(source);
       const closed = requireClosed ? dropFormingCandle(raw, spec.ms, now) : raw;
+      receivedCount = raw.length;
+      closedCount = closed.length;
       const validation = validateCandles(closed, spec.minCandles);
       issues.push(...validation.issues.map((i) => `${source}:${i}`));
       if (validation.ok) {
-        return { candles: validation.cleaned, source, issues };
+        return {
+          candles: validation.cleaned,
+          source,
+          issues,
+          received: receivedCount,
+          closed: closedCount,
+          valid: validation.cleaned.length,
+          required: spec.minCandles
+        };
       }
-      issues.push(`${source}:${validation.reason}`);
+      // Source returned data but below the minimum — record the real cause.
+      insufficientReason = `${source}:${validation.reason}`;
+      issues.push(insufficientReason);
     } catch (e) {
-      issues.push(`${source}:${e instanceof Error ? e.message : String(e)}`);
+      const msg = `${source}:${e instanceof Error ? e.message : String(e)}`;
+      errors.push(msg);
+      issues.push(msg);
     }
   }
 
-  return { candles: [], source: 'none', reason: 'INSUFFICIENT_CANDLES', issues };
+  // Classify the real failure so it is never masked as INSUFFICIENT_CANDLES.
+  // Scan ALL error messages (not just the last source) so a Bybit "symbol not
+  // found" is not overwritten by a Binance HTTP error.
+  let reason: string = 'INSUFFICIENT_CANDLES';
+  if (insufficientReason) {
+    reason = 'INSUFFICIENT_CANDLES';
+  } else {
+    const allErrors = errors.join(' | ');
+    if (/429|too many requests|rate limit|ratelimit/i.test(allErrors)) reason = 'RATE_LIMIT';
+    else if (/10001|not supported symbols|invalid symbol|symbol not/i.test(allErrors)) reason = 'SYMBOL_NOT_FOUND';
+    else reason = 'API_ERROR';
+  }
+
+  return {
+    candles: [],
+    source: 'none',
+    reason,
+    issues,
+    received: receivedCount,
+    closed: closedCount,
+    valid: 0,
+    required: spec.minCandles
+  };
 }
 
 // ── Liquidity / spread snapshot (§26/§27) ────────────────────────────────────
@@ -343,7 +407,9 @@ export async function getLiquiditySnapshots(symbols: string[], now = Date.now())
   const map = new Map<string, LiquiditySnapshot>();
 
   try {
-    const res = await timedFetch(`${BYBIT_PUBLIC_BASE}/v5/market/tickers?category=spot`);
+    // Use LINEAR (futures) tickers to match the market the bot actually trades
+    // and the klines category above; the response schema is identical to spot.
+    const res = await timedFetch(`${BYBIT_PUBLIC_BASE}/v5/market/tickers?category=linear`);
     if (res.ok) {
       const data = (await res.json()) as { retCode: number; result?: { list?: BybitTickerRow[] } };
       if (data.retCode === 0 && data.result?.list) {
@@ -417,6 +483,10 @@ export interface MultiTimeframeSnapshot {
   m5: Candle[];
   counts: Record<TimeframeKey, number>;
   sources: Record<TimeframeKey, CandleSource>;
+  /** Per-timeframe failure reason (INSUFFICIENT_CANDLES / API_ERROR / RATE_LIMIT / SYMBOL_NOT_FOUND) */
+  reasons: Record<TimeframeKey, string>;
+  /** Per-timeframe telemetry: raw received / after forming-candle drop / after validation / required minimum */
+  telemetry: Record<TimeframeKey, { received: number; closed: number; valid: number; required: number; source: CandleSource }>;
   /** Close timestamp of the newest closed 5M candle */
   lastClosedAt: number;
   liquidity: LiquiditySnapshot | null;
@@ -460,6 +530,8 @@ export interface GetMarketDataOptions {
   log?: boolean;
   /** Override candle budgets (backtest / tests) */
   limits?: Partial<Record<TimeframeKey, number>>;
+  /** Bybit market category for klines. Defaults to 'linear' (the bot trades USDT perpetuals). */
+  category?: 'spot' | 'linear';
 }
 
 /**
@@ -473,6 +545,12 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
   const issues: string[] = [];
   const candles: Record<TimeframeKey, Candle[]> = { '1h': [], '15m': [], '5m': [] };
   const sources: Record<TimeframeKey, CandleSource> = { '1h': 'none', '15m': 'none', '5m': 'none' };
+  const reasons: Record<TimeframeKey, string> = { '1h': '', '15m': '', '5m': '' };
+  const telemetry: Record<TimeframeKey, { received: number; closed: number; valid: number; required: number; source: CandleSource }> = {
+    '1h': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['1h'].minCandles, source: 'none' },
+    '15m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['15m'].minCandles, source: 'none' },
+    '5m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['5m'].minCandles, source: 'none' }
+  };
 
   for (const tf of TIMEFRAME_ORDER) {
     const spec = TIMEFRAME_SPECS[tf];
@@ -487,11 +565,13 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
     if (cacheFresh && cached) {
       candles[tf] = cached.candles;
       sources[tf] = 'cache';
+      telemetry[tf] = { received: cached.candles.length, closed: cached.candles.length, valid: cached.candles.length, required: spec.minCandles, source: 'cache' };
       continue;
     }
 
-    const result = await fetchTimeframe(symbol, tf, { now, limit: opts.limits?.[tf] });
+    const result = await fetchTimeframe(symbol, tf, { now, limit: opts.limits?.[tf], category: opts.category });
     issues.push(...result.issues);
+    telemetry[tf] = { received: result.received, closed: result.closed, valid: result.valid, required: result.required, source: result.source };
     if (result.candles.length) {
       candles[tf] = result.candles;
       sources[tf] = result.source;
@@ -505,7 +585,10 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
       // Transient outage: keep last-known-good rather than dropping the asset.
       candles[tf] = cached.candles;
       sources[tf] = 'cache';
+      telemetry[tf].source = 'cache';
       issues.push(`${tf}:served-stale-cache`);
+    } else if (result.reason) {
+      reasons[tf] = result.reason;
     }
   }
 
@@ -527,7 +610,11 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
     if (status === 'READY') {
       console.log(`[market-data] symbol=${bybitSymbol} 1h=${counts['1h']} 15m=${counts['15m']} 5m=${counts['5m']} src=${sources['5m']}`);
     } else {
-      console.log(`[market-data] symbol=${bybitSymbol} status=SKIP reason=INSUFFICIENT_CANDLES 1h=${counts['1h']} 15m=${counts['15m']} 5m=${counts['5m']}`);
+      const detail = TIMEFRAME_ORDER.map((tf) => {
+        const t = telemetry[tf];
+        return `${tf}: received=${t.received} valid=${t.valid} required=${t.required} source=${t.source}${reasons[tf] ? ` (${reasons[tf]})` : ''}`;
+      }).join(' ');
+      console.log(`[market-data] symbol=${bybitSymbol} status=NOT_READY reason=${reason}\n  ${detail}`);
     }
   }
 
@@ -541,6 +628,8 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
     m5: candles['5m'],
     counts,
     sources,
+    reasons,
+    telemetry,
     lastClosedAt: lastM5 ? lastM5.timestamp + TIMEFRAME_SPECS['5m'].ms : 0,
     liquidity,
     livePrice: liquidity?.lastPrice || lastM5?.close || 0,
@@ -592,6 +681,12 @@ export async function getUniverseMarketData(
             m5: [],
             counts: { '1h': 0, '15m': 0, '5m': 0 } as Record<TimeframeKey, number>,
             sources: { '1h': 'none', '15m': 'none', '5m': 'none' } as Record<TimeframeKey, CandleSource>,
+            reasons: { '1h': 'DATA_ERROR', '15m': 'DATA_ERROR', '5m': 'DATA_ERROR' } as Record<TimeframeKey, string>,
+            telemetry: {
+              '1h': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['1h'].minCandles, source: 'none' },
+              '15m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['15m'].minCandles, source: 'none' },
+              '5m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['5m'].minCandles, source: 'none' }
+            },
             lastClosedAt: 0,
             liquidity: null,
             livePrice: 0,

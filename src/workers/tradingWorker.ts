@@ -131,6 +131,25 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
 // Send critical error alerts to Telegram. Requires TELEGRAM_BOT_TOKEN and
 // TELEGRAM_CHAT_ID environment variables. No-op if not configured.
 let lastAlertedError: string | null = null;
+
+// Send order execution notification to Telegram. Requires TELEGRAM_BOT_TOKEN and
+// TELEGRAM_CHAT_ID environment variables. No-op if not configured.
+async function sendTelegramOrder(message: string): Promise<void> {
+  if (!telegramBotToken || !telegramChatId) return;
+  try {
+    await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: telegramChatId,
+        text: message,
+        parse_mode: 'HTML'
+      })
+    });
+  } catch {
+    // Never throw from notification — a Telegram failure must not crash the worker.
+  }
+}
 async function sendTelegramAlert(message: string): Promise<void> {
   if (!telegramBotToken || !telegramChatId) return;
   if (lastAlertedError === message) return;
@@ -652,6 +671,16 @@ async function scan(): Promise<void> {
           if (d.action === 'FUTURES') runningTotals.futuresOpen++;
           state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action as 'SPOT' | 'FUTURES' });
           scannedThisRun.add(d.symbol);
+          // Send Telegram order notification
+          const risk = d.decision.risk;
+          const sideLabel = d.decision.direction === 'LONG' ? 'LONG' : 'SHORT';
+          const entryPrice = d.decision.entry?.entryPrice ?? risk?.stopLoss;
+          const tp1 = risk?.takeProfit1;
+          const sl = risk?.stopLoss;
+          const leverage = risk?.leverage;
+          const qty = risk?.quantity;
+          const msg = `📈 אות מסחר\n\nסמל: ${d.decision.symbol}\nכיוון: ${sideLabel}\nמהלך: ${d.decision.summary}\nמחיר כניסה: ${entryPrice.toFixed(4)}\nTP1: ${tp1?.toFixed(4) ?? 'N/A'}\nSL: ${sl?.toFixed(4) ?? 'N/A'}\nמינוף: ${leverage ?? '1x'}\nכמות: ${qty ?? 0}\nזמן: ${new Date().toLocaleTimeString()}`;
+          await sendTelegramOrder(msg);
         } else if (res.skipped) {
           d.skipped = res.skipped;
         }

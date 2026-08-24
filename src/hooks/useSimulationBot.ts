@@ -16,6 +16,7 @@ import {
   DecisionFactor
 } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
+import { toBaseAsset } from '../services/assetUniverse';
 
 export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 
@@ -280,7 +281,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         const { snapshots, stats } = await getUniverseMarketData(symbols, { log: true });
         if (cancelled) return;
         const next: Record<string, MultiTimeframeSnapshot> = {};
-        for (const [sym, snap] of snapshots) next[sym] = snap;
+        // Key by base asset (e.g. BTC) to match cryptoData.symbol, which is the
+        // base asset returned by useCryptoData (fromBybitSymbol). The raw snapshot
+        // key is the Bybit pair (BTCUSDT), so a direct lookup would always miss.
+        for (const [sym, snap] of snapshots) next[toBaseAsset(sym)] = snap;
         setMtfData(next);
         setCandleSourceHealth({ bybit: 0, binance: 0, coingecko: 0, failed: stats.assetsSkipped });
         setCandleRefreshAt(Date.now());

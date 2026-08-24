@@ -51,6 +51,8 @@ export interface Setup15M {
   scores: SetupScores;
   setupScore: number;
   strong: boolean;
+  /** Number of setup candidates that passed their core + confirmation gates */
+  candidateCount: number;
   /** Mean reversion never auto-routes to futures (§19) */
   spotOnly: boolean;
   levels: {
@@ -89,6 +91,10 @@ export interface Setup15M {
 interface Candidate {
   setupType: Exclude<SetupType, 'NONE'>;
   direction: Exclude<Direction, 'NONE'>;
+  /** Hard prerequisites that must ALL hold (e.g. 1H+15M alignment, breakout+volume) */
+  corePassed: boolean;
+  /** Soft confirmations (VWAP / Structure / Momentum / Volume / EMA) — need N of them */
+  confirmations: string[];
   gatesPassed: boolean;
   blockers: string[];
   reasons: string[];
@@ -130,41 +136,54 @@ export function detectSetup15M(
   const candidates: Candidate[] = [];
   const globalBlockers: string[] = [];
 
-  if (regime.regime === 'TRANSITIONAL') {
-    globalBlockers.push('משטר 1H מעברי (TRANSITIONAL) — לא נפתחים Setups חדשים (§8/§34)');
-  }
+  // TRANSITIONAL no longer hard-blocks setup generation: it blocks new FUTURES
+  // and only allows an especially-quality SPOT setup (enforced in the engine).
+  // Here we still generate RANGE-style setups (Breakout / Mean Reversion) so the
+  // engine can route them to SPOT when the quality bar is met.
 
   // ── 1. TREND PULLBACK (§17) ───────────────────────────────────────────────
+  // CORE: 1H regime + 15M EMA aligned in the same direction.
+  // CONFIRMATIONS (need >= setupConfirmationsMin of 5): VWAP / Structure /
+  // Momentum / Volume / EMA-proximity. No single indicator is mandatory.
   if (regime.trending) {
     const direction: Exclude<Direction, 'NONE'> = regime.regime === 'BULL_TREND' ? 'LONG' : 'SHORT';
     const s = direction === 'LONG' ? 1 : -1;
     const blockers: string[] = [];
     const reasons: string[] = [];
+    const confirmations: string[] = [];
 
-    const emaAligned15 = (ema20 - ema50) * s > 0;
+    const emaAligned15 = (ema20 - ema50) * s > 0; // CORE
     if (!emaAligned15) blockers.push('מגמת 15M לא מיושרת עם 1H (EMA20/50)');
 
     const retrace = retracementAtr(m15, direction, atr, 10);
     const distFromEmaAtr = Math.abs(price - ema20) / Math.max(atr, 1e-9);
     const pulledBack = retrace >= 0.4 || distFromEmaAtr <= 0.7;
-    if (!pulledBack) blockers.push('אין נסיגה — המחיר מורחק מהממוצע ללא Pullback (אין רדיפה אחרי מהלך)');
-    if (distFromEmaAtr > params.pullbackMaxAtrFromEma) {
-      blockers.push(`מרחק ${distFromEmaAtr.toFixed(2)} ATR מ-EMA20 מעל המותר (${params.pullbackMaxAtrFromEma})`);
-    }
+    if (pulledBack) confirmations.push('נסיגה / קירבה ל-EMA20 (Pullback)');
 
     const structureOk = direction === 'LONG' ? structure.bias !== 'BEARISH' : structure.bias !== 'BULLISH';
-    if (!structureOk) blockers.push('מבנה שוק 15M נגד כיוון העסקה');
+    if (structureOk) confirmations.push('מבנה שוק 15M תומך (Structure)');
 
     const vwapOk = direction === 'LONG' ? vwap.deviationPercent > -0.35 : vwap.deviationPercent < 0.35;
-    if (!vwapOk) blockers.push(`מחיר בצד הלא נכון של VWAP (${vwap.deviationPercent.toFixed(2)}%)`);
+    if (vwapOk) confirmations.push('צד נכון של VWAP');
+
+    const momentumTurn = macd.histogramSlope * s > 0 || (rsi - rsiPrev) * s > 0;
+    if (momentumTurn) confirmations.push('היפוך מומנטום (Momentum)');
+
+    const volumeOk = !volume.drying && volume.relative >= 0.7;
+    if (volumeOk) confirmations.push('נפח תומך (Volume)');
 
     if (emaAligned15) reasons.push('מגמת 15M מיושרת עם משטר 1H');
     if (pulledBack) reasons.push(`נסיגה של ${retrace.toFixed(2)} ATR מהשיא/שפל המקומי`);
 
+    const gatesPassed = emaAligned15 && confirmations.length >= params.setupConfirmationsMin;
+    if (!gatesPassed && emaAligned15) blockers.push(`אישורים חסרים: ${confirmations.length}/${params.setupConfirmationsMin} (VWAP/Structure/Momentum/Volume/EMA)`);
+
     candidates.push({
       setupType: 'TREND_PULLBACK',
       direction,
-      gatesPassed: blockers.length === 0,
+      corePassed: emaAligned15,
+      confirmations,
+      gatesPassed,
       blockers,
       reasons,
       breakoutLevel: null,
@@ -173,81 +192,118 @@ export function detectSetup15M(
   }
 
   // ── 2. BREAKOUT RETEST (§18) ──────────────────────────────────────────────
-  if (regime.trending) {
-    const direction: Exclude<Direction, 'NONE'> = regime.regime === 'BULL_TREND' ? 'LONG' : 'SHORT';
-    const s = direction === 'LONG' ? 1 : -1;
-    const blockers: string[] = [];
-    const reasons: string[] = [];
-    const level = direction === 'LONG' ? priorCompression.boxHigh : priorCompression.boxLow;
-
-    if (!priorCompression.isCompressed) {
-      blockers.push(`אין דחיסה/קונסולידציה לפני הפריצה (bandwidth pct ${priorCompression.bandwidthPercentile})`);
+  // CORE: compression → breakout (closed candle) + volume confirmation.
+  // CONFIRMATION: retest/hold OR continuation (need at least one).
+  {
+    const upLevel = priorCompression.boxHigh;
+    const downLevel = priorCompression.boxLow;
+    let direction: Exclude<Direction, 'NONE'> | null = null;
+    let level = 0;
+    if (regime.trending) {
+      direction = regime.regime === 'BULL_TREND' ? 'LONG' : 'SHORT';
+      level = direction === 'LONG' ? upLevel : downLevel;
+    } else if (regime.regime === 'TRANSITIONAL') {
+      // Derive direction from the breakout itself (no 1H trend bias available).
+      if (price > upLevel) { direction = 'LONG'; level = upLevel; }
+      else if (price < downLevel) { direction = 'SHORT'; level = downLevel; }
     }
-    const brokeOut = level > 0 && (price - level) * s > 0;
-    if (!brokeOut) blockers.push('אין פריצה של גבול הקונסולידציה בנר סגור');
+    if (direction) {
+      const s = direction === 'LONG' ? 1 : -1;
+      const blockers: string[] = [];
+      const reasons: string[] = [];
+      const confirmations: string[] = [];
 
-    const volumeOk = volume.relative >= params.breakoutVolumeMin || volume.shortTermRelative >= params.breakoutVolumeMin;
-    if (!volumeOk) blockers.push(`נפח פריצה חלש (${volume.relative.toFixed(2)}x < ${params.breakoutVolumeMin}x) — פריצה ללא נפח נפסלת (§18)`);
+      const brokeOut = level > 0 && (price - level) * s > 0; // CORE
+      const volumeOk = volume.relative >= params.breakoutVolumeMin || volume.shortTermRelative >= params.breakoutVolumeMin; // CORE
+      if (!brokeOut) blockers.push('אין פריצה של גבול הקונסולידציה בנר סגור');
+      if (!volumeOk) blockers.push(`נפח פריצה חלש (${volume.relative.toFixed(2)}x < ${params.breakoutVolumeMin}x) — פריצה ללא נפח (§18)`);
 
-    const vwapOk = direction === 'LONG' ? price >= vwap.vwap : price <= vwap.vwap;
-    if (!vwapOk) blockers.push('פריצה בצד הלא נכון של VWAP — נפסל (§18)');
+      const window = m15.slice(-10);
+      let breakoutIdx = -1;
+      for (let i = 0; i < window.length; i++) {
+        if ((window[i].close - level) * s > 0) { breakoutIdx = i; break; }
+      }
+      const afterBreak = breakoutIdx >= 0 ? window.slice(breakoutIdx + 1) : [];
+      const retestHeld = afterBreak.some((c) =>
+        direction === 'LONG' ? c.low <= level + 0.4 * atr && c.close > level : c.high >= level - 0.4 * atr && c.close < level
+      );
+      const continuation =
+        afterBreak.length >= 1 && (direction === 'LONG' ? price > level : price < level) && volume.relative >= 0.9;
+      if (retestHeld) confirmations.push('Retest החזיק (Retest/hold)');
+      if (continuation) confirmations.push('המשכיות מעל/מתחת לרמה (Continuation)');
 
-    const beyondAtr = level > 0 ? ((price - level) * s) / Math.max(atr, 1e-9) : 99;
-    if (beyondAtr > 2.0) blockers.push(`המחיר כבר ${beyondAtr.toFixed(2)} ATR מעל רמת הפריצה — רדיפה, ממתינים ל-Retest`);
+      const vwapOk = direction === 'LONG' ? price >= vwap.vwap : price <= vwap.vwap;
+      if (vwapOk) confirmations.push('צד נכון של VWAP');
+      const structureOk = direction === 'LONG' ? structure.bias !== 'BEARISH' : structure.bias !== 'BULLISH';
+      if (structureOk) confirmations.push('מבנה תומך (Structure)');
 
-    if (priorCompression.isCompressed) reasons.push(`קונסולידציה 15M (range ${priorCompression.rangeAtr} ATR)`);
-    if (brokeOut && volumeOk) reasons.push(`פריצה עם נפח ${volume.relative.toFixed(2)}x`);
+      if (priorCompression.isCompressed) reasons.push(`קונסולידציה 15M (range ${priorCompression.rangeAtr} ATR)`);
+      if (brokeOut && volumeOk) reasons.push(`פריצה עם נפח ${volume.relative.toFixed(2)}x`);
 
-    candidates.push({
-      setupType: 'BREAKOUT_RETEST',
-      direction,
-      gatesPassed: blockers.length === 0,
-      blockers,
-      reasons,
-      breakoutLevel: level > 0 ? level : null,
-      targetReference:
-        direction === 'LONG'
-          ? Math.max(structure.recentHigh, level + 2 * atr)
-          : Math.min(structure.recentLow, level - 2 * atr)
-    });
+      const gatesPassed = brokeOut && volumeOk && (retestHeld || continuation);
+      if (!gatesPassed && brokeOut && volumeOk) blockers.push('אין Retest שהחזיק ואין המשכיות מאושרת');
+
+      candidates.push({
+        setupType: 'BREAKOUT_RETEST',
+        direction,
+        corePassed: brokeOut && volumeOk,
+        confirmations,
+        gatesPassed,
+        blockers,
+        reasons,
+        breakoutLevel: level > 0 ? level : null,
+        targetReference:
+          direction === 'LONG'
+            ? Math.max(structure.recentHigh, level + 2 * atr)
+            : Math.min(structure.recentLow, level - 2 * atr)
+      });
+    }
   }
 
-  // ── 3. MEAN REVERSION (§19) — RANGING only, spot by default ───────────────
-  if (regime.ranging) {
-    const longSide = vwap.deviationAtr <= -params.meanReversionVwapAtr && rsi <= params.meanReversionRsiMax;
-    const shortSide = vwap.deviationAtr >= params.meanReversionVwapAtr && rsi >= params.meanReversionRsiMin;
+  // ── 3. MEAN REVERSION (§19) — RANGING (or TRANSITIONAL) only, spot by default ─
+  // CORE: (VWAP deviation OR Bollinger extreme) AND momentum reversal.
+  // Not every metric must be at its extreme simultaneously.
+  if (regime.ranging || regime.regime === 'TRANSITIONAL') {
+    const longSide = vwap.deviationAtr <= -params.meanReversionVwapAtr || bb.percentB <= 0.2;
+    const shortSide = vwap.deviationAtr >= params.meanReversionVwapAtr || bb.percentB >= 0.8;
     const direction: Exclude<Direction, 'NONE'> | null = longSide ? 'LONG' : shortSide ? 'SHORT' : null;
 
     if (direction) {
       const s = direction === 'LONG' ? 1 : -1;
       const blockers: string[] = [];
       const reasons: string[] = [];
+      const confirmations: string[] = [];
 
-      const percentB = direction === 'LONG' ? bb.percentB : 1 - bb.percentB;
-      if (percentB > 0.2) blockers.push('המחיר לא בקרבת/מעבר לרצועת Bollinger הרלוונטית');
-
+      const extreme =
+        direction === 'LONG'
+          ? vwap.deviationAtr <= -params.meanReversionVwapAtr || bb.percentB <= 0.2
+          : vwap.deviationAtr >= params.meanReversionVwapAtr || bb.percentB >= 0.8;
       const momentumReversal = macd.histogramSlope * s > 0 || (direction === 'LONG' ? rsi > rsiPrev : rsi < rsiPrev);
-      if (!momentumReversal) blockers.push('אין היפוך מומנטום — ממתינים לאישור');
 
-      const strongBreakdown =
-        (direction === 'LONG' && structure.breakOfStructure === 'DOWN' && volume.relative > 1.8) ||
-        (direction === 'SHORT' && structure.breakOfStructure === 'UP' && volume.relative > 1.8);
-      if (strongBreakdown) blockers.push('שבירת מבנה חזקה נגד הכיוון עם נפח — לא Mean Reversion');
+      if (extreme) confirmations.push('סטייה מ-VWAP או קצה Bollinger (Extreme)');
+      if (momentumReversal) confirmations.push('היפוך מומנטום (Momentum reversal)');
+      const structureOk = direction === 'LONG' ? structure.bias !== 'BEARISH' : structure.bias !== 'BULLISH';
+      if (structureOk) confirmations.push('מבנה לא נגד (Structure)');
 
-      reasons.push(`מחיר ${Math.abs(vwap.deviationAtr).toFixed(2)} ATR מ-VWAP בשוק דשדוש`);
+      reasons.push(`מחיר ${Math.abs(vwap.deviationAtr).toFixed(2)} ATR מ-VWAP${regime.ranging ? ' בשוק דשדוש' : ' (TRANSITIONAL)'}`);
       if (momentumReversal) reasons.push('היפוך מומנטום התחיל');
+
+      const gatesPassed = extreme && momentumReversal;
+      if (!gatesPassed) blockers.push('חסר קיצון (VWAP/BB) או היפוך מומנטום — אין Mean Reversion');
 
       candidates.push({
         setupType: 'MEAN_REVERSION',
         direction,
-        gatesPassed: blockers.length === 0,
+        corePassed: extreme && momentumReversal,
+        confirmations,
+        gatesPassed,
         blockers,
         reasons,
         breakoutLevel: null,
         targetReference: vwap.vwap
       });
     } else {
-      globalBlockers.push('שוק דשדוש אך המחיר לא מרוחק מ-VWAP / RSI לא בקצה — אין Mean Reversion');
+      globalBlockers.push('שוק דשדוש/מעברי אך המחיר לא מרוחק מ-VWAP ולא בקצה Bollinger — אין Mean Reversion');
     }
   }
 
@@ -358,6 +414,7 @@ export function detectSetup15M(
       scores: EMPTY_SCORES,
       setupScore: 0,
       strong: false,
+      candidateCount: 0,
       spotOnly: false,
       levels: baseLevels,
       indicators: { ...baseIndicators, retracementAtr: 0 },
@@ -377,6 +434,7 @@ export function detectSetup15M(
     scores: best.scores,
     setupScore: best.score,
     strong: best.score >= params.setupScoreStrong,
+    candidateCount: candidates.filter((c) => c.gatesPassed).length,
     spotOnly: best.candidate.setupType === 'MEAN_REVERSION',
     levels: {
       ...baseLevels,

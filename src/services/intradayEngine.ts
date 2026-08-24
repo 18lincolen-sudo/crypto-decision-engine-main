@@ -70,6 +70,17 @@ export interface IntradayDecision {
     atrPercentile: number;
     volatility: string;
   };
+  /** Per-window funnel telemetry (§10) */
+  funnel: {
+    evaluated: true;
+    regimePassed: boolean;
+    setupCandidates: number;
+    entryCandidates: number;
+    costBlocked: boolean;
+    riskBlocked: boolean;
+    approved: boolean;
+    executed: boolean;
+  };
 }
 
 function emptyDecision(symbol: string, gate: DecisionGate, outcome: DecisionOutcome, logs: string[]): IntradayDecision {
@@ -89,7 +100,8 @@ function emptyDecision(symbol: string, gate: DecisionGate, outcome: DecisionOutc
     risk: null,
     logs,
     summary: logs[logs.length - 1] ?? 'NO_DATA',
-    metrics: { setupScore: 0, entryScore: 0, edgeRatio: 0, netRewardRisk: 0, riskPercent: 0, atrPercentile: 0, volatility: 'NONE' }
+    metrics: { setupScore: 0, entryScore: 0, edgeRatio: 0, netRewardRisk: 0, riskPercent: 0, atrPercentile: 0, volatility: 'NONE' },
+    funnel: { evaluated: true, regimePassed: false, setupCandidates: 0, entryCandidates: 0, costBlocked: false, riskBlocked: false, approved: false, executed: false }
   };
 }
 
@@ -138,11 +150,29 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   const regime = detectRegime1H(input.h1, params);
   logs.push(`[${symbol}] 1H=${regime.regime} bias=${regime.bias} ADX=${regime.adx.toFixed(1)} ATR%=${regime.atrPercent.toFixed(2)} vol=${regime.volatility} futuresAllowed=${regime.futuresAllowed}`);
 
-  // ── GATE 4: NO_REGIME ───────────────────────────────────────────────────────
-  if (regime.regime === 'TRANSITIONAL') {
-    logs.push(`[${symbol}] NO_REGIME — משטר מעברי (TRANSITIONAL), לא נפתחות עסקאות (§8/§34)`);
-    return finalize(symbol, 'NO_REGIME', 'NO_SIGNAL', regime, null, null, null, null, logs, params, now);
+  const transitional = regime.regime === 'TRANSITIONAL';
+  // TRANSITIONAL no longer hard-blocks: new FUTURES are blocked, but an especially
+  // quality SPOT setup is still allowed (enforced at trade-type routing below).
+  if (transitional) {
+    logs.push(`[${symbol}] TRANSITIONAL — Futures חסום; Spot רק עבור Setup איכותי במיוחד (§8/§34)`);
   }
+
+  const regimePassed = regime.regime !== 'TRANSITIONAL';
+  const mkFunnel = (
+    gate: DecisionGate,
+    outcome: DecisionOutcome,
+    setup: Setup15M | null,
+    entry: Entry5M | null
+  ): IntradayDecision['funnel'] => ({
+    evaluated: true,
+    regimePassed,
+    setupCandidates: setup ? setup.candidateCount : 0,
+    entryCandidates: entry ? entry.confirmationCount : 0,
+    costBlocked: gate === 'COST' || gate === 'SPREAD',
+    riskBlocked: gate === 'RISK' && outcome === 'NO_SIGNAL',
+    approved: outcome === 'SIGNAL',
+    executed: false
+  });
 
   // ── GATE 5: VOLATILITY (strict bar in EXTREME) ──────────────────────────────
   const strictMode = regime.strictMode;
@@ -154,7 +184,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   const setup = detectSetup15M(input.m15, regime, params);
   if (setup.setupType === 'NONE') {
     logs.push(`[${symbol}] NO_SETUP — ${setup.blockers[0] ?? 'אין Setup'}`);
-    return finalize(symbol, 'NO_SETUP', 'NO_SIGNAL', regime, setup, null, null, null, logs, params, now);
+    return finalize(symbol, 'NO_SETUP', 'NO_SIGNAL', regime, setup, null, null, null, logs, params, now, mkFunnel('NO_SETUP', 'NO_SIGNAL', setup, null));
   }
   logs.push(`[${symbol}] 15M=${setup.setupType} dir=${setup.direction} SetupScore=${setup.setupScore} (strong=${setup.strong})`);
 
@@ -162,7 +192,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   const entry = confirmEntry5M(input.m5, setup, params);
   if (!entry.confirmed) {
     logs.push(`[${symbol}] NO_ENTRY — EntryScore=${entry.entryScore} | ${entry.blockers[0] ?? ''}`);
-    return finalize(symbol, 'NO_ENTRY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now);
+    return finalize(symbol, 'NO_ENTRY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_ENTRY', 'NO_SIGNAL', setup, entry));
   }
   logs.push(`[${symbol}] 5M=${entry.trigger} EntryScore=${entry.entryScore} price=${formatDynamicPrice(entry.entryPrice)}`);
 
@@ -178,22 +208,35 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   // EXTREME volatility forces spot even for trends (§10).
   if (regime.volatility === 'EXTREME') tradeType = 'SPOT';
 
+  // ── TRANSITIONAL quality gate (§8/§34) ──────────────────────────────────────
+  // In a transitional (no-clean-regime) market, new FUTURES are blocked and only
+  // an especially high-quality SPOT setup is permitted (Setup + Entry both strong).
+  if (transitional) {
+    tradeType = 'SPOT';
+    const highQuality = setup.strong && entry.strong;
+    if (!highQuality) {
+      logs.push(`[${symbol}] NO_REGIME — TRANSITIONAL דורש Setup+Entry חזקים (strong); נחסם (§8/§34)`);
+      return finalize(symbol, 'NO_REGIME', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_REGIME', 'NO_SIGNAL', setup, entry));
+    }
+    logs.push(`[${symbol}] TRANSITIONAL — Spot איכותי מאושר (Setup+Entry strong)`);
+  }
+
   // ── GATE 6/7: LIQUIDITY + SPREAD (§26/§27) ─────────────────────────────────
   const spreadPercent = input.spreadPercent ?? 0;
   const quoteVolume = input.quoteVolume24h ?? 0;
   if (quoteVolume > 0 && quoteVolume < params.minQuoteVolume24h) {
     logs.push(`[${symbol}] LIQUIDITY — מחזור 24h ${quoteVolume.toFixed(0)}$ < ${params.minQuoteVolume24h}$`);
-    return finalize(symbol, 'LIQUIDITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now);
+    return finalize(symbol, 'LIQUIDITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('LIQUIDITY', 'NO_SIGNAL', setup, entry));
   }
   if (spreadPercent > params.maxSpreadPercent) {
     logs.push(`[${symbol}] SPREAD — ${spreadPercent.toFixed(3)}% > ${params.maxSpreadPercent}% (נזילות נמוכה)`);
-    return finalize(symbol, 'SPREAD', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now);
+    return finalize(symbol, 'SPREAD', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('SPREAD', 'NO_SIGNAL', setup, entry));
   }
 
   // ── GATE 5b: strict bar in EXTREME volatility ──────────────────────────────
   if (strictMode && (!setup.strong || !entry.strong)) {
     logs.push(`[${symbol}] VOLATILITY — EXTREME דורש SetupScore/EntryScore חזקים (strong); נחסם (§10)`);
-    return finalize(symbol, 'VOLATILITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now);
+    return finalize(symbol, 'VOLATILITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('VOLATILITY', 'NO_SIGNAL', setup, entry));
   }
 
   // ── COST / EDGE (§25) ───────────────────────────────────────────────────────
@@ -209,7 +252,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   });
   if (!cost.approved) {
     logs.push(`[${symbol}] COST — ${cost.reason}`);
-    return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now);
+    return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry));
   }
   logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
@@ -232,14 +275,14 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   });
   if (!risk.approved) {
     logs.push(`[${symbol}] RISK — ${risk.blockReason ?? 'נפסל'}`);
-    return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, cost, risk, logs, params, now);
+    return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'NO_SIGNAL', setup, entry));
   }
 
   logs.push(
     `[${symbol}] SIGNAL ${tradeType} ${setup.direction} ${setup.setupType} | SL=${formatDynamicPrice(risk.stopLoss)} TP1=${formatDynamicPrice(risk.takeProfit1)} lev=${risk.leverage}x risk=${risk.riskPercentUsed}% qty=${risk.quantity}`
   );
 
-  return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, risk, logs, params, now);
+  return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'SIGNAL', setup, entry));
 }
 
 function finalize(
@@ -253,7 +296,8 @@ function finalize(
   risk: RiskPlan | null,
   logs: string[],
   params: IntradayParams,
-  now: number
+  now: number,
+  funnel: IntradayDecision['funnel']
 ): IntradayDecision {
   const setupScore = setup?.setupScore ?? 0;
   const entryScore = entry?.entryScore ?? 0;
@@ -292,6 +336,7 @@ function finalize(
       riskPercent: risk?.riskPercentUsed ?? 0,
       atrPercentile: regime?.atrPercentile ?? 0,
       volatility: regime?.volatility ?? 'NONE'
-    }
+    },
+    funnel
   };
 }

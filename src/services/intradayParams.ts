@@ -40,6 +40,8 @@ export interface IntradayParams {
   // ── Layer B — 15M setup ───────────────────────────────────────────────────
   setupScoreMin: number;
   setupScoreStrong: number;
+  /** Min confirmations (VWAP/Structure/Momentum/Volume/EMA) for a setup to pass (§20) */
+  setupConfirmationsMin: number;
   /** Weights must sum to 1 (§20) */
   setupWeights: {
     trend: number;
@@ -62,6 +64,8 @@ export interface IntradayParams {
   // ── Layer C — 5M entry ────────────────────────────────────────────────────
   entryScoreMin: number;
   entryScoreStrong: number;
+  /** Min entry confirmations (per setup type) for the 5M trigger to confirm (§24) */
+  entryConfirmationsMin: number;
   /** Distance beyond the trigger level (in 5M ATR) that counts as chasing */
   maxChaseAtr: number;
   entryLimitOffsetAtr: number;
@@ -131,8 +135,9 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   atrPercentileHigh: 80,
   atrPercentileExtreme: 95,
 
-  setupScoreMin: 58,
-  setupScoreStrong: 72,
+  setupScoreMin: 52,
+  setupScoreStrong: 64,
+  setupConfirmationsMin: 2,
   setupWeights: { trend: 0.25, momentum: 0.2, location: 0.2, participation: 0.15, structure: 0.2 },
   pullbackMaxAtrFromEma: 1.4,
   compressionPercentileMax: 45,
@@ -141,8 +146,9 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   meanReversionRsiMax: 35,
   meanReversionRsiMin: 65,
 
-  entryScoreMin: 65,
-  entryScoreStrong: 75,
+  entryScoreMin: 58,
+  entryScoreStrong: 68,
+  entryConfirmationsMin: 2,
   maxChaseAtr: 1.2,
   entryLimitOffsetAtr: 0.15,
   minEntryRelativeVolume: 0.7,
