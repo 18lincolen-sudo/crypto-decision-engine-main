@@ -424,6 +424,7 @@ export function runBacktest(
           m5: ctxM5,
           spreadPercent,
           quoteVolume24h: 1e12,
+          quoteVolume24hSpot: 1e12,
           livePrice: bar.close,
           portfolio: {
             portfolioValue: equity,

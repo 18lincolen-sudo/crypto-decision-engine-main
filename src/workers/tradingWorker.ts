@@ -715,6 +715,7 @@ async function scan(): Promise<void> {
             m5: snap.m5,
             spreadPercent: snap.liquidity?.spreadPercent ?? 0,
             quoteVolume24h: snap.liquidity?.quoteVolume24h ?? 0,
+            quoteVolume24hSpot: snap.liquidity?.quoteVolume24hSpot ?? 0,
             livePrice: currentPrice,
             portfolio,
             openPositions

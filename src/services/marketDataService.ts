@@ -428,8 +428,10 @@ export interface LiquiditySnapshot {
   ask: number;
   /** (ask-bid)/mid * 100 */
   spreadPercent: number;
-  /** 24h quote turnover in USDT */
+  /** 24h quote turnover in USDT — LINEAR (futures) market, used for FUTURES trades */
   quoteVolume24h: number;
+  /** 24h quote turnover in USDT — SPOT market, used for SPOT trades (§26) */
+  quoteVolume24hSpot: number;
   source: 'bybit' | 'binance' | 'estimate';
   fetchedAt: number;
 }
@@ -479,6 +481,7 @@ export async function getLiquiditySnapshots(symbols: string[], now = Date.now())
             ask,
             spreadPercent: Number(spreadPercent.toFixed(5)),
             quoteVolume24h: Number(row.turnover24h ?? 0),
+            quoteVolume24hSpot: 0,
             source: 'bybit',
             fetchedAt: now
           });
@@ -487,6 +490,46 @@ export async function getLiquiditySnapshots(symbols: string[], now = Date.now())
     }
   } catch {
     /* fall through to Binance */
+  }
+
+  // SPOT turnover — many assets are far more liquid on spot than on linear
+  // futures, so a FUTURES-only turnover check wrongly LIQUIDITY-blocks valid
+  // SPOT setups (§26). Fetch it for every wanted symbol regardless of whether
+  // the linear call above found a match.
+  try {
+    const res = await timedFetch(`${BYBIT_PUBLIC_BASE}/v5/market/tickers?category=spot`);
+    if (res.ok) {
+      const data = (await res.json()) as { retCode: number; result?: { list?: BybitTickerRow[] } };
+      if (data.retCode === 0 && data.result?.list) {
+        for (const row of data.result.list) {
+          if (!wanted.has(row.symbol)) continue;
+          const spotVolume = Number(row.turnover24h ?? 0);
+          const existing = map.get(row.symbol);
+          if (existing) {
+            existing.quoteVolume24hSpot = spotVolume;
+          } else {
+            const lastPrice = Number(row.lastPrice);
+            const bid = Number(row.bid1Price ?? row.lastPrice);
+            const ask = Number(row.ask1Price ?? row.lastPrice);
+            const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : lastPrice;
+            const spreadPercent = mid > 0 && ask > bid ? ((ask - bid) / mid) * 100 : 0.02;
+            map.set(row.symbol, {
+              symbol: row.symbol,
+              lastPrice,
+              bid,
+              ask,
+              spreadPercent: Number(spreadPercent.toFixed(5)),
+              quoteVolume24h: 0,
+              quoteVolume24hSpot: spotVolume,
+              source: 'bybit',
+              fetchedAt: now
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    /* leave quoteVolume24hSpot at 0 for symbols this call missed */
   }
 
   const missing = [...wanted].filter((s) => !map.has(s));
@@ -509,6 +552,7 @@ export async function getLiquiditySnapshots(symbols: string[], now = Date.now())
             ask,
             spreadPercent: mid > 0 && ask > bid ? Number((((ask - bid) / mid) * 100).toFixed(5)) : 0.02,
             quoteVolume24h: 0,
+            quoteVolume24hSpot: 0,
             source: 'binance',
             fetchedAt: now
           });

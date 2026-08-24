@@ -32,7 +32,12 @@ export interface IntradayDecisionInput {
   m5: Candle[];
   /** Live spread / 24h turnover snapshot (optional for backtest) */
   spreadPercent?: number;
+  /** 24h quote turnover on the LINEAR (futures) market */
   quoteVolume24h?: number;
+  /** 24h quote turnover on the SPOT market — many assets are far more liquid
+   *  here than on futures, so a SPOT trade must be gated by this, not the
+   *  futures number (§26) */
+  quoteVolume24hSpot?: number;
   livePrice?: number;
   portfolio: PortfolioRiskStats;
   /** Open positions of the SAME account, for same-asset Spot/Futures exclusion (§36) */
@@ -223,7 +228,9 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
 
   // ── GATE 6/7: LIQUIDITY + SPREAD (§26/§27) ─────────────────────────────────
   const spreadPercent = input.spreadPercent ?? 0;
-  const quoteVolume = input.quoteVolume24h ?? 0;
+  // Gate on the liquidity of the market the trade will actually execute on —
+  // a SPOT setup must not be blocked by thin FUTURES turnover and vice versa (§26).
+  const quoteVolume = tradeType === 'SPOT' ? (input.quoteVolume24hSpot ?? 0) : (input.quoteVolume24h ?? 0);
   if (quoteVolume > 0 && quoteVolume < params.minQuoteVolume24h) {
     logs.push(`[${symbol}] LIQUIDITY — מחזור 24h ${quoteVolume.toFixed(0)}$ < ${params.minQuoteVolume24h}$`);
     return finalize(symbol, 'LIQUIDITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('LIQUIDITY', 'NO_SIGNAL', setup, entry), tradeType);

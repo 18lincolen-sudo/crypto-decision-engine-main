@@ -143,7 +143,14 @@ export function mapDecisionToSignalEvaluation(
     direction === 'LONG' ? 'buy' : direction === 'SHORT' ? 'sell' : 'hold';
   const tradeSide: 'LONG' | 'SHORT' | 'BUY' | 'SELL' | 'NONE' =
     direction === 'LONG' ? 'LONG' : direction === 'SHORT' ? 'SHORT' : tradeType === 'SPOT' ? 'BUY' : 'NONE';
-  const confidence = isSignal ? Math.round((d.metrics.setupScore + d.metrics.entryScore) / 2) : 0;
+  // Reflect actual progress through the gate chain, not just full SIGNAL:
+  // a NO_ENTRY case that cleared Setup still has a meaningful score to show,
+  // and a NO_SETUP case can at least show how close the best candidate got.
+  const confidence = d.entry
+    ? Math.round(((d.setup?.setupScore ?? 0) + d.entry.entryScore) / 2)
+    : d.setup
+    ? Math.round(d.setup.setupScore)
+    : 0;
   const priceOut = price || d.entry?.entryPrice || 0;
 
   const factors: DecisionFactor[] = [];
@@ -247,6 +254,7 @@ export function evaluateSymbolFromSnapshot(
     m5: snap.m5,
     spreadPercent: snap.liquidity?.spreadPercent ?? 0,
     quoteVolume24h: snap.liquidity?.quoteVolume24h ?? 0,
+    quoteVolume24hSpot: snap.liquidity?.quoteVolume24hSpot ?? 0,
     livePrice: snap.liquidity?.lastPrice || priceInfo.price || snap.livePrice,
     portfolio,
     openPositions,
