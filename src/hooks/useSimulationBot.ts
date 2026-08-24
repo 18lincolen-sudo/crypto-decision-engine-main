@@ -1,51 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CryptoData, CryptoRecommendation, MarketRegimeResult, TradeType, TradeSide } from '../types/crypto';
 import { useBackgroundWorker } from './useBackgroundWorker';
-import { bybitApi } from '../services/bybitApi';
-import { coinGeckoApi } from '../services/coinGeckoApi';
-import { binancePublicApi } from '../services/binancePublicApi';
 import {
-  detectMarketRegime,
-  evaluateSignals,
-  routeTradeType,
-  calculateRiskParameters,
-  evaluateExit,
   calculateTradingFee,
   simulateSlippage,
-  calculateOptimalEntry,
-  calculateATR,
   Candle
 } from '../services/tradeEngine';
+import {
+  evaluateSymbolFromSnapshot,
+  buildPortfolioRiskStats,
+  evaluatePositionExit,
+  computeAtr5,
+  MultiTimeframeSnapshot,
+  SignalEvaluation,
+  DecisionFactor
+} from '../services/intradayBridge';
+import { getUniverseMarketData } from '../services/marketDataService';
 
-export interface DecisionFactor {
-  label: string;
-  value: string;
-  impact: 'positive' | 'negative' | 'neutral';
-  note: string;
-}
-
-export interface SignalEvaluation {
-  symbol: string;
-  action: 'buy' | 'sell' | 'hold';
-  tradeType: TradeType;
-  tradeSide: TradeSide;
-  confidence: number;
-  price: number;
-  priceChange24h: number;
-  reasoning: string;
-  status: string;
-  willExecute: boolean;
-  factors: DecisionFactor[];
-  confidenceGap: number;
-  riskLevel?: 'low' | 'medium' | 'high';
-  timeframe?: 'short' | 'medium' | 'long';
-  regime?: MarketRegimeResult;
-  leverage?: number;
-  stopLoss?: number;
-  takeProfit1?: number;
-  takeProfit2?: number;
-  takeProfit?: number;
-}
+export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 
 export interface SimPosition {
   id: string;
@@ -292,122 +264,33 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   const hasSavedSession = trades.length > 0 || positions.length > 0;
 
   // ═════════════════════════════════════════════════════
-  // LIVE KLINE CACHE — real candles from Bybit (no mock data)
+  // MULTI-TIMEFRAME MARKET DATA — 1H/15M/5M from Bybit/Binance (no mock data)
   // ═════════════════════════════════════════════════════
-  const [liveCandles, setLiveCandles] = useState<Record<string, Candle[]>>({});
-  const liveCandlesRef = useRef<Record<string, Candle[]>>({});
-  liveCandlesRef.current = liveCandles;
+  const [mtfData, setMtfData] = useState<Record<string, MultiTimeframeSnapshot>>({});
+  const mtfdRef = useRef<Record<string, MultiTimeframeSnapshot>>({});
+  mtfdRef.current = mtfData;
 
   useEffect(() => {
     if (!cryptoData || cryptoData.length === 0) return;
     let cancelled = false;
+    const symbols = cryptoData.map((c) => c.symbol.toUpperCase());
 
-    // Live CoinGecko historical prices → real candles (no mock data).
-    // Used ONLY as a fallback when Bybit klines are unavailable so the bot can still evaluate & trade.
-    const buildFromCoinGecko = async (symbol: string, next: Record<string, Candle[]>) => {
-      if (next[symbol] && next[symbol].length > 0) return; // already have candles from Bybit
+    const fetchMtf = async () => {
       try {
-        const coinId = coinGeckoApi.getCoinId(symbol);
-        const hist = await coinGeckoApi.getHistoricalPrices(coinId, 30);
-        if (hist && hist.length >= 2) {
-          next[symbol] = hist.map((h, idx) => {
-            const close = h.price;
-            const open = idx > 0 ? hist[idx - 1].price : close;
-            return {
-              timestamp: h.timestamp,
-              open,
-              high: Math.max(open, close),
-              low: Math.min(open, close),
-              close,
-              volume: h.volume || 0
-            };
-          });
-        }
-      } catch {
-        /* skip symbol without live historical data */
-      }
-    };
-
-    const fetchKlines = async () => {
-      const symbols = cryptoData.map(c => c.symbol.toUpperCase());
-      // Start from last-known-good candles so a transient source failure never wipes data.
-      const next: Record<string, Candle[]> = { ...liveCandlesRef.current };
-      const sources: Record<string, 'bybit' | 'binance' | 'coingecko'> = {};
-
-      // 1) Primary: real Bybit OHLC klines (fast, includes volume). Always re-fetch on interval.
-      await Promise.all(symbols.map(async (symbol) => {
-        try {
-          const bybitSymbol = bybitApi.getBybitSymbol(symbol);
-          const klines = await bybitApi.getKlineData(bybitSymbol, 'D', 30);
-          if (klines && klines.length > 0) {
-            next[symbol] = klines.map(k => ({
-              timestamp: parseInt(k.openTime),
-              open: parseFloat(k.open),
-              high: parseFloat(k.high),
-              low: parseFloat(k.low),
-              close: parseFloat(k.close),
-              volume: parseFloat(k.volume)
-            }));
-            sources[symbol] = 'bybit';
-          }
-        } catch {
-          /* keep last-known-good candles on Bybit failure */
-        }
-      }));
-
-      // 2) Binance klines for symbols Bybit couldn't serve (free, 1200 req/min)
-      const afterBybit = symbols.filter(s => !(next[s] && next[s].length > 0));
-      if (afterBybit.length > 0) {
-        await Promise.all(afterBybit.map(async (symbol) => {
-          try {
-            const bklines = await binancePublicApi.getKlines(symbol, '1d', 60);
-            if (bklines && bklines.length > 0) {
-              next[symbol] = bklines.map(k => ({
-                timestamp: k.timestamp,
-                open: k.open,
-                high: k.high,
-                low: k.low,
-                close: k.close,
-                volume: k.volume
-              }));
-              sources[symbol] = 'binance';
-            }
-          } catch { /* keep last-known-good */ }
-        }));
-        if (!cancelled) setLiveCandles({ ...next });
-      }
-
-      // 3) CoinGecko fallback — SEQUENTIAL, 1 at a time with 4s pause between each
-      //    to avoid blowing the shared 30 req/min rate limit.
-      const missing = symbols.filter(s => !(next[s] && next[s].length > 0));
-      for (let i = 0; i < missing.length; i++) {
-        if (cancelled) break;
-        const symbol = missing[i];
-        const before = next[symbol]?.length || 0;
-        await buildFromCoinGecko(symbol, next);
-        if ((next[symbol]?.length || 0) > before) sources[symbol] = 'coingecko';
-        if (!cancelled) setLiveCandles({ ...next });
-        // Pause between CoinGecko calls to respect rate limit
-        if (i < missing.length - 1) {
-          await new Promise(r => setTimeout(r, 4000));
-        }
-      }
-
-      if (!cancelled) {
-        setLiveCandles(next);
-        const withCandles = symbols.filter(s => next[s] && next[s].length > 0).length;
-        setCandleSourceHealth({
-          bybit: Object.values(sources).filter(s => s === 'bybit').length,
-          binance: Object.values(sources).filter(s => s === 'binance').length,
-          coingecko: Object.values(sources).filter(s => s === 'coingecko').length,
-          failed: symbols.length - withCandles
-        });
+        const { snapshots, stats } = await getUniverseMarketData(symbols, { log: true });
+        if (cancelled) return;
+        const next: Record<string, MultiTimeframeSnapshot> = {};
+        for (const [sym, snap] of snapshots) next[sym] = snap;
+        setMtfData(next);
+        setCandleSourceHealth({ bybit: 0, binance: 0, coingecko: 0, failed: stats.assetsSkipped });
         setCandleRefreshAt(Date.now());
+      } catch {
+        /* keep last-known-good MTF data on failure */
       }
     };
 
-    fetchKlines();
-    const interval = setInterval(fetchKlines, 5 * 60 * 1000); // refresh live candles every 5 min
+    fetchMtf();
+    const interval = setInterval(fetchMtf, 5 * 60 * 1000); // refresh MTF data every 5 min
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -443,10 +326,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   const priceForRef = useRef(priceFor);
   priceForRef.current = priceFor;
 
-  // Build candles from LIVE Bybit klines (no mock / random data)
+  // Build 5M candles from the LIVE multi-timeframe cache (no mock / random data)
   const buildCandlesForSymbol = useCallback((symbol: string, _currentPrice: number): Candle[] => {
-    const live = liveCandlesRef.current[symbol.toUpperCase()];
-    return live && live.length > 0 ? live : [];
+    const snap = mtfdRef.current[symbol.toUpperCase()];
+    return snap && snap.m5 && snap.m5.length > 0 ? snap.m5 : [];
   }, []);
 
   // Calculate current portfolio value and drawdowns
@@ -511,162 +394,69 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     const maxTotalPositions = config.maxPositions || 7;
     const maxFutures = 2;
     const futuresCount = openPos.filter(p => p.type === 'FUTURES').length;
-    const isCircuitBreakerDaily = dailyDrawdownPercent >= 6;   // 6% daily circuit breaker
-    const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 13; // 13% weekly circuit breaker
+
+    const portfolio = buildPortfolioRiskStats({
+      portfolioValue: equity,
+      initialAmount: config.initialAmount,
+      dailyDrawdownPercent,
+      weeklyDrawdownPercent,
+      openPositionsCount: openPos.length,
+      openFuturesPositionsCount: futuresCount,
+      totalLeveragedExposureUsd
+    });
+
+    const openPositionsForEngine = openPos.map(p => ({ symbol: p.symbol, type: p.type as 'SPOT' | 'FUTURES' }));
 
     const results: SignalEvaluation[] = [];
-    const updatedRegimes: Record<string, MarketRegimeResult> = {};
 
-    // Scan all loaded crypto assets (up to 100) to find the best market setups
+    // Scan all loaded crypto assets; evaluate only those with READY 1H/15M/5M data.
     for (const crypto of cryptoData) {
       const symbol = crypto.symbol.toUpperCase();
       const currentPrice = crypto.current_price;
       const priceChange24h = crypto.price_change_percentage_24h || 0;
 
-      const candles = buildCandlesForSymbol(symbol, currentPrice);
-      // Skip symbols without live candle data — never evaluate on mock/fake data
-      if (candles.length < 2) continue;
-      const layer0 = detectMarketRegime(candles, currentPrice);
-      updatedRegimes[symbol] = layer0;
+      const snap = mtfData[symbol];
+      if (!snap || snap.status !== 'READY') continue;
 
-      const layer1 = evaluateSignals(candles, currentPrice, priceChange24h, layer0, fearGreedIndex || 50, config.riskLevel);
-      const hasExistingFutures = openPos.some(p => p.symbol === symbol && p.type === 'FUTURES');
-      const hasExistingSpot = openPos.some(p => p.symbol === symbol && p.type === 'SPOT');
-      const isHeld = openPos.some(p => p.symbol === symbol);
-      const isQueued = queuedOrders.some(o => o.symbol === symbol);
-
-      const layer2 = routeTradeType(layer1, layer0, {
-        hasExistingFutures,
-        hasExistingSpot,
-        isDailyBlocked: isCircuitBreakerDaily,
-        isWeeklyLocked: isCircuitBreakerWeekly
-      });
-
-      // Layer 3 Risk & Sizing calculation (Risk-First 0.75% portfolio risk)
-      const riskParams = calculateRiskParameters(
-        currentPrice,
-        layer2.type,
-        layer2.side,
-        layer0.atr,
-        layer0.volatility,
-        layer1.signalScore,
-        equity,
-        trades.map(t => ({ pnl: t.pnl || 0 })),
-        openPos.length,
-        futuresCount,
-        totalLeveragedExposureUsd
+      const ev = evaluateSymbolFromSnapshot(
+        snap,
+        { price: currentPrice, priceChange24h },
+        portfolio,
+        openPositionsForEngine
       );
 
-      // Layer 3.5 Entry Timing Validator (Real Gate)
-      const entryTiming = (layer2.type !== 'HOLD' && !layer2.hardGateBlocked)
-        ? calculateOptimalEntry(currentPrice, layer0.atr, layer2.side as any, candles)
-        : null;
+      const isQueued = queuedOrders.some(o => o.symbol === symbol);
+      const isHeld = openPos.some(p => p.symbol === symbol);
+      const hasExistingFutures = openPos.some(p => p.symbol === symbol && p.type === 'FUTURES');
 
-      // Build Decision Factors for UI transparency
-      const factors: DecisionFactor[] = [
-        {
-          label: 'משטר שוק (ADX 14)',
-          value: `${layer0.regime} (${layer0.adx})`,
-          impact: layer0.regime === 'TRENDING' ? 'positive' : layer0.regime === 'RANGING' ? 'neutral' : 'negative',
-          note: layer0.regime === 'TRENDING' ? 'שוק מגמתי מובהק — תומך ב-Futures' : layer0.regime === 'RANGING' ? 'שוק דשדוש — רק Spot' : 'משטר מעבר — חסום הרמטית'
-        },
-        {
-          label: 'תנודתיות (ATR%)',
-          value: `${layer0.volatility} (${layer0.atrPercent}%)`,
-          impact: layer0.volatility === 'HIGH' ? 'negative' : 'positive',
-          note: layer0.volatility === 'HIGH' ? 'תנודתיות גבוהה מעל 5% — Futures חסום הרמטית' : 'תנודתיות מתאימה'
-        },
-        {
-          label: 'Supertrend (10, 3)',
-          value: `$${layer0.supertrend.value.toFixed(2)} (${layer0.supertrend.direction})`,
-          impact: layer0.supertrend.direction === 'BULL' ? 'positive' : 'negative',
-          note: `מגמת Supertrend: ${layer0.supertrend.direction}`
-        }
-      ];
-
-      // Add indicator details from layer 1
-      for (const sig of layer1.signals) {
-        factors.push({
-          label: sig.name,
-          value: sig.value,
-          impact: sig.signal === 'BUY' ? 'positive' : sig.signal === 'SELL' ? 'negative' : 'neutral',
-          note: sig.reason
-        });
-      }
-
-      for (const p of layer1.penalties) {
-        factors.push({
-          label: 'הערת משטר/סנטימנט',
-          value: p,
-          impact: 'negative',
-          note: 'פילטר בטיחות'
-        });
-      }
-
-      let status = '';
-      let willExecute = false;
+      let status = ev.status;
+      let willExecute = ev.willExecute;
 
       if (!isRunning) {
         status = 'הבוט מושבת';
-      } else if (isCircuitBreakerWeekly) {
-        status = 'נעילת מערכת שבועית (הפסד >= 13%) — מושבת עד איפוס ידני';
-      } else if (isCircuitBreakerDaily) {
-        status = 'הגנת תיק יומית (הפסד >= 6%) — חסום לכניסות חדשות';
+        willExecute = false;
       } else if (isQueued) {
         status = 'פקודה כבר נמצאת בתור ביצוע';
-      } else if (layer2.hardGateBlocked) {
-        status = layer2.reason;
-      } else if (layer2.type === 'HOLD') {
-        status = layer2.reason;
+        willExecute = false;
       } else if (openPos.length >= maxTotalPositions) {
         status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`;
-      } else if (layer2.type === 'FUTURES' && futuresCount >= maxFutures) {
+        willExecute = false;
+      } else if (ev.tradeType === 'FUTURES' && futuresCount >= maxFutures) {
         status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`;
-      } else if (layer2.type === 'FUTURES' && hasExistingFutures) {
+        willExecute = false;
+      } else if (ev.tradeType === 'FUTURES' && hasExistingFutures) {
         status = 'קיימת כבר פוזיציית Futures פתוחה';
-      } else if (layer2.type === 'SPOT' && layer2.side === 'SELL' && !isHeld) {
-        status = 'מכירת Spot חשופה אסורה — אין החזקה בתיק';
-      } else if (layer2.type === 'SPOT' && isHeld && layer2.side === 'BUY') {
+        willExecute = false;
+      } else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) {
         status = 'כבר מוחזק בתיק (Spot)';
-      } else if (!entryTiming || !entryTiming.shouldEnterNow) {
-        status = `ממתין לתזמון כניסה אופטימלי: ${entryTiming?.reason || 'תנאי כניסה לא הבשילו'}`;
-      } else if (!riskParams || riskParams.betSizeUsd < 5) {
-        status = 'חריגת חשיפה ממונפת (מקס\' 20%) או תקציב סיכון מתחת ל-$5';
-      } else {
-        willExecute = true;
-        status = layer2.type === 'FUTURES'
-          ? `מבצע Futures ${riskParams.leverage}x ${layer2.side} ($${riskParams.betSizeUsd}) | Limit @ $${entryTiming.entryPrice}`
-          : `מבצע Spot ${layer2.side} ($${riskParams.betSizeUsd}) | Limit @ $${entryTiming.entryPrice}`;
+        willExecute = false;
       }
 
-      const requiredThreshold = layer2.type === 'FUTURES'
-        ? 70
-        : (layer0.volatility === 'HIGH' ? 62 : 58);
-
-      results.push({
-        symbol,
-        action: layer1.action === 'BUY' ? 'buy' : layer1.action === 'SELL' ? 'sell' : 'hold',
-        tradeType: layer2.type,
-        tradeSide: layer2.side,
-        confidence: layer1.signalScore,
-        price: currentPrice,
-        priceChange24h,
-        reasoning: layer2.reason,
-        status,
-        willExecute,
-        factors,
-        confidenceGap: layer1.signalScore - requiredThreshold,
-        regime: layer0,
-        leverage: riskParams?.leverage,
-        stopLoss: riskParams?.stopLoss,
-        takeProfit1: riskParams?.takeProfit1,
-        takeProfit2: riskParams?.takeProfit2,
-        takeProfit: riskParams?.takeProfit
-      });
+      results.push({ ...ev, status, willExecute });
     }
 
     return results;
-  }, [cryptoData, positions, pending, isRunning, equity, trades, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, liveCandles, fearGreedIndex, config]);
+  }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, mtfData]);
 
   // Sync activeMarketRegimes state from the latest evaluation pass
   useEffect(() => {
@@ -693,19 +483,37 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       if (queued.some((o) => o.symbol === pos.symbol)) continue;
 
       const livePrice = priceForRef.current(pos.symbol) ?? pos.currentPrice;
-      const { atr } = calculateATR(buildCandlesForSymbol(pos.symbol, livePrice), 14);
+      const atr5 = computeAtr5(buildCandlesForSymbol(pos.symbol, livePrice));
 
-      // Find current signal for reversal check
+      // Find current decision for reversal check
       const currentEval = evaluations.find(e => e.symbol === pos.symbol);
-      const buyConf = currentEval?.action === 'buy' ? currentEval.confidence : 0;
-      const sellConf = currentEval?.action === 'sell' ? currentEval.confidence : 0;
+      const decision = currentEval?.decision;
+      const reversal = decision && decision.outcome === 'SIGNAL'
+        ? { direction: decision.direction, setupScore: decision.metrics.setupScore, entryConfirmed: !!decision.entry?.confirmed }
+        : undefined;
 
-      const exitCheck = evaluateExit(
-        pos,
+      const exitCheck = evaluatePositionExit(
+        {
+          symbol: pos.symbol,
+          type: pos.type,
+          side: pos.side,
+          entryPrice: pos.entryPrice,
+          quantity: pos.quantity,
+          stopLoss: pos.stopLoss,
+          takeProfit1: pos.takeProfit1,
+          takeProfit2: pos.takeProfit2,
+          tp1Hit: pos.tp1Hit,
+          openTimestamp: pos.openTimestamp,
+          plannedStopDistance: Math.abs(pos.entryPrice - pos.stopLoss),
+          highestPrice: pos.highestPrice,
+          lowestPrice: pos.lowestPrice,
+          highestPriceSinceTP1: pos.highestPriceSinceTP1,
+          lowestPriceSinceTP1: pos.lowestPriceSinceTP1
+        },
         livePrice,
-        atr,
-        { buy: buyConf, sell: sellConf },
-        { dailyDrawdownPercent, weeklyDrawdownPercent }
+        atr5,
+        { dailyDrawdownPercent, weeklyDrawdownPercent },
+        reversal
       );
 
       if (exitCheck.shouldExit) {
@@ -779,7 +587,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     }
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, liveCandles]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData]);
 
   // Heartbeat — reset countdown timer when bot starts/stops.
   // Equity recording is handled exclusively by the background worker below to avoid duplicates.
@@ -1083,7 +891,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     dailyDrawdownPercent,
     weeklyDrawdownPercent,
     activeMarketRegimes,
-    candleCount: Object.keys(liveCandles).length,
+    candleCount: Object.keys(mtfData).length,
     candleRefreshAt,
     candleSourceHealth
   };

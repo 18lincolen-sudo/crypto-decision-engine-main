@@ -17,8 +17,10 @@ import { dirname, join } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 // Server-side simulation engine (runs the bot 24/7 without a browser).
 import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
-// Core decision engine — single source of truth for Layers 0-3.
-import { calculateEMA, calculateATR, calculateADX, calculateSupertrend, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters, calculateOptimalEntry } from '../services/tradeEngine';
+// Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
+import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../services/intradayEngine';
+import { buildPortfolioRiskStats } from '../services/intradayBridge';
+import { getMultiTimeframeData } from '../services/marketDataService';
 import { TARGET_SYMBOLS } from '../shared/targetSymbols';
 import { createKVStore } from './kvStore';
 
@@ -442,62 +444,33 @@ async function fetchFearGreed(): Promise<number> {
 // How long a Limit Order is kept alive before auto-cancellation.
 const LIMIT_ORDER_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
-async function executeOrder(d: { symbol: string; side: string; currentPrice: number; candles: { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]; layer0: { atr: number; volatility: string }; layer1: { confidence: number; reason: string }; layer2: { type: string; side: string } }, ctx: { available: number } | null, runningTotals: { totalOpen: number; futuresOpen: number }): Promise<{ opened: boolean; skipped?: string }> {
-  const { symbol, side, currentPrice, candles, layer0, layer1, layer2 } = d;
+async function executeOrder(d: IntradayDecision, ctx: { available: number } | null, runningTotals: { totalOpen: number; futuresOpen: number }): Promise<{ opened: boolean; skipped?: string }> {
+  const { symbol, direction, tradeType, risk } = d;
 
-  if (layer2.type === 'SPOT' && side === 'SELL') {
+  if (!risk || !risk.approved) {
+    return { opened: false, skipped: 'נפסל על ידי מנוע הסיכון' };
+  }
+
+  if (tradeType === 'SPOT' && direction === 'SHORT') {
     if (dryRun) {
-      state.orders.unshift({ at: new Date().toISOString(), dryRun: true, symbol, side, reason: 'Spot SELL מושבת (lot-size) — dry-run only' });
+      state.orders.unshift({ at: new Date().toISOString(), dryRun: true, symbol, side: 'SELL', reason: 'Spot SELL מושבת (lot-size) — dry-run only' });
       return { opened: false };
     }
     return { opened: false, skipped: 'live spot SELL disabled until lot-size rounding' };
   }
 
-  // ── Layer 3.5: Entry Timing Validation ─────────────────────────────────────
-  // Validate market conditions and calculate optimal limit entry price.
-  // This prevents entering at local peaks (overbought RSI, BB upper, EMA distance).
-  const entrySide = (side === 'LONG' || side === 'SHORT') ? side : (side === 'BUY' ? 'BUY' : 'SELL') as 'BUY' | 'LONG' | 'SELL' | 'SHORT';
-  const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, entrySide, candles);
-
-  if (!entryTiming.shouldEnterNow) {
-    // Log the rejection to orders list so it's visible in the UI
-    state.orders.unshift({
-      at: new Date().toISOString(),
-      dryRun,
-      symbol,
-      side,
-      reason: `[Layer 3.5] ${entryTiming.reason}`
-    });
-    return { opened: false, skipped: `[Entry Timing] ${entryTiming.reason}` };
-  }
-
-  // Use the ATR-based limit price computed by Layer 3.5
-  const limitEntryPrice = entryTiming.entryPrice;
+  const side = direction === 'LONG' ? 'LONG' : 'SHORT';
+  const limitEntryPrice = d.entry?.entryPrice ?? risk.stopLoss;
 
   const budget = Math.max(5, (ctx?.available ?? 0) * (positionPercent / 100));
   if (budget < 5) return { opened: false, skipped: 'יתרה לא מספיקה' };
 
-  // Risk parameters are computed against the limit price (not currentPrice)
-  // so that SL/TP levels are anchored to the actual entry we're targeting.
-  const risk = calculateRiskParameters(
-    limitEntryPrice, layer2.type as 'SPOT' | 'FUTURES' | 'HOLD', layer2.side as 'LONG' | 'SHORT' | 'BUY' | 'SELL', layer0.atr, layer0.volatility as 'LOW' | 'NORMAL' | 'HIGH',
-    layer1.confidence, ctx?.available ?? 0, [], runningTotals.totalOpen, runningTotals.futuresOpen, 0, positionPercent / 100
-  );
-  if (!risk) return { opened: false, skipped: 'סירוב פרמטרי סיכון' };
-
-  const leverage = risk.leverage;
-  // BOT_POSITION_PERCENT is the hard cap on capital per position: never exceed
-  // the configured budget, even if the risk model would size larger.
-  const betSizeUsd = Math.min(risk.betSizeUsd, budget);
-  const notional = betSizeUsd * leverage;
-  const qty = notional / limitEntryPrice;
+  const qty = risk.quantity;
   if (!(qty > 0) || !isFinite(qty)) return { opened: false, skipped: 'כמות לא חוקית' };
 
-  // ── Build Limit Order (not Market) ──────────────────────────────────────────
-  // GTC = Good Till Cancelled. The order stays live on Bybit until filled or
-  // we explicitly cancel it (see the TTL cleanup in scan()).
+  const leverage = risk.leverage;
   const formattedLimitPrice = limitEntryPrice.toFixed(8).replace(/\.?0+$/, '').slice(0, 20);
-  const order = layer2.type === 'FUTURES'
+  const order = tradeType === 'FUTURES'
     ? {
         category: 'linear', symbol,
         side: side === 'LONG' ? 'Buy' : 'Sell',
@@ -521,21 +494,20 @@ async function executeOrder(d: { symbol: string; side: string; currentPrice: num
         qty: qty.toFixed(4)
       };
 
-  const entryReason = `${layer1.reason} | ${entryTiming.reason}`;
+  const entryReason = `${d.setupType} ${direction} | ${d.summary}`;
 
   if (dryRun) {
     state.orders.unshift({ at: new Date().toISOString(), dryRun: true, ...order, reason: entryReason });
     return { opened: true };
   }
   try {
-    if (layer2.type === 'FUTURES') {
+    if (tradeType === 'FUTURES') {
       await bybitExec('/v5/position/set-leverage', 'POST', { category: 'linear', symbol, buyLeverage: String(leverage), sellLeverage: String(leverage) });
     }
     const result = await bybitExec('/v5/order/create', 'POST', order) as { orderId?: string };
     const orderId = result?.orderId || '';
     state.orders.unshift({ at: new Date().toISOString(), dryRun: false, ...order, result });
 
-    // Track the pending limit order for TTL-based cancellation
     if (orderId) {
       const placedAt = Date.now();
       state.pendingLimitOrders.set(symbol, {
@@ -559,12 +531,8 @@ interface ScanResult {
   side: string;
   confidence: number;
   reason: string;
-  layer0: { regime: string; direction: string; volatility: string; adx: number; atr: number; atrPercent: number; supertrend: { value: number; direction: string } };
-  layer1: { action: string; confidence: number; signals: unknown[]; rawConfidence: number; penalties: string[]; reason: string };
-  layer2: { type: 'HOLD' | 'SPOT' | 'FUTURES'; side: string; reason: string };
   currentPrice: number;
-  /** Raw candle data passed to executeOrder for Layer 3.5 entry timing */
-  candles: { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[];
+  decision: IntradayDecision;
   skipped?: string;
 }
 
@@ -628,29 +596,47 @@ async function scan(): Promise<void> {
       const batch = symbols.slice(i, i + scanConcurrency);
       const results = await Promise.all(batch.map(async (symbol): Promise<ScanResult> => {
         try {
-          let candles;
-          try {
-            candles = await fetchPublicCandles(symbol);
-          } catch {
-            candles = state.candleCache[symbol];
-            if (!candles || candles.length < 2) {
-              state.skippedSymbols.push({ symbol, reason: 'אין נרות חיים (סמל לא נתמך או ללא נתונים)' });
-              return { symbol, action: 'HOLD' as const, side: 'NONE', confidence: 0, reason: 'אין נרות חיים', layer0: {} as ScanResult['layer0'], layer1: { action: 'HOLD', confidence: 0, signals: [], rawConfidence: 0, penalties: [], reason: 'אין נרות חיים' }, layer2: { type: 'HOLD', side: 'NONE', reason: 'אין נרות חיים' }, currentPrice: 0, candles: [], skipped: undefined };
-            }
+          const snap = await getMultiTimeframeData(symbol, { log: true });
+          if (snap.status !== 'READY') {
+            state.skippedSymbols.push({ symbol, reason: `אין נתונים MTF (${snap.reason ?? 'NOT_READY'})` });
+            return { symbol, action: 'HOLD', side: 'NONE', confidence: 0, reason: 'אין נתונים MTF', currentPrice: snap.livePrice, decision: null as unknown as IntradayDecision, skipped: undefined };
           }
-          if (candles.length >= 2) state.candleCache[symbol] = candles;
-          const currentPrice = candles[candles.length - 1].close;
-          const layer0 = detectMarketRegime(candles, currentPrice);
-          const layer1 = evaluateSignals(candles, currentPrice, 0, layer0, fearGreed, riskLevel as 'low' | 'medium' | 'high');
-          const hasExistingFutures = ctx ? ctx.openFutures.some(p => p.symbol === symbol) : false;
-          const layer2 = layer1.confidence < minConfidence
-            ? { type: 'HOLD' as const, side: 'NONE', reason: `ביטחון נמוך (${layer1.confidence}% < ${minConfidence}%)` }
-            : routeTradeType(layer1, layer0, hasExistingFutures, riskLevel as 'low' | 'medium' | 'high');
-          return { symbol, action: layer2.type, side: layer2.side, confidence: layer1.confidence, reason: layer2.reason, layer0, layer1: { ...layer1, reason: layer2.reason }, layer2: { ...layer2, type: layer2.type as 'HOLD' | 'SPOT' | 'FUTURES' }, currentPrice, candles, skipped: undefined };
+          const currentPrice = snap.liquidity?.lastPrice || snap.m5[snap.m5.length - 1]?.close || 0;
+
+          const openPositions = [
+            ...[...state.openedSymbols.entries()].map(([s, m]) => ({ symbol: s, type: m.type as TradeType })),
+            ...(ctx ? ctx.openFutures.map((p) => ({ symbol: p.symbol, type: 'FUTURES' as TradeType })) : [])
+          ];
+          const portfolio = buildPortfolioRiskStats({
+            portfolioValue: ctx?.available ?? 0,
+            initialAmount: ctx?.available ?? 0,
+            dailyDrawdownPercent: 0,
+            weeklyDrawdownPercent: 0,
+            openPositionsCount: runningTotals.totalOpen,
+            openFuturesPositionsCount: runningTotals.futuresOpen,
+            totalLeveragedExposureUsd: 0
+          });
+
+          const decision = evaluateIntradayDecision({
+            symbol: snap.symbol,
+            h1: snap.h1,
+            m15: snap.m15,
+            m5: snap.m5,
+            spreadPercent: snap.liquidity?.spreadPercent ?? 0,
+            quoteVolume24h: snap.liquidity?.quoteVolume24h ?? 0,
+            livePrice: currentPrice,
+            portfolio,
+            openPositions
+          });
+
+          const action = decision.outcome === 'SIGNAL' ? (decision.tradeType as 'SPOT' | 'FUTURES') : 'HOLD';
+          const side = decision.direction === 'LONG' ? 'LONG' : decision.direction === 'SHORT' ? 'SHORT' : 'NONE';
+          const confidence = decision.outcome === 'SIGNAL' ? Math.round((decision.metrics.setupScore + decision.metrics.entryScore) / 2) : 0;
+          return { symbol, action, side, confidence, reason: decision.summary, currentPrice, decision, skipped: undefined };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           state.skippedSymbols.push({ symbol, reason: `שגיאה בסריקה: ${msg}` });
-          return { symbol, action: 'HOLD' as const, side: 'NONE', confidence: 0, reason: `שגיאה: ${msg}`, layer0: {} as ScanResult['layer0'], layer1: { action: 'HOLD', confidence: 0, signals: [], rawConfidence: 0, penalties: [], reason: `שגיאה: ${msg}` }, layer2: { type: 'HOLD', side: 'NONE', reason: `שגיאה: ${msg}` }, currentPrice: 0, candles: [], skipped: undefined };
+          return { symbol, action: 'HOLD', side: 'NONE', confidence: 0, reason: `שגיאה: ${msg}`, currentPrice: 0, decision: null as unknown as IntradayDecision, skipped: undefined };
         }
       }));
 
@@ -660,11 +646,11 @@ async function scan(): Promise<void> {
         if (scannedThisRun.has(d.symbol)) continue; // idempotency within scan
         if (state.openedSymbols.has(d.symbol)) continue; // idempotency across restarts (now with expiry, see above)
         if (runningTotals.totalOpen >= maxOpenPositions) { d.skipped = 'הגעה למקסימום פוזיציות'; continue; }
-        const res = await executeOrder(d, ctx, runningTotals);
+        const res = await executeOrder(d.decision, ctx, runningTotals);
         if (res.opened) {
           runningTotals.totalOpen++;
           if (d.action === 'FUTURES') runningTotals.futuresOpen++;
-          state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action });
+          state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action as 'SPOT' | 'FUTURES' });
           scannedThisRun.add(d.symbol);
         } else if (res.skipped) {
           d.skipped = res.skipped;

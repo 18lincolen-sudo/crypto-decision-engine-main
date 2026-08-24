@@ -1,7 +1,9 @@
-# אלגוריתם ההחלטה וניהול הסיכונים (Spot + Futures) — ארכיטקטורת 6 שכבות
+# אלגוריתם ההחלטה וניהול הסיכונים (Spot + Futures) — ארכיטקטורת 7 שכבות
 
-מסמך זה מתאר באופן מלא ומדויק את שרשרת ההחלטה האלגוריתמית של מערכת המסחר (בוט הסימולציה ובוט המסחר האמיתי ב-Bybit).
-המערכת פועלת על בסיס מנוע החלטות אחוד (`tradeEngine.ts`), המבטיח תאימות מלאה (100% Parity) בין הסימולציה לביצוע החי.
+מסמך זה מתאר באופן מלא ומדויק את שרשרת ההחלטה האלגוריתמית של מערכת המסחר.  
+המערכת פועלת על בסיס מנוע החלטות אחוד (`tradeEngine.ts`) המבטיח תאימות מלאה (100% Parity) בין בוט הסימולציה לבוט המסחר החי ב-Bybit.
+
+> **עדכון אחרון**: גרסה 2.1 — משקפת את הקוד ב-`tradeEngine.ts` במלואו.
 
 ---
 
@@ -9,31 +11,42 @@
 ## LAYER 0 — MARKET REGIME DETECTION (מופעל ראשון תמיד)
 ## ═══════════════════════════════════════════════════════
 
-לפני כל החלטת מסחר, המערכת מזהה ומנתחת את משטר השוק הנוכחי על פי 3 רכיבים מרכזיים:
+לפני כל החלטת מסחר, המערכת מזהה את משטר השוק לפי **3 מדדים**:
 
-1. **מדד עוצמת מגמה ADX(14)**:
-   - `ADX > 25` → **TRENDING** (שוק מגמתי מובהק — תומך במסחר Futures ממונף).
-   - `ADX < 20` → **RANGING** (שוק דשדוש / ציר — מותר מסחר Spot בלבד).
-   - `20 <= ADX <= 25` → **TRANSITIONAL** (משטר מעבר — חסימה מוחלטת לפתיחת כל עמדה חדשה).
+### 1. ADX(14) — עוצמת מגמה
 
-2. **כיוון מגמה Supertrend(10, 3)**:
-   - קו ה-Supertrend מתחת למחיר הנכס → **BULLISH TREND (BULL)**.
-   - קו ה-Supertrend מעל למחיר הנכס → **BEARISH TREND (BEAR)**.
+| ערך ADX | משטר | משמעות |
+|---|---|---|
+| `ADX > 25` | **TRENDING** | שוק מגמתי — תומך Futures + Spot |
+| `ADX < 20` | **RANGING** | שוק דשדוש — רק Spot מותר |
+| `20 ≤ ADX ≤ 25` | **TRANSITIONAL** | משטר מעבר — **חסימה הרמטית** לכל כניסה חדשה |
 
-3. **משטר תנודתיות Volatility Regime מבוסס ATR(14)**:
-   - חישוב תנודתיות באחוזים: $\text{ATR}\% = \frac{\text{ATR}(14)}{\text{Price}} \times 100$
-   - $\text{ATR}\% < 2\%$ → **LOW VOL** (תנודתיות נמוכה, מאפשרת מינוף מרבי של עד 5x).
-   - $2\% \le \text{ATR}\% \le 5\%$ → **NORMAL VOL** (תנודתיות רגילה, מינוף מרבי 3x).
-   - $\text{ATR}\% > 5\%$ → **HIGH VOL** (תנודתיות קיצונית — איסור מוחלט על פתיחת עמדות Futures חדשות).
+> ברירת מחדל במקרה של מעט נרות: `ADX = 22` (TRANSITIONAL)
 
-**פלט Layer 0**:
+### 2. Supertrend(10, 3) — כיוון מגמה
+
+- קו Supertrend **מתחת** למחיר → **BULL**
+- קו Supertrend **מעל** למחיר → **BEAR**
+- במצב RANGING → **NEUTRAL** (ללא כיוון מגמתי)
+
+### 3. Volatility Regime — ATR%(14)
+
+$$\text{ATR\%} = \frac{\text{ATR}(14)}{\text{Price}} \times 100$$
+
+| ATR% | משטר | השפעה |
+|---|---|---|
+| `< 2%` | **LOW** | מינוף בסיס 5x מותר |
+| `2% – 5%` | **NORMAL** | מינוף בסיס 3x מותר |
+| `> 5%` | **HIGH** | **Futures חסום לחלוטין** — Spot בלבד בסף מוגבר |
+
+**פלט Layer 0:**
 ```typescript
 interface MarketRegimeResult {
-  regime: 'TRENDING' | 'RANGING' | 'TRANSITIONAL';
-  direction: 'BULL' | 'BEAR' | 'NEUTRAL';
+  regime:     'TRENDING' | 'RANGING' | 'TRANSITIONAL';
+  direction:  'BULL' | 'BEAR' | 'NEUTRAL';
   volatility: 'LOW' | 'NORMAL' | 'HIGH';
-  adx: number;
-  atr: number;
+  adx:        number;
+  atr:        number;
   atrPercent: number;
   supertrend: { value: number; direction: 'BULL' | 'BEAR' };
 }
@@ -45,142 +58,272 @@ interface MarketRegimeResult {
 ## LAYER 1 — SIGNAL ENGINE (מנוע האותות)
 ## ═══════════════════════════════════════════════════════
 
-מנוע האותות מופעל **אך ורק** אם:
-$$\text{regime} \ne \text{TRANSITIONAL} \quad \text{AND} \quad \text{volatility} \ne \text{HIGH}$$
+### אינדיקטורים, משקולות ועוצמות (סה"כ משקל מקסימלי: 100)
 
-### אינדיקטורים, משקולות ורגישויות (סה"כ 100 נקודות משקל)
+| אינדיקטור | משקל | BUY חזק (1.0) | BUY בינוני | SELL חזק (1.0) | הערות |
+|---|---|---|---|---|---|
+| **MACD (12/26/9)** | 20 | חציית קו מעל אפס | MACD > Signal (0.7–0.85) | חציית קו מתחת לאפס | היסטוגרמה חיובית/שלילית |
+| **EMA 20/50** | 18 | Golden Cross טרי | EMA20 > EMA50 (0.8) | Death Cross טרי | EMA20 < EMA50 (0.8) |
+| **RSI(14)** | 12 | RSI ≤ 25 | RSI 25–35 (0.8) | RSI ≥ 75 | RSI 65–75 (0.8) |
+| **Bollinger Bands (20/2)** | 12 | מחיר < BB Lower | — | מחיר > BB Upper | בתוך הרצועות = NEUTRAL |
+| **Volume Surge** | 18 | ≥1.5x ממוצע + עלייה | <0.8x ממוצע (0.3) | ≥1.5x ממוצע + ירידה | 0.8x–1.5x = NEUTRAL (0) |
+| **Supertrend (10/3)** | 12 | כיוון BULL | — | כיוון BEAR | תמיד עוצמה 1.0 |
+| **Stochastic (14/3)** | 8 | K<20 & D<25 (0.85) | — | K>80 & D>75 (0.85) | אחרת NEUTRAL |
 
-| אינדיקטור | משקל | תנאי אות חזק (Strength 1.0) | תנאי אות רגיל (Strength 0.7-0.8) |
-|---|---|---|---|
-| **MACD Cross (12, 26, 9)** | **20** | חציית קו מעל/מתחת לאפס | מומנטום היסטוגרמה חיובי/שלילי |
-| **EMA 20 / 50 Cross** | **18** | Golden Cross / Death Cross טרי | EMA20 מעל/מתחת ל-EMA50 |
-| **RSI(14)** | **12** | $<25$ (Oversold קיצוני) / $>75$ (Overbought) | $<35$ (Buy) / $>65$ (Sell) |
-| **Bollinger Bands (20, 2)** | **12** | Squeeze Bandwidth + פריצה מעבר לרצועה | נגיעה או חריגה מהרצועה |
-| **Volume Surge** | **18** | $\text{Volume} \ge 1.5 \times \text{SMA}_{20}(\text{Volume})$ | פחות מ-1.5x ממוצע 20 נרות |
-| **Supertrend (10, 3)** | **12** | מחיר מעל/מתחת ל-Supertrend | אישוש כיוון מגמה |
-| **Stochastic (14, 3)** | **8** | $K < 20 \ \& \ D < 25$ / $K > 80 \ \& \ D > 75$ | פילטר אישוש בלבד |
+### חישוב ה-SignalScore (ציון ביטחון סופי)
 
-### חישוב הביטחון (Confidence) וקנסות פילטר קשיחים:
-1. סכימת נקודות המשקל עבור כל צד (BUY מול SELL):
-   $$\text{RawConfidence} = \frac{\sum (\text{weight}_i \times \text{strength}_i)}{\text{TotalWeight}} \times 100$$
-2. **קנס חוסר נפח**: אות ללא אישור נפח נחשב כושל — אם `Volume Surge === NEUTRAL`:
-   $$\text{Confidence} = \text{RawConfidence} \times 0.6$$
-3. **קנס שוק דשדוש**: אם `ADX < 20` (משטר Ranging), כל אות מגמתי מקבל קנס:
-   $$\text{Confidence} = \text{Confidence} \times 0.7$$
+$$\text{SignalScore} = \sum_{i} (\text{weight}_i \times \text{strength}_i)$$
+
+- **ציון מקסימלי אפשרי**: 100
+- מחושבים בנפרד: `buyScore` ו-`sellScore`
+- הכיוון עם הציון הגבוה ביותר נבחר כ-Action
+- **קנסות** (penalties) מצורפים ל-UI בלבד — **אינם מורידים את הציון** (Hard Gates נמצאים בLayer 2)
+
+### Fear & Greed Index
+- מוצג כהקשר בלבד (`penalties[]`) — אינו גורע מה-SignalScore
+- `< 25` → הערת "פחד קיצוני"
+- `> 75` → הערת "חמדנות קיצונית"
 
 ---
 
 ## ═══════════════════════════════════════════════════════
-## LAYER 2 — TRADE TYPE ROUTER (ניתוב סוג העסקה)
+## LAYER 2 — TRADE ROUTER & HARD GATES (ניתוב + שערים קשיחים)
 ## ═══════════════════════════════════════════════════════
 
-המערכת קובעת באופן אוטונומי האם העסקה תתבצע ב-**Futures (מינוף)** או ב-**Spot**:
+**סדר בדיקת שערים** (הראשון שמופעל — עוצר את השרשרת):
 
-### 1. FUTURES (Long / Short)
-מתבצע אך ורק אם **כל** התנאים הבאים מתקיימים בו-זמנית:
-1. $\text{regime} === \text{'TRENDING'}$
-2. $\text{confidence} \ge 72\%$
-3. $\text{volatility} === \text{'NORMAL'} \text{ או } \text{'LOW'}$
-4. $\text{ADX} > 25$
+### שערים קשיחים (Hard Gates) — לפי סדר בדיקה
+
+| סדר | שם | תנאי | תוצאה |
+|---|---|---|---|
+| 1 | **Weekly Circuit Breaker** | `weeklyDrawdown ≥ 13%` | HOLD — נעילה מלאה עד איפוס ידני |
+| 2 | **Daily Circuit Breaker** | `dailyDrawdown ≥ 6%` | HOLD — חסימת כניסות חדשות |
+| 3 | **Transitional Regime Block** | `ADX 20–25` | HOLD — משטר מעבר, הרמטי |
+| 4 | **Same-Asset Cross-Block** | קיים Futures/Spot על אותו נכס | HOLD — חסימת כניסה נוספת |
+| 5 | **No Directional Action** | `buyScore == sellScore` | HOLD — ללא יתרון כיווני |
+
+### ניתוב FUTURES
+**כל** התנאים הבאים חייבים להתקיים:
+1. `regime === 'TRENDING'` (ADX > 25)
+2. `volatility !== 'HIGH'` (ATR% ≤ 5%)
+3. `signalScore ≥ 70`
+4. Supertrend מתואם לכיוון: LONG→BULL, SHORT→BEAR
 5. אין פוזיציית Futures פתוחה על אותו נכס
 
-* כיוון: `LONG` אם פעולת השכבה היא BUY, או `SHORT` אם פעולת השכבה היא SELL.
+→ כיוון: BUY=`LONG`, SELL=`SHORT`
 
-### 2. SPOT (Buy / Sell)
-מתבצע כאשר:
-1. $\text{confidence} \ge 60\%$
-2. $\text{regime} === \text{'TRENDING'} \text{ או } \text{'RANGING'}$
-3. לא עומד בכל תנאי ה-Futures (למשל ביטחון בין 60% ל-71%, או שוק Ranging).
+### ניתוב SPOT
+מוערך **באופן עצמאי** (לא כ-fallback בלבד):
+1. `regime === 'TRENDING'` או `'RANGING'`
+2. `signalScore ≥ 58` (תנודתיות LOW/NORMAL) | `signalScore ≥ 62` (תנודתיות HIGH)
 
-### 3. HOLD (המתנה)
-כאשר הביטחון נמוך מ-60% או כאשר תנאי הסיכון אינם מאפשרים כניסה.
+→ כיוון: BUY=`BUY`, SELL=`SELL`
 
----
-
-## ═══════════════════════════════════════════════════════
-## LAYER 3 — RISK MANAGEMENT ENGINE (ניהול סיכונים מקצועי)
-## ═══════════════════════════════════════════════════════
-
-### 1. יעדי רווח ועצירת הפסד דינמיים מבוססי ATR(14)
-יעדי המסחר אינם אחוזים קבועים, אלא מחושבים דינמית לפי מדד ה-ATR של הנכס:
-
-- **עסקאות Spot**:
-  $$\text{Stop Loss} = \text{entryPrice} - (\text{ATR} \times 1.8)$$
-  $$\text{Take Profit} = \text{entryPrice} + (\text{ATR} \times 2.7) \quad (R:R \ge 1.5)$$
-
-- **עסקאות Futures Long**:
-  $$\text{Stop Loss} = \text{entryPrice} - (\text{ATR} \times 1.5)$$
-  $$\text{TP1 (50\% מימוש)} = \text{entryPrice} + (\text{ATR} \times 2.0)$$
-  $$\text{TP2 (סגירת שארית)} = \text{entryPrice} + (\text{ATR} \times 3.5)$$
-
-- **עסקאות Futures Short**:
-  $$\text{Stop Loss} = \text{entryPrice} + (\text{ATR} \times 1.5)$$
-  $$\text{TP1 (50\% מימוש)} = \text{entryPrice} - (\text{ATR} \times 2.0)$$
-  $$\text{TP2 (סגירת שארית)} = \text{entryPrice} - (\text{ATR} \times 3.5)$$
-
-### 2. לוגיקת קביעת מינוף (Leverage)
-- $\text{volatility} === \text{LOW}$ → מינוף בסיס **5x**
-- $\text{volatility} === \text{NORMAL}$ → מינוף בסיס **3x**
-- $\text{confidence} \ge 80\%$ → תוספת $+1\text{x}$ (עד מקסימום 5x)
-- **חסימת קוד קשיחה**: מינוף לעולם לא יעלה על 5x.
-
-### 3. גודל פוזיציה — Kelly Criterion מוגבל
-חישוב גודל הפוזיציה מבוצע לפי מודל קלי:
-$$\text{KellyFraction} = W - \frac{1 - W}{R}$$
-כאשר:
-- $W$ = אחוז ההצלחה (Win Rate) מתוך היסטוריית 30 עסקאות אחרונות לפחות.
-- $R$ = יחס רווח ממוצע להפסד ממוצע ($\frac{\text{Avg Win}}{\text{Avg Loss}}$).
-- $\text{BetSize} = \text{PortfolioValue} \times \min(\max(0, \text{KellyFraction} \times 0.5), 0.10)$
-- **תקרה קשיחה**: מקסימום 10% משווי התיק לעסקה בודדת.
-- **ברירת מחדל בהיעדר היסטוריה מספקת**: 3% משווי התיק.
-
-### 4. הגבלת חשיפת תיק כוללת
-- מקסימום **7 פוזיציות פתוחות** בו-זמנית בכל התיק.
-- מקסימום **2 פוזיציות Futures** בו-זמנית.
-- סה"כ חשיפה ממונפת לא תעלה על **20% משווי התיק**.
+### HOLD
+- ציון מתחת לסף המינימלי (58) — ממתין
 
 ---
 
 ## ═══════════════════════════════════════════════════════
-## LAYER 4 — EXIT ENGINE (מנוע יציאות מנוטר בכל טיק)
+## LAYER 3 — RISK MANAGEMENT ENGINE (ניהול סיכונים)
 ## ═══════════════════════════════════════════════════════
 
-בכל טיקט מנוטרות 5 שכבות יציאה לכל פוזיציה פתוחה:
+### 1. יעדי רווח ועצירת הפסד — ATR-Dynamic
 
-1. **פגיעה ב-TP / SL**:
-   - Spot: פגיעה ב-SL או ב-TP מובילה לסגירה מיידית מלאה (100%).
-   - Futures: פגיעה ב-TP1 מבצעת סגירה של 50% מהפוזיציה ומפעילה Trailing Stop. פגיעה ב-TP2 או ב-SL מבצעת סגירה מלאה.
-2. **Trailing Stop מבוסס ATR**:
-   - ב-Futures (לאחר נגיעה ב-TP1):
-     - עבור Long: קו ה-Stop נע ב-$\text{ATR} \times 1.0$ מתחת לשיא שנרשם.
-     - עבור Short: קו ה-Stop נע ב-$\text{ATR} \times 1.0$ מעל לשפל שנרשם.
-   - ב-Spot (בפוזיציה ברווח): ה-Stop נע ב-$\text{ATR} \times 1.3$ מתחת לשיא.
-3. **יציאת היפוך אותות (Signal Reversal)**:
-   - פוזיציית BUY / LONG פתוחה ועכשיו ביטחון SELL עולה ל-$\ge 65\%$ → יציאה מיידית.
-   - פוזיציית SELL / SHORT פתוחה ועכשיו ביטחון BUY עולה ל-$\ge 65\%$ → יציאה מיידית.
-4. **יציאה מבוססת זמן (Time-Based Exit)**:
-   - ב-Spot: אם לאחר 48 שעות הפוזיציה בהפסד של מעל 50% ממרחק ה-SL → יציאה.
-   - ב-Futures: אם לאחר 24 שעות לא נרשמה נגיעה ב-TP1 → צמצום הפוזיציה ב-50%.
-5. **הגנת תיק מפני Drawdown (Circuit Breakers)**:
-   - ירידת ערך תיק יומית של $\ge 8\%$ → עצירה מוחלטת של פתיחת עסקאות חדשות.
-   - ירידת ערך תיק שבועית של $\ge 15\%$ → כיבוי אוטומטי מלא של הבוט והתרעה קריטית.
+**Spot:**
+$$\text{SL} = \text{entryPrice} - (\text{ATR} \times 1.8)$$
+$$\text{TP} = \text{entryPrice} + (\text{ATR} \times 2.7) \quad (R:R \approx 1.5)$$
+
+**Futures Long:**
+$$\text{SL} = \text{entryPrice} - (\text{ATR} \times 1.5)$$
+$$\text{TP1 (50\%)} = \text{entryPrice} + (\text{ATR} \times 2.0)$$
+$$\text{TP2 (100\%)} = \text{entryPrice} + (\text{ATR} \times 3.5)$$
+
+**Futures Short:**
+$$\text{SL} = \text{entryPrice} + (\text{ATR} \times 1.5)$$
+$$\text{TP1 (50\%)} = \text{entryPrice} - (\text{ATR} \times 2.0)$$
+$$\text{TP2 (100\%)} = \text{entryPrice} - (\text{ATR} \times 3.5)$$
+
+### 2. מינוף (Futures בלבד)
+
+| תנודתיות | מינוף בסיס | תוספת אם SignalScore ≥ 80 | מקסימום |
+|---|---|---|---|
+| LOW | 5x | +1x (→ אך מקסימום 5x) | **5x** |
+| NORMAL | 3x | +1x → 4x | **5x** |
+| HIGH | חסום | — | — |
+
+### 3. גודל פוזיציה — Risk-First (0.75% Portfolio Risk Budget)
+
+$$\text{MaxRiskAmount} = \text{PortfolioValue} \times 0.0075$$
+
+$$\text{StopDistance} = |\text{entryPrice} - \text{SL}|$$
+
+$$\text{PositionSizeUnits} = \frac{\text{MaxRiskAmount}}{\text{StopDistance}}$$
+
+$$\text{NotionalUSD} = \text{PositionSizeUnits} \times \text{entryPrice}$$
+
+**מגבלות גודל:**
+- Spot: `Notional ≤ 15% × PortfolioValue`
+- Futures: סה"כ חשיפה ממונפת לא תחרוג מ-**20% מהתיק** (Hard Block אם חורג)
+
+**Kelly Modifier** (מופעל רק עם ≥ 30 עסקאות סגורות):
+$$\text{Kelly} = W - \frac{1-W}{R}$$
+- $W$ = Win Rate מ-30+ עסקאות אחרונות
+- $R$ = avgWin / avgLoss
+- $\text{KellyScale} = \min(1.0, \max(0.2, \text{Kelly} \times 0.5))$ — חצי-Kelly, מוגבל לסקאלה 0.2–1.0
+- `maxRiskAmount = maxRiskAmount × KellyScale` (תמיד ≤ 0.75%)
+
+**ברירת מחדל ללא היסטוריה**: Kelly = 0, scale = 0.2 → risk budget = 0.15% מהתיק
+
+**הגבלות קיבולת:**
+- מקסימום **7 פוזיציות** בסך הכל
+- מקסימום **2 פוזיציות Futures** בו-זמנית
+- מינימום גודל עסקה: **$5**
 
 ---
 
 ## ═══════════════════════════════════════════════════════
-## LAYER 5 — עמלות, החלקה ותאימות מלאה (Simulation vs Live)
+## LAYER 3.5 — ENTRY TIMING VALIDATOR (שער כניסה אופטימלי)
+## ═══════════════════════════════════════════════════════
+
+שכבה זו מונעת "רדיפה אחרי שיאים מקומיים" לאחר שLayer 2 אישר כניסה.
+
+### חסימות כניסה BUY / LONG
+
+| תנאי | סיבת חסימה |
+|---|---|
+| `RSI > 72` | RSI קנוי-יתר — ממתין לקירור |
+| `price > BB_Upper × 0.999` | מחיר בשיא Bollinger — ממתין לנסיגה |
+| `price > EMA20 + ATR × 1.5` | מחיר מרוחק מהממוצע — ממתין לנסיגה |
+
+### חסימות כניסה SELL / SHORT
+
+| תנאי | סיבת חסימה |
+|---|---|
+| `RSI < 28` | RSI מכירת-יתר — ממתין לעלייה |
+| `price < BB_Lower × 1.001` | מחיר בשפל Bollinger — ממתין לעלייה |
+| `price < EMA20 - ATR × 1.5` | מחיר מרוחק מהממוצע — ממתין לחזרה |
+
+### מחיר כניסה (Limit Order)
+
+$$\text{EntryPrice}_{BUY} = \text{CurrentPrice} - (\text{ATR} \times 0.35)$$
+$$\text{EntryPrice}_{SELL} = \text{CurrentPrice} + (\text{ATR} \times 0.35)$$
+
+---
+
+## ═══════════════════════════════════════════════════════
+## LAYER 4 — EXIT ENGINE (מנוע יציאות — מנוטר בכל טיק)
+## ═══════════════════════════════════════════════════════
+
+**סדר בדיקת יציאות** לכל פוזיציה פתוחה:
+
+### 1. Drawdown Circuit Breaker (עדיפות עליונה)
+- `weeklyDrawdown ≥ 15%` → **סגירה מיידית מלאה** של הפוזיציה (הגנת הון)
+
+> הערה: שערי כניסה חסומים כבר ב-13%, אך יציאה מוחלטת של פוזיציות מופעלת ב-15%
+
+### 2. Stop Loss
+- Long/BUY: `currentPrice ≤ SL` → יציאה מלאה
+- Short: `currentPrice ≥ SL` → יציאה מלאה
+
+### 3. Take Profit & Trailing Stop
+
+**Spot:**
+- `price ≥ TP` → יציאה מלאה (100%)
+- Trailing Stop: מופעל לאחר רווח של `> 1.0 ATR` → Stop נע `1.3 ATR` מתחת לשיא
+
+**Futures Long:**
+- `price ≥ TP2` → יציאה מלאה (100%)
+- `price ≥ TP1` ולא הופעל עדיין → יציאה **50% (PARTIAL_50)** + הפעלת Trailing Stop
+- לאחר TP1: Stop = `peak - 1.0 ATR`
+
+**Futures Short:**
+- `price ≤ TP2` → יציאה מלאה (100%)
+- `price ≤ TP1` ולא הופעל עדיין → יציאה **50% (PARTIAL_50)** + הפעלת Trailing Stop
+- לאחר TP1: Stop = `valley + 1.0 ATR`
+
+### 4. Signal Reversal Exit
+- Long/BUY פתוח + ציון SELL `≥ 65` → יציאה מיידית
+- Short/SELL פתוח + ציון BUY `≥ 65` → יציאה מיידית
+
+### 5. Time-Based Exit
+- **Spot**: אחרי 48 שעות, אם הפוזיציה בהפסד `> 50%` ממרחק ה-SL → יציאה
+- **Futures**: אחרי 24 שעות, אם TP1 לא הושג → צמצום 50% (PARTIAL_50)
+
+---
+
+## ═══════════════════════════════════════════════════════
+## LAYER 5 — FEES & REALISTIC SLIPPAGE (עמלות + החלקה)
 ## ═══════════════════════════════════════════════════════
 
 ### עמלות Bybit רשמיות
-- **Bybit Spot**: Maker 0.1%, Taker 0.1%
-- **Bybit Futures**: Maker 0.02%, Taker 0.055%
 
-### מודל החלקה (Slippage Simulation)
-- בסימולציה, מיושמת החלקה רנדומלית מציאותית בטווח של $0.05\%$ עד $0.15\%$ לרעת העסקה:
-  $$\text{FillPrice}_{\text{Buy}} = \text{MarketPrice} \times (1 + \text{Slippage})$$
-  $$\text{FillPrice}_{\text{Sell}} = \text{MarketPrice} \times (1 - \text{Slippage})$$
+| סוג | Maker | Taker |
+|---|---|---|
+| **Spot** | 0.1% | 0.1% |
+| **Futures (Linear)** | 0.02% | 0.055% |
 
-### תאימות מלאה (100% Parity)
-- שני הבוטים משתמשים באותו קובץ `tradeEngine.ts`.
-- כל חישובי ה-Regime, ה-Signal, ה-Kelly, ה-TP/SL והיציאות זהים לחלוטין.
-- בבוט החי, כל הפקודות נשלחות דרך Bybit API v5 ב-Unified Account (קטגוריות `spot` ו-`linear`).
+> הסימולציה משתמשת בעמלת Taker (מחמירה יותר) לכל הפקודות.
+
+### Break-Even Price (כולל עמלות הלוך-חזור)
+
+$$\text{BE}_{Spot} = \text{entryPrice} \times 1.002 \quad (0.2\% \text{ round-trip})$$
+$$\text{BE}_{Futures} = \text{entryPrice} \times 1.0011 \quad (0.11\% \text{ round-trip})$$
+
+### מודל החלקה (Slippage)
+
+$$\text{Slippage} \in [0.05\%, 0.15\%] \quad \text{(random, uniform)}$$
+$$\text{FillPrice}_{BUY} = \text{MarketPrice} \times (1 + \text{slippage\%})$$
+$$\text{FillPrice}_{SELL} = \text{MarketPrice} \times (1 - \text{slippage\%})$$
+
+---
+
+## ═══════════════════════════════════════════════════════
+## LAYER 6 — DATA PIPELINE (מקורות נתונים חיים)
+## ═══════════════════════════════════════════════════════
+
+הבוט פועל **אך ורק** עם נרות OHLCV אמיתיים — **אפס מוק/נתונים מזויפים**.
+
+### היררכיית מקורות נרות (לפי עדיפות)
+
+| עדיפות | מקור | תדירות | הערה |
+|---|---|---|---|
+| 1 | **Bybit Klines** | `'D'`, 30 נרות | מקור ראשי — מהיר, כולל נפח |
+| 2 | **Binance Public API** | `'1d'`, 60 נרות | גיבוי אם Bybit נכשל |
+| 3 | **CoinGecko Historical** | 30 ימים | גיבוי אחרון — סדרתי, 4s delay בין קריאות |
+
+- רענון אוטומטי כל **5 דקות**
+- נכסים ללא נרות (`candles.length < 2`) — **מדולגים לחלוטין** (לא מוערכים)
+
+---
+
+## ═══════════════════════════════════════════════════════
+## מסמך עזר — סיכום סף כניסות
+## ═══════════════════════════════════════════════════════
+
+| סוג | VOL | סף SignalScore | ADX נדרש |
+|---|---|---|---|
+| Futures LONG/SHORT | LOW/NORMAL | **≥ 70** | > 25 (TRENDING) |
+| Spot BUY/SELL | LOW/NORMAL | **≥ 58** | > 20 (TRENDING/RANGING) |
+| Spot BUY/SELL | HIGH | **≥ 62** | > 20 |
+| כל כניסה | כל | — | **≠ TRANSITIONAL (20–25)** |
+
+## ═══════════════════════════════════════════════════════
+## מסמך עזר — Circuit Breakers
+## ═══════════════════════════════════════════════════════
+
+| סוג | סף | פעולה |
+|---|---|---|
+| **Daily Drawdown Block** | `≥ 6%` | חסימת כניסות חדשות בלבד |
+| **Weekly Drawdown Lock** | `≥ 13%` | נעילה מלאה — שחרור ידני בלבד |
+| **Forced Position Close** | `≥ 15%` (שבועי) | סגירת פוזיציות קיימות |
+
+---
+
+## תאימות מלאה (100% Parity)
+
+- סימולציה + מסחר חי משתמשים **באותו** `tradeEngine.ts`
+- כל החישובים (Regime, Signals, Kelly, TP/SL, Exits) — זהים לחלוטין
+- בבוט החי: פקודות נשלחות ל-Bybit API v5, Unified Account
+  - Spot: category `'spot'`
+  - Futures: category `'linear'`

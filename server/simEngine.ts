@@ -2,21 +2,22 @@
 // (useSimulationBot) but inside Node, so the shared bot advances 24/7 without
 // any browser tab open. Reuses the real tradeEngine + market-data clients.
 import {
-  detectMarketRegime,
-  evaluateSignals,
-  routeTradeType,
-  calculateRiskParameters,
-  calculateOptimalEntry,
-  evaluateExit,
   calculateTradingFee,
   simulateSlippage,
-  calculateATR,
   Candle
 } from '../src/services/tradeEngine';
-import { coinGeckoApi } from '../src/services/coinGeckoApi';
-import { bybitApi } from '../src/services/bybitApi';
-import { getAggregatedPrices, getAggregatedCandles } from '../src/services/cryptoPriceAggregator';
-import { CryptoData, ActivePosition } from '../src/types/crypto';
+import { getAggregatedPrices } from '../src/services/cryptoPriceAggregator';
+import { CryptoData } from '../src/types/crypto';
+import {
+  evaluateSymbolFromSnapshot,
+  buildPortfolioRiskStats,
+  evaluatePositionExit,
+  computeAtr5,
+  MultiTimeframeSnapshot,
+  SignalEvaluation
+} from '../src/services/intradayBridge';
+import { getUniverseMarketData } from '../src/services/marketDataService';
+import type { IntradayDecision } from '../src/services/intradayEngine';
 
 interface SimEvaluationResult {
   symbol: string;
@@ -37,6 +38,7 @@ interface SimEvaluationResult {
   takeProfit1?: number;
   takeProfit2?: number;
   takeProfit?: number;
+  decision?: IntradayDecision;
 }
 
 interface SimEvaluateResult {
@@ -156,10 +158,6 @@ const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slic
 const TICK_MS = 4000;
 const CRYPTO_REFRESH_MS = 60_000;  // 60s — Bybit/Binance are fast, no need to hammer CoinGecko
 const CANDLE_REFRESH_MS = 5 * 60_000;
-// CoinGecko fallback candles are cached; re-fetch at most this often. Daily
-// candles don't change meaningfully within a day, and the free tier is shared
-// with the primary price feed, so we must NOT hit it every candle cycle.
-const COINGECKO_CANDLE_TTL = 6 * 60 * 60_000;
 
 export function createSimEngine() {
   let cash = 10000;
@@ -173,13 +171,12 @@ export function createSimEngine() {
   let lastEvaluation = '';
   let lastEvaluations: SimEvaluationResult[] = [];
 
-  let liveCandles: Record<string, Candle[]> = {};
+  let liveCandles: Record<string, MultiTimeframeSnapshot> = {};
   let cryptoData: CryptoData[] = [];
   const lastPrices: Record<string, number> = {};
   let cryptoRefreshAt = 0;
   let candleRefreshAt = 0;
   let candleRefreshing = false;
-  let coinGeckoCandleRefreshAt = 0;
   let initialAmount = 10000;
 
   async function chunked<T>(items: T[], size: number, fn: (batch: T[]) => Promise<void>) {
@@ -196,8 +193,8 @@ export function createSimEngine() {
   }
 
   function buildCandlesForSymbol(symbol: string): Candle[] {
-    const live = liveCandles[symbol.toUpperCase()];
-    return live && live.length ? live : [];
+    const snap = liveCandles[symbol.toUpperCase()];
+    return snap && snap.m5 && snap.m5.length ? snap.m5 : [];
   }
 
   function positionsValue(): number {
@@ -273,95 +270,14 @@ export function createSimEngine() {
   async function refreshCandles() {
     if (!cryptoData.length) return;
     const symbols = cryptoData.map((c) => c.symbol.toUpperCase());
-    const next: Record<string, Candle[]> = { ...liveCandles };
-
-    // 1) Primary: Bybit klines (fast, no rate limit) in bounded concurrency.
-    await chunked(symbols, 10, async (batch) => {
-      await Promise.all(
-        batch.map(async (symbol) => {
-          try {
-            const klines = await bybitApi.getKlineData(bybitApi.getBybitSymbol(symbol), 'D', 30);
-            if (klines && klines.length > 0) {
-              next[symbol] = klines.map((k) => ({
-                timestamp: parseInt(k.openTime, 10),
-                open: parseFloat(k.open),
-                high: parseFloat(k.high),
-                low: parseFloat(k.low),
-                close: parseFloat(k.close),
-                volume: parseFloat(k.volume)
-              }));
-            }
-          } catch {
-            /* keep last-known-good candles on Bybit failure */
-          }
-        })
-      );
-    });
-
-    // 2) Binance klines for symbols Bybit could NOT serve (free, 1200 req/min — no rate limit concern)
-    const afterBybit = symbols.filter((s) => !next[s] || next[s].length < 2);
-    if (afterBybit.length > 0) {
-      await chunked(afterBybit, 10, async (batch) => {
-        await Promise.all(
-          batch.map(async (symbol) => {
-            try {
-              const candles = await getAggregatedCandles(symbol, 60);
-              if (candles && candles.length >= 2) {
-                next[symbol] = candles;
-              }
-            } catch { /* keep last-known-good */ }
-          })
-        );
-      });
+    try {
+      const { snapshots } = await getUniverseMarketData(symbols, { log: true });
+      const next: Record<string, MultiTimeframeSnapshot> = {};
+      for (const [sym, snap] of snapshots) next[sym] = snap;
+      liveCandles = next;
+    } catch {
+      /* keep last-known-good MTF data on failure */
     }
-
-    // 3) Fallback: CoinGecko historical candles for symbols neither Bybit nor Binance
-    // could serve (delisted / unsupported spot pairs like TON, NEO, MATIC→POL,
-    // RNDR→RENDER, FTM→SONIC, etc.). This keeps all ~100 symbols tradeable
-    // instead of silently dropping ~20 of them.
-    //
-    // CoinGecko's FREE tier is heavily rate-limited AND is shared with the
-    // primary price feed (getCurrentPrices, min 2-min TTL). To avoid starving
-    // that feed, this fallback is gated behind COINGECKO_CANDLE_TTL (runs at
-    // most every 6h), fetched sequentially, and fails FAST on 429 so a
-    // rate-limited cycle doesn't burn the shared budget with long backoff
-    // waits. Daily candles are cached in liveCandles, so once fetched they
-    // persist across cycles.
-    const now = Date.now();
-    const missing = symbols.filter((s) => !next[s] || next[s].length < 2);
-    if (missing.length && now - coinGeckoCandleRefreshAt > COINGECKO_CANDLE_TTL) {
-      coinGeckoCandleRefreshAt = now;
-      await chunked(missing, 1, async (batch) => {
-        await Promise.all(
-          batch.map(async (symbol) => {
-            try {
-              const coinId = coinGeckoApi.getCoinId(symbol);
-              const hist = await coinGeckoApi.getHistoricalPrices(coinId, 60, 0);
-              if (hist && hist.length >= 2) {
-                next[symbol] = hist.map((h, i) => {
-                  const open = i === 0 ? h.price : hist[i - 1].price;
-                  const close = h.price;
-                  return {
-                    timestamp: h.timestamp,
-                    open,
-                    high: Math.max(open, close),
-                    low: Math.min(open, close),
-                    close,
-                    volume: h.volume
-                  };
-                });
-              }
-            } catch {
-              /* keep last-known-good candles on CoinGecko failure */
-            }
-          })
-        );
-        // Gentle pause so we don't trip CoinGecko's free-tier rate limit.
-        await new Promise((r) => setTimeout(r, 3000));
-      });
-    }
-
-    liveCandles = next;
   }
 
   function evaluate(config: SimBotConfig, fearGreed: number) {
@@ -378,153 +294,69 @@ export function createSimEngine() {
     const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 15;
 
     const results: SimEvaluationResult[] = [];
+
+    const portfolio = buildPortfolioRiskStats({
+      portfolioValue: eq,
+      initialAmount,
+      dailyDrawdownPercent,
+      weeklyDrawdownPercent,
+      openPositionsCount: openPos.length,
+      openFuturesPositionsCount: futuresCount,
+      totalLeveragedExposureUsd
+    });
+
+    const openPositionsForEngine = openPos.map((p) => ({ symbol: p.symbol, type: p.type as 'SPOT' | 'FUTURES' }));
+
     for (const crypto of cryptoData) {
       const symbol = crypto.symbol.toUpperCase();
       const currentPrice = crypto.current_price;
       const priceChange24h = crypto.price_change_percentage_24h || 0;
 
-      const candles = buildCandlesForSymbol(symbol);
-      if (candles.length < 2) continue;
+      const snap = liveCandles[symbol];
+      if (!snap || snap.status !== 'READY') continue;
 
-      const layer0 = detectMarketRegime(candles, currentPrice);
-      const layer1 = evaluateSignals(candles, currentPrice, priceChange24h, layer0, fearGreed, config.riskLevel);
-      const hasExistingFutures = openPos.some((p) => p.symbol === symbol && p.type === 'FUTURES');
-      const hasExistingSpot = openPos.some((p) => p.symbol === symbol && p.type === 'SPOT');
-      const layer2 = routeTradeType(layer1, layer0, {
-        hasExistingFutures,
-        hasExistingSpot,
-        isDailyBlocked: isCircuitBreakerDaily,
-        isWeeklyLocked: isCircuitBreakerWeekly
-      });
-
-      const isHeld = openPos.some((p) => p.symbol === symbol);
-      const isQueued = queued.some((o) => o.symbol === symbol);
-
-      const riskParams = calculateRiskParameters(
-        currentPrice,
-        layer2.type,
-        layer2.side,
-        layer0.atr,
-        layer0.volatility,
-        layer1.signalScore,
-        eq,
-        trades.map((t) => ({ pnl: t.pnl || 0 })),
-        openPos.length,
-        futuresCount,
-        totalLeveragedExposureUsd
+      const ev = evaluateSymbolFromSnapshot(
+        snap,
+        { price: currentPrice, priceChange24h },
+        portfolio,
+        openPositionsForEngine
       );
 
-      const entryTiming = (layer2.type !== 'HOLD' && !layer2.hardGateBlocked)
-        ? calculateOptimalEntry(currentPrice, layer0.atr, layer2.side as any, candles)
-        : null;
+      const isQueued = queued.some((o) => o.symbol === symbol);
+      const isHeld = openPos.some((p) => p.symbol === symbol);
+      const hasExistingFutures = openPos.some((p) => p.symbol === symbol && p.type === 'FUTURES');
 
-      let status = '';
-      let willExecute = false;
+      let status = ev.status;
+      let willExecute = ev.willExecute;
 
-      if (isCircuitBreakerWeekly) status = 'נעילת מערכת שבועית (הפסד >= 15%) — מושבת';
-      else if (isCircuitBreakerDaily) status = 'הגנת תיק יומית (הפסד >= 8%) — חסום';
-      else if (isQueued) status = 'פקודה כבר נמצאת בתור ביצוע';
-      else if (layer2.hardGateBlocked) status = layer2.reason;
-      else if (layer2.type === 'HOLD') status = layer2.reason;
-      else if (openPos.length >= maxTotalPositions) status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`;
-      else if (layer2.type === 'FUTURES' && futuresCount >= maxFutures) status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`;
-      else if (layer2.type === 'FUTURES' && hasExistingFutures) status = 'קיימת כבר פוזיציית Futures פתוחה';
-      else if (layer2.type === 'SPOT' && layer2.side === 'SELL' && !isHeld) status = 'מכירת Spot חשופה אסורה — אין החזקה בתיק';
-      else if (layer2.type === 'SPOT' && isHeld && layer2.side === 'BUY') status = 'כבר מוחזק בתיק (Spot)';
-      else if (layer0.atr <= 0 || currentPrice <= 0) status = 'אין נתוני מחיר/תנודתיות (ATR) — לא ניתן לחשב סיכון';
-      else if (!entryTiming || !entryTiming.shouldEnterNow) status = `ממתין לתזמון כניסה: ${entryTiming?.reason || 'תנאי כניסה לא הבשילו'}`;
-      else if (!riskParams) status = 'חריגת חשיפה ממונפת (מקס\' 20% מהתיק)';
-      else if (riskParams.betSizeUsd < 5) status = 'הון נמוך מדי לפתיחת פוזיציה (מינימום $5)';
-      else {
-        willExecute = true;
-        status = layer2.type === 'FUTURES'
-          ? `מבצע Futures ${riskParams.leverage}x ${layer2.side} ($${riskParams.betSizeUsd})`
-          : `מבצע Spot ${layer2.side} ($${riskParams.betSizeUsd})`;
-      }
-
-      // Build the 6-layer decision breakdown for UI transparency (the
-      // "פירוט 6 שכבות החלטה" panel reads rec.factors).
-      const factors: { label: string; value: string; impact: 'positive' | 'negative' | 'neutral'; note: string }[] = [
-        {
-          label: 'משטר שוק (ADX 14) — Layer 0',
-          value: `${layer0.regime} (ADX ${layer0.adx})`,
-          impact: layer0.regime === 'TRENDING' ? 'positive' : layer0.regime === 'RANGING' ? 'neutral' : 'negative',
-          note: layer0.regime === 'TRENDING' ? 'שוק מגמתי מובהק — תומך ב-Futures' : layer0.regime === 'RANGING' ? 'שוק ציר/דשדוש — רק Spot' : 'משטר מעבר — חסום'
-        },
-        {
-          label: 'תנודתיות (ATR%) — Layer 0',
-          value: `${layer0.volatility} (${layer0.atrPercent}%)`,
-          impact: layer0.volatility === 'HIGH' ? 'negative' : 'positive',
-          note: layer0.volatility === 'HIGH' ? 'תנודתיות גבוהה מעל 5% — אסור לפתוח Futures' : 'תנודתיות מתאימה'
-        },
-        {
-          label: 'Supertrend (10, 3) — Layer 0',
-          value: `$${layer0.supertrend.value.toFixed(2)} (${layer0.supertrend.direction})`,
-          impact: layer0.supertrend.direction === 'BULL' ? 'positive' : 'negative',
-          note: `מגמת Supertrend: ${layer0.supertrend.direction}`
-        }
-      ];
-
-      // Layer 1 — Signal engine indicators
-      for (const sig of layer1.signals) {
-        factors.push({
-          label: sig.name,
-          value: sig.value,
-          impact: sig.signal === 'BUY' ? 'positive' : sig.signal === 'SELL' ? 'negative' : 'neutral',
-          note: sig.reason
-        });
-      }
-      for (const p of layer1.penalties) {
-        factors.push({ label: 'התאמת ביטחון', value: p, impact: 'negative', note: 'ענישת פילטר' });
-      }
-
-      // Layer 2 — Trade type router
-      factors.push({
-        label: 'ניתוב עסקה (Spot/Futures) — Layer 2',
-        value: layer2.type === 'HOLD' ? 'HOLD' : `${layer2.type} ${layer2.side}`,
-        impact: layer2.type === 'HOLD' ? 'neutral' : 'positive',
-        note: layer2.reason
-      });
-
-      // Layer 3 — Risk management (SL/TP/leverage/sizing)
-      if (riskParams) {
-        const tp = riskParams.takeProfit ?? riskParams.takeProfit1 ?? 0;
-        factors.push({
-          label: 'ניהול סיכונים (SL/TP/מינוף) — Layer 3',
-          value: `SL $${riskParams.stopLoss} • TP $${tp} • ${riskParams.leverage}x • $${riskParams.betSizeUsd}`,
-          impact: 'positive',
-          note: `יחס סיכוי/סיכון ${riskParams.riskRewardRatio} • ${riskParams.positionPercentOfPortfolio}% מהתיק`
-        });
-      } else {
-        factors.push({
-          label: 'ניהול סיכונים (SL/TP/מינוף) — Layer 3',
-          value: 'נחסם',
-          impact: 'negative',
-          note: 'חריגת חשיפה ממונפת (מקס\' 20%) או הון נמוך מדי (מינימום $5)'
-        });
-      }
+      if (isCircuitBreakerWeekly) { status = 'נעילת מערכת שבועית (הפסד >= 15%) — מושבת'; willExecute = false; }
+      else if (isCircuitBreakerDaily) { status = 'הגנת תיק יומית (הפסד >= 8%) — חסום'; willExecute = false; }
+      else if (isQueued) { status = 'פקודה כבר נמצאת בתור ביצוע'; willExecute = false; }
+      else if (openPos.length >= maxTotalPositions) { status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`; willExecute = false; }
+      else if (ev.tradeType === 'FUTURES' && futuresCount >= maxFutures) { status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false; }
+      else if (ev.tradeType === 'FUTURES' && hasExistingFutures) { status = 'קיימת כבר פוזיציית Futures פתוחה'; willExecute = false; }
+      else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) { status = 'כבר מוחזק בתיק (Spot)'; willExecute = false; }
 
       results.push({
-        symbol,
-        action: layer1.action === 'BUY' ? 'buy' : layer1.action === 'SELL' ? 'sell' : 'hold',
-        tradeType: layer2.type,
-        tradeSide: layer2.side,
-        confidence: layer1.confidence,
-        price: currentPrice,
+        symbol: ev.symbol,
+        action: ev.action,
+        tradeType: ev.tradeType,
+        tradeSide: ev.tradeSide,
+        confidence: ev.confidence,
+        price: ev.price,
         priceChange24h,
-        reasoning: layer2.reason,
+        reasoning: ev.reasoning,
         status,
         willExecute,
-        factors,
-        confidenceGap: layer1.confidence - (layer2.type === 'FUTURES'
-          ? (config.riskLevel === 'high' ? 42 : config.riskLevel === 'low' ? 56 : 46)
-          : (config.riskLevel === 'high' ? 35 : config.riskLevel === 'low' ? 48 : 40)),
-        regime: layer0,
-        leverage: riskParams?.leverage,
-        stopLoss: riskParams?.stopLoss,
-        takeProfit1: riskParams?.takeProfit1,
-        takeProfit2: riskParams?.takeProfit2,
-        takeProfit: riskParams?.takeProfit
+        factors: ev.factors,
+        confidenceGap: ev.confidenceGap,
+        regime: ev.regime as SimEvaluationResult['regime'],
+        leverage: ev.leverage,
+        stopLoss: ev.stopLoss,
+        takeProfit1: ev.takeProfit1,
+        takeProfit2: ev.takeProfit2,
+        takeProfit: ev.takeProfit,
+        decision: ev.decision
       });
     }
 
@@ -538,17 +370,35 @@ export function createSimEngine() {
     for (const pos of positions) {
       if (pending.some((o) => o.symbol === pos.symbol)) continue;
       const livePrice = priceFor(pos.symbol) ?? pos.currentPrice;
-      const { atr } = calculateATR(buildCandlesForSymbol(pos.symbol), 14);
+      const atr5 = computeAtr5(buildCandlesForSymbol(pos.symbol));
       const currentEval = evalResult.results.find((e: SimEvaluationResult) => e.symbol === pos.symbol);
-      const buyConf = currentEval?.action === 'buy' ? currentEval.confidence : 0;
-      const sellConf = currentEval?.action === 'sell' ? currentEval.confidence : 0;
+      const decision = currentEval?.decision;
+      const reversal = decision && decision.outcome === 'SIGNAL'
+        ? { direction: decision.direction, setupScore: decision.metrics.setupScore, entryConfirmed: !!decision.entry?.confirmed }
+        : undefined;
 
-      const exitCheck = evaluateExit(
-        pos as ActivePosition,
+      const exitCheck = evaluatePositionExit(
+        {
+          symbol: pos.symbol,
+          type: pos.type,
+          side: pos.side,
+          entryPrice: pos.entryPrice,
+          quantity: pos.quantity,
+          stopLoss: pos.stopLoss,
+          takeProfit1: pos.takeProfit1,
+          takeProfit2: pos.takeProfit2,
+          tp1Hit: pos.tp1Hit,
+          openTimestamp: pos.openTimestamp,
+          plannedStopDistance: Math.abs(pos.entryPrice - pos.stopLoss),
+          highestPrice: pos.highestPrice,
+          lowestPrice: pos.lowestPrice,
+          highestPriceSinceTP1: pos.highestPriceSinceTP1,
+          lowestPriceSinceTP1: pos.lowestPriceSinceTP1
+        },
         livePrice,
-        atr,
-        { buy: buyConf, sell: sellConf },
-        { dailyDrawdownPercent: evalResult.dailyDrawdownPercent, weeklyDrawdownPercent: evalResult.weeklyDrawdownPercent }
+        atr5,
+        { dailyDrawdownPercent: evalResult.dailyDrawdownPercent, weeklyDrawdownPercent: evalResult.weeklyDrawdownPercent },
+        reversal
       );
 
       if (exitCheck.shouldExit) {
