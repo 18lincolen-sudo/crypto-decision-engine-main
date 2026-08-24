@@ -184,7 +184,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   const setup = detectSetup15M(input.m15, regime, params);
   if (setup.setupType === 'NONE') {
     logs.push(`[${symbol}] NO_SETUP — ${setup.blockers[0] ?? 'אין Setup'}`);
-    return finalize(symbol, 'NO_SETUP', 'NO_SIGNAL', regime, setup, null, null, null, logs, params, now, mkFunnel('NO_SETUP', 'NO_SIGNAL', setup, null));
+    return finalize(symbol, 'NO_SETUP', 'NO_SIGNAL', regime, setup, null, null, null, logs, params, now, mkFunnel('NO_SETUP', 'NO_SIGNAL', setup, null), null);
   }
   logs.push(`[${symbol}] 15M=${setup.setupType} dir=${setup.direction} SetupScore=${setup.setupScore} (strong=${setup.strong})`);
 
@@ -192,7 +192,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   const entry = confirmEntry5M(input.m5, setup, params);
   if (!entry.confirmed) {
     logs.push(`[${symbol}] NO_ENTRY — EntryScore=${entry.entryScore} | ${entry.blockers[0] ?? ''}`);
-    return finalize(symbol, 'NO_ENTRY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_ENTRY', 'NO_SIGNAL', setup, entry));
+    return finalize(symbol, 'NO_ENTRY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_ENTRY', 'NO_SIGNAL', setup, entry), null);
   }
   logs.push(`[${symbol}] 5M=${entry.trigger} EntryScore=${entry.entryScore} price=${formatDynamicPrice(entry.entryPrice)}`);
 
@@ -216,7 +216,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     const highQuality = setup.strong && entry.strong;
     if (!highQuality) {
       logs.push(`[${symbol}] NO_REGIME — TRANSITIONAL דורש Setup+Entry חזקים (strong); נחסם (§8/§34)`);
-      return finalize(symbol, 'NO_REGIME', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_REGIME', 'NO_SIGNAL', setup, entry));
+      return finalize(symbol, 'NO_REGIME', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_REGIME', 'NO_SIGNAL', setup, entry), null);
     }
     logs.push(`[${symbol}] TRANSITIONAL — Spot איכותי מאושר (Setup+Entry strong)`);
   }
@@ -226,17 +226,17 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   const quoteVolume = input.quoteVolume24h ?? 0;
   if (quoteVolume > 0 && quoteVolume < params.minQuoteVolume24h) {
     logs.push(`[${symbol}] LIQUIDITY — מחזור 24h ${quoteVolume.toFixed(0)}$ < ${params.minQuoteVolume24h}$`);
-    return finalize(symbol, 'LIQUIDITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('LIQUIDITY', 'NO_SIGNAL', setup, entry));
+    return finalize(symbol, 'LIQUIDITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('LIQUIDITY', 'NO_SIGNAL', setup, entry), tradeType);
   }
   if (spreadPercent > params.maxSpreadPercent) {
     logs.push(`[${symbol}] SPREAD — ${spreadPercent.toFixed(3)}% > ${params.maxSpreadPercent}% (נזילות נמוכה)`);
-    return finalize(symbol, 'SPREAD', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('SPREAD', 'NO_SIGNAL', setup, entry));
+    return finalize(symbol, 'SPREAD', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('SPREAD', 'NO_SIGNAL', setup, entry), tradeType);
   }
 
   // ── GATE 5b: strict bar in EXTREME volatility ──────────────────────────────
   if (strictMode && (!setup.strong || !entry.strong)) {
     logs.push(`[${symbol}] VOLATILITY — EXTREME דורש SetupScore/EntryScore חזקים (strong); נחסם (§10)`);
-    return finalize(symbol, 'VOLATILITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('VOLATILITY', 'NO_SIGNAL', setup, entry));
+    return finalize(symbol, 'VOLATILITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('VOLATILITY', 'NO_SIGNAL', setup, entry), tradeType);
   }
 
   // ── COST / EDGE (§25) ───────────────────────────────────────────────────────
@@ -252,7 +252,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   });
   if (!cost.approved) {
     logs.push(`[${symbol}] COST — ${cost.reason}`);
-    return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry));
+    return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry), tradeType);
   }
   logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
@@ -275,14 +275,14 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   });
   if (!risk.approved) {
     logs.push(`[${symbol}] RISK — ${risk.blockReason ?? 'נפסל'}`);
-    return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'NO_SIGNAL', setup, entry));
+    return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'NO_SIGNAL', setup, entry), tradeType);
   }
 
   logs.push(
     `[${symbol}] SIGNAL ${tradeType} ${setup.direction} ${setup.setupType} | SL=${formatDynamicPrice(risk.stopLoss)} TP1=${formatDynamicPrice(risk.takeProfit1)} lev=${risk.leverage}x risk=${risk.riskPercentUsed}% qty=${risk.quantity}`
   );
 
-  return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'SIGNAL', setup, entry));
+  return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'SIGNAL', setup, entry), tradeType);
 }
 
 function finalize(
@@ -297,11 +297,11 @@ function finalize(
   logs: string[],
   params: IntradayParams,
   now: number,
-  funnel: IntradayDecision['funnel']
+  funnel: IntradayDecision['funnel'],
+  tradeType: TradeType | null
 ): IntradayDecision {
   const setupScore = setup?.setupScore ?? 0;
   const entryScore = entry?.entryScore ?? 0;
-  const tradeType: TradeType | null = risk ? (risk.leverage > 1 ? 'FUTURES' : setup?.spotOnly ? 'SPOT' : 'SPOT') : null;
   const direction: Direction = setup?.direction ?? 'NONE';
   const setupType: SetupType = setup?.setupType ?? 'NONE';
 

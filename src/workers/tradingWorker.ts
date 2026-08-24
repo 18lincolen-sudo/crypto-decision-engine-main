@@ -253,7 +253,8 @@ function sign(timestamp: string, payload: string): string {
   return createHmac('sha256', secretKey).update(`${timestamp}${apiKey}5000${payload}`).digest('hex');
 }
 
-async function bybitExec(path: string, method = 'GET', params: Record<string, string | number | boolean | undefined> = {}): Promise<unknown> {
+async function bybitExec(path: string, method = 'GET', params: Record<string, string | number | boolean | undefined> = {}, attempt = 0): Promise<unknown> {
+  const MAX_ATTEMPTS = 3;
   const payload = method === 'GET' ? new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).reduce((a, [k, v]) => ({ ...a, [k]: String(v) }), {} as Record<string, string>)).toString() : JSON.stringify(params);
   const timestamp = Date.now().toString();
   const headers = { 'Content-Type': 'application/json' };
@@ -282,6 +283,15 @@ async function bybitExec(path: string, method = 'GET', params: Record<string, st
       contentType: res.headers.get('content-type'),
       preview: responseText.slice(0, 300)
     });
+    // A non-JSON body (often an EMPTY body) alongside a 4xx/5xx status usually
+    // means a proxy/WAF/gateway rejected the request before it reached Bybit's
+    // API layer (e.g. transient edge issue) rather than Bybit returning a real
+    // retCode error — retry a couple of times before giving up. Do NOT retry
+    // POST order-placement calls, to avoid ever double-submitting an order.
+    if (method === 'GET' && attempt < MAX_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      return bybitExec(path, method, params, attempt + 1);
+    }
     throw new Error(`Bybit returned an invalid response (HTTP ${res.status})`);
   }
   if (!res.ok || data.retCode !== 0) { health.execFailures++; throw new Error(data.retMsg || `Bybit HTTP ${res.status}`); }
@@ -611,7 +621,19 @@ async function scan(): Promise<void> {
   scanInProgress = true;
   try {
     if (!apiKey || !secretKey) throw new Error('Missing BYBIT_API_KEY / BYBIT_SECRET_KEY (server-only)');
-    const ctx = await getAccountContext();
+    // Account/auth failures (e.g. Bybit 401, IP-restriction rejection, transient
+    // network error) must NOT abort the whole scan — every symbol would otherwise
+    // go unevaluated for the entire cycle on a single account-endpoint hiccup.
+    // Degrade to ctx=null (already handled via `ctx ? ... : ...` everywhere below)
+    // and keep evaluating symbols off public market data.
+    let ctx: Awaited<ReturnType<typeof getAccountContext>> = null;
+    try {
+      ctx = await getAccountContext();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[scan] getAccountContext failed, continuing with ctx=null: ${msg}`);
+      state.lastError = `Account context unavailable: ${msg}`;
+    }
     const decisions: ScanResult[] = [];
     const scannedThisRun = new Set();
     state.skippedSymbols = [...unsupportedSymbols]; // reset to config-time unsupported each scan

@@ -123,7 +123,7 @@ async function fetchBinanceAllTickers(): Promise<BinanceTicker[]> {
     // Fetching ALL tickers without a symbol filter — single call, max efficiency
     const res = await timedFetch(`${BINANCE_BASE}/ticker/24hr`);
     if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-    const all: BinanceTicker[] = await res.json();
+    const all = await res.json() as BinanceTicker[];
     // Keep only USDT pairs with real volume
     const filtered = all.filter(t =>
       t.symbol.endsWith('USDT') &&
@@ -197,7 +197,7 @@ async function fetchCoinGeckoPrices(): Promise<CryptoData[]> {
       return coinGeckoPriceCache;
     }
     if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`);
-    const data: CryptoData[] = await res.json();
+    const data = await res.json() as CryptoData[];
     if (!data || data.length === 0) throw new Error('Empty response');
 
     // Map CoinGecko IDs back to our symbol names
