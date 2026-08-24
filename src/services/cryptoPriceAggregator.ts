@@ -274,7 +274,13 @@ export async function getAggregatedPrices(targetSymbols?: string[]): Promise<Cry
 
 // ── Candle fetching: Bybit → Binance → CoinGecko ────────────────────────────
 export async function getAggregatedCandles(symbol: string, days = 60): Promise<Candle[]> {
-  const SYM = symbol.toUpperCase();
+  // Accept either a base symbol ("STX") or an already-suffixed pair ("STXUSDT") —
+  // callers pass both (e.g. LivePositionChart receives Bybit position symbols,
+  // which already include "USDT"). Strip any existing suffix before re-adding it
+  // to avoid building "STXUSDTUSDT" (which Binance/Bybit reject, surfacing as a
+  // confusing CORS error in the browser since the error response has no CORS header).
+  const BASE = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase().slice(0, -4) : symbol.toUpperCase();
+  const SYM = BASE;
   const now = Date.now();
 
   // 1) Bybit klines
