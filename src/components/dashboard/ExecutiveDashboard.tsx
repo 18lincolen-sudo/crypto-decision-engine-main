@@ -99,17 +99,20 @@ export const ExecutiveDashboard: React.FC = () => {
 
   const fetchWorkerData = useCallback(async () => {
     let workerUrl = import.meta.env.VITE_TRADING_API_URL || '';
-    // Read the configuration saved by the Real Trading Bot page.
-    let workerToken = localStorage.getItem('workerAdminToken') || '';
+    // BOT_ADMIN_TOKEN is intentionally memory-only (see RealTradingBot.tsx) —
+    // it is NEVER written to localStorage, so it cannot be read here. Account
+    // summary / bot state require it and are simply unavailable on this page;
+    // retrying every 15s against an admin-only endpoint with no token just
+    // spams "BOT_ADMIN_TOKEN לא הוגדר" and burns the worker's rate limit for
+    // every other tab/page polling it. Only /health (public) is fetched here.
     try {
       const savedConfig = localStorage.getItem('workerConfig');
-if (savedConfig) {
+      if (savedConfig) {
         const config = JSON.parse(savedConfig);
-        workerToken = config.adminToken || workerToken;
         workerUrl = config.baseUrl || workerUrl;
       }
     } catch { /* no saved worker config */ }
-    const worker = createTradingApiClient(workerUrl, workerToken);
+    const worker = createTradingApiClient(workerUrl, '');
 
     if (!workerUrl) {
       setHasApiConfig(false);
@@ -122,20 +125,15 @@ if (savedConfig) {
     setApiError(null);
 
     try {
-      console.log('[Worker] Fetching account summary, state and health...');
-      const [summary, state, health] = await Promise.all([
-        worker.getAccountSummary(),
-        worker.getState(),
-        worker.getHealth()
-      ]);
-      console.log('[Worker] summary:', summary, 'state:', state, 'health:', health);
-
-      setWorkerSummary(summary);
-      setWorkerState(state);
+      const health = await worker.getHealth();
       setWorkerHealth(health);
       setLastUpdated(new Date().toLocaleTimeString('he-IL'));
-    } catch (err: any) {
-      const errMsg = err.message || 'שגיאת התחברות ל-Worker';
+      // Account summary / bot state need the admin token — only available
+      // after it's entered on the Real Trading Bot page, memory-only there too.
+      setWorkerSummary(null);
+      setWorkerState(null);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'שגיאת התחברות ל-Worker';
       console.error('[Worker] fetchWorkerData error:', errMsg);
       setApiError(`שגיאת Worker: ${errMsg}`);
     } finally {
