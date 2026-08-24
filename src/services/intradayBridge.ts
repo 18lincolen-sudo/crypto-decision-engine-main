@@ -202,7 +202,7 @@ export function mapDecisionToSignalEvaluation(
 
   const status = isSignal
     ? `SIGNAL ${tradeType} ${direction} ${d.setupType}`
-    : `NO_SIGNAL [${d.gate}] — ${d.summary}`;
+    : `NO_SIGNAL [${d.gate}] — ${d.logs[d.logs.length - 1] ?? d.summary}`;
 
   return {
     symbol: d.symbol,
