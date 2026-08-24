@@ -135,11 +135,11 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   atrPercentileHigh: 80,
   atrPercentileExtreme: 95,
 
-  setupScoreMin: 52,
+  setupScoreMin: 46,
   setupScoreStrong: 64,
   setupConfirmationsMin: 2,
   setupWeights: { trend: 0.25, momentum: 0.2, location: 0.2, participation: 0.15, structure: 0.2 },
-  pullbackMaxAtrFromEma: 1.4,
+  pullbackMaxAtrFromEma: 2.0,
   compressionPercentileMax: 45,
   breakoutVolumeMin: 1.3,
   meanReversionVwapAtr: 1.0,

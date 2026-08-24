@@ -157,7 +157,7 @@ export function detectSetup15M(
 
     const retrace = retracementAtr(m15, direction, atr, 10);
     const distFromEmaAtr = Math.abs(price - ema20) / Math.max(atr, 1e-9);
-    const pulledBack = retrace >= 0.4 || distFromEmaAtr <= 0.7;
+    const pulledBack = retrace >= 0.4 || distFromEmaAtr <= params.pullbackMaxAtrFromEma;
     if (pulledBack) confirmations.push('נסיגה / קירבה ל-EMA20 (Pullback)');
 
     const structureOk = direction === 'LONG' ? structure.bias !== 'BEARISH' : structure.bias !== 'BULLISH';
