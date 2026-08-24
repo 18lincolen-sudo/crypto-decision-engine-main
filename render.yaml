@@ -20,6 +20,10 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_KEY
+        sync: false
       - key: BYBIT_TESTNET
         value: "false"
       - key: BOT_DRY_RUN

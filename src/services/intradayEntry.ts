@@ -111,6 +111,7 @@ export function confirmEntry5M(
 
   const isLong = setup.direction === 'LONG';
   const s = isLong ? 1 : -1;
+  const isMeanReversion = setup.setupType === 'MEAN_REVERSION';
 
   const ema20Series = calculateEMA(closes, 20);
   const ema20 = last(ema20Series) ?? price;
@@ -249,18 +250,19 @@ export function confirmEntry5M(
 
     triggerLevel = isLong ? Math.min(...recent.map((c) => c.low)) : Math.max(...recent.map((c) => c.high));
 
-    // CORE: extreme + rejection + momentum recovery. CONFIRMATION: a confirmation candle.
-    const core = oversold && rejection && recovery;
+    // CORE: a reversal signature (rejection OR momentum recovery). The extreme
+    // itself is already guaranteed by the 15M setup that routed us here, so
+    // re-checking it on the 5M VWAP (a different session anchor) was too strict
+    // and blocked valid reversals. The 5M layer only needs to confirm the turn.
+    const core = rejection || recovery;
     const confirmations: string[] = [];
     if (rsiExtreme) confirmations.push('RSI קיצוני');
     else if (bbExtreme) confirmations.push('Bollinger קיצוני');
     else if (vwapExtreme) confirmations.push('VWAP קיצוני');
     if (confirmationCandle) confirmations.push('נר אישור (Confirmation candle)');
     subConditions.push(oversold, rejection, recovery, confirmationCandle);
-    if (!oversold) blockers.push('5M לא הגיע לקיצון (RSI/Bollinger/VWAP)');
-    if (!rejection) blockers.push('אין דחייה (Rejection) מהקיצון');
-    if (!recovery) blockers.push('אין התאוששות מאושרת');
-    if (oversold && rejection) reasons.push('קיצון + דחייה זוהו ב-5M');
+    if (!rejection && !recovery) blockers.push('אין תפנית (Rejection/Recovery) מהקיצון — אין Mean Reversion');
+    if (oversold && (rejection || recovery)) reasons.push('קיצון + תפנית זוהו ב-5M');
 
     stopReference = isLong ? Math.min(...recent.map((c) => c.low)) : Math.max(...recent.map((c) => c.high));
     gatesPassed = core;
@@ -272,18 +274,30 @@ export function confirmEntry5M(
     (((rsi - rsiPrev) * s > 0 ? 1 : 0) * 0.4 + (macd.histogramSlope * s > 0 ? 1 : 0) * 0.4 + (isLong ? (rsi < 78 ? 1 : 0) : rsi > 22 ? 1 : 0) * 0.2) * 100;
   const volumeScore = ramp(triggerVolumeRelative, params.minEntryRelativeVolume, 1.6);
   const vwapAligned = (price - vwap.vwap) * s > 0;
-  const vwapScore = vwapAligned ? 100 : Math.abs(vwap.deviationPercent) < 0.1 ? 60 : 20;
+  // For mean reversion the price being stretched AWAY from VWAP is the desired
+  // condition (the extreme), not a misalignment to penalise.
+  const vwapScore = isMeanReversion ? 100 : (vwapAligned ? 100 : Math.abs(vwap.deviationPercent) < 0.1 ? 60 : 20);
   const candleScore = clamp((q.bodyRatio * 60 + (isLong ? q.closePosition : 1 - q.closePosition) * 40) * 100 / 100, 0, 100);
 
   const beyondLevelAtr = triggerLevel !== null ? ((price - triggerLevel) * s) / atr5 : 0;
-  const chasePenalty = beyondLevelAtr > params.maxChaseAtr ? clamp((beyondLevelAtr - params.maxChaseAtr) * 25, 0, 30) : 0;
+  // Mean-reversion entries are taken AFTER the price recovers from the extreme, so
+  // the price is naturally 1-3 ATR away from the extreme trigger level. The chase
+  // penalty (designed for trend/breakout "don't enter after the move") would block
+  // every valid reversion, so it is disabled for MEAN_REVERSION. The `oversold`
+  // re-check above already prevents entering once the reversion is complete.
+  const chasePenalty = !isMeanReversion && beyondLevelAtr > params.maxChaseAtr
+    ? clamp((beyondLevelAtr - params.maxChaseAtr) * 25, 0, 30)
+    : 0;
   if (chasePenalty > 0) blockers.push(`המחיר ${beyondLevelAtr.toFixed(2)} ATR מעל אזור הכניסה — רדיפה, ציון כניסה מופחת`);
 
   const rawScore =
     triggerQuality * 0.3 + momentumScore * 0.2 + volumeScore * 0.2 + vwapScore * 0.15 + candleScore * 0.15;
   const entryScore = Number(clamp(rawScore - chasePenalty, 0, 100).toFixed(1));
 
-  const volumeTooLow = triggerVolumeRelative < params.minEntryRelativeVolume || vol.drying;
+  // Volume is not the confirmation factor for reversals (a reversal can print on
+  // average/low volume); the volumeScore component already penalises thin tape, so
+  // mean reversion is not hard-blocked on volume the way breakouts/trends are.
+  const volumeTooLow = !isMeanReversion && (triggerVolumeRelative < params.minEntryRelativeVolume || vol.drying);
   if (volumeTooLow) blockers.push(`נפח 5M נמוך מדי (${triggerVolumeRelative.toFixed(2)}x) — NO TRADE (§27)`);
 
   const confirmed = gatesPassed && entryScore >= params.entryScoreMin && !volumeTooLow && chasePenalty === 0;

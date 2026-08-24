@@ -48,6 +48,14 @@ export const TIMEFRAME_SPECS: Record<TimeframeKey, TimeframeSpec> = {
 
 export const TIMEFRAME_ORDER: TimeframeKey[] = ['1h', '15m', '5m'];
 
+// ── Delta-fetch / warm-cache rules ─────────────────────────────────────────────
+/** A cached timeframe older than this is treated as cold and fully refetched. */
+const MAX_CACHE_AGE_MS = 6 * 60 * 60 * 1000; // 6h
+/** Over-fetch a few extra candles on a delta request to absorb clock/source skew. */
+const DELTA_BUFFER = 4;
+/** Max candles retained per (symbol,tf) after a delta merge. */
+const MAX_CANDLES_PER_TF = 600;
+
 // ── Validation ───────────────────────────────────────────────────────────────
 
 export interface CandleValidationResult {
@@ -170,7 +178,7 @@ export async function fetchBybitKlines(
   symbol: string,
   tf: TimeframeKey,
   limit: number,
-  opts: { endTime?: number; category?: 'spot' | 'linear' } = {}
+  opts: { endTime?: number; startTime?: number; category?: 'spot' | 'linear' } = {}
 ): Promise<Candle[]> {
   const spec = TIMEFRAME_SPECS[tf];
   const bybitSymbol = toBybitSymbol(symbol);
@@ -192,6 +200,7 @@ export async function fetchBybitKlines(
       limit: String(page)
     });
     if (end !== undefined) params.set('end', String(end));
+    if (opts.startTime !== undefined) params.set('start', String(opts.startTime));
 
     const res = await timedFetch(`${BYBIT_PUBLIC_BASE}/v5/market/kline?${params.toString()}`);
     if (!res.ok) throw new Error(`Bybit kline HTTP ${res.status}`);
@@ -230,7 +239,7 @@ export async function fetchBinanceKlines(
   symbol: string,
   tf: TimeframeKey,
   limit: number,
-  opts: { endTime?: number } = {}
+  opts: { endTime?: number; startTime?: number } = {}
 ): Promise<Candle[]> {
   const spec = TIMEFRAME_SPECS[tf];
   const pair = toBybitSymbol(symbol); // same USDT pair naming on Binance
@@ -243,6 +252,7 @@ export async function fetchBinanceKlines(
     const page = Math.min(BINANCE_PAGE_LIMIT, limit - collected.length);
     const params = new URLSearchParams({ symbol: pair, interval: spec.binance, limit: String(page) });
     if (endTime !== undefined) params.set('endTime', String(endTime));
+    if (opts.startTime !== undefined) params.set('startTime', String(opts.startTime));
 
     const res = await timedFetch(`${BINANCE_PUBLIC_BASE}/klines?${params.toString()}`);
     if (!res.ok) throw new Error(`Binance kline HTTP ${res.status}`);
@@ -295,13 +305,55 @@ export interface FetchTimeframeResult {
 export async function fetchTimeframe(
   symbol: string,
   tf: TimeframeKey,
-  opts: { limit?: number; now?: number; endTime?: number; requireClosed?: boolean; category?: 'spot' | 'linear' } = {}
+  opts: { limit?: number; now?: number; endTime?: number; requireClosed?: boolean; category?: 'spot' | 'linear'; since?: number } = {}
 ): Promise<FetchTimeframeResult> {
   const spec = TIMEFRAME_SPECS[tf];
   const limit = opts.limit ?? spec.targetCandles;
   const now = opts.now ?? Date.now();
   const requireClosed = opts.requireClosed !== false;
   const issues: string[] = [];
+
+  // ── Delta mode: fetch ONLY candles newer than `since` ───────────────────────
+  // Used by the warm cache so a running process re-pulls only what changed
+  // instead of re-fetching the full window every scan (fewer calls, smaller
+  // payload). The caller merges the result into the existing cache.
+  if (opts.since !== undefined) {
+    const since = opts.since;
+    const deltaLimit = Math.min(limit, Math.ceil((now - since) / spec.ms) + DELTA_BUFFER);
+    const startTs = since + spec.ms; // first candle strictly after `since`
+    const errors: string[] = [];
+    for (const source of ['bybit', 'binance'] as const) {
+      try {
+        const raw = source === 'bybit'
+          ? await fetchBybitKlines(symbol, tf, deltaLimit, { endTime: opts.endTime, startTime: startTs, category: opts.category })
+          : await fetchBinanceKlines(symbol, tf, deltaLimit, { endTime: opts.endTime, startTime: startTs });
+        const closed = requireClosed ? dropFormingCandle(raw, spec.ms, now) : raw;
+        const validation = validateCandles(closed, 1); // just clean/dedup; don't enforce min
+        if (validation.cleaned.length) {
+          return {
+            candles: validation.cleaned,
+            source,
+            issues: [...issues, ...validation.issues.map((i) => `${source}:${i}`)],
+            received: raw.length,
+            closed: closed.length,
+            valid: validation.cleaned.length,
+            required: spec.minCandles
+          };
+        }
+        issues.push(`${source}:no-new-candles`);
+      } catch (e) {
+        const msg = `${source}:${e instanceof Error ? e.message : String(e)}`;
+        errors.push(msg);
+        issues.push(msg);
+      }
+    }
+    const allErrors = errors.join(' | ');
+    let reason: string = 'NO_NEW_CANDLES';
+    if (/429|too many requests|rate limit|ratelimit/i.test(allErrors)) reason = 'RATE_LIMIT';
+    else if (/10001|not supported symbols|invalid symbol|symbol not/i.test(allErrors)) reason = 'SYMBOL_NOT_FOUND';
+    else if (errors.length) reason = 'API_ERROR';
+    return { candles: [], source: 'none', reason, issues, received: 0, closed: 0, valid: 0, required: spec.minCandles };
+  }
 
   const attempt = async (source: 'bybit' | 'binance'): Promise<Candle[]> =>
     source === 'bybit'
@@ -495,7 +547,7 @@ export interface MultiTimeframeSnapshot {
   fetchedAt: number;
 }
 
-interface TimeframeCacheEntry {
+export interface TimeframeCacheEntry {
   candles: Candle[];
   source: CandleSource;
   fetchedAt: number;
@@ -508,10 +560,63 @@ function cacheKey(symbol: string, tf: TimeframeKey): string {
   return `${toBybitSymbol(symbol)}:${tf}`;
 }
 
+/**
+ * Merges freshly-fetched candles into an existing cached series.
+ * De-duplicates by timestamp, keeps the most recent `maxKeep` candles, and
+ * reports whether a gap exists in the merged tail (a missing candle between the
+ * old series and the new one) so the caller can fall back to a full refetch.
+ */
+function mergeDelta(existing: Candle[], fresh: Candle[], tfMs: number, maxKeep: number): { merged: Candle[]; gap: boolean } {
+  if (!fresh.length) return { merged: existing, gap: false };
+  const seen = new Set(existing.map((c) => c.timestamp));
+  const combined: Candle[] = [...existing];
+  for (const c of fresh) {
+    if (!seen.has(c.timestamp)) {
+      combined.push(c);
+      seen.add(c.timestamp);
+    }
+  }
+  combined.sort((a, b) => a.timestamp - b.timestamp);
+  const merged = combined.slice(-maxKeep);
+  const firstFreshTs = Math.min(...fresh.map((c) => c.timestamp));
+  const startIdx = merged.findIndex((c) => c.timestamp >= firstFreshTs);
+  let gap = false;
+  for (let i = Math.max(1, startIdx); i < merged.length; i++) {
+    if (merged[i].timestamp - merged[i - 1].timestamp !== tfMs) {
+      gap = true;
+      break;
+    }
+  }
+  return { merged, gap };
+}
+
 /** Manual cache reset — used by tests and by /api/sim/reset */
 export function clearMarketDataCache(): void {
   tfCache.clear();
   liquidityCache = { at: 0, map: new Map() };
+}
+
+/**
+ * Exports the full in-memory timeframe cache (all retained candles per
+ * (symbol,tf)). Callers that persist it should trim each entry to `minCandles`
+ * so the serialized blob stays within backend document-size limits.
+ */
+export function exportMarketDataCache(): Record<string, TimeframeCacheEntry> {
+  const out: Record<string, TimeframeCacheEntry> = {};
+  for (const [k, v] of tfCache.entries()) {
+    out[k] = { ...v };
+  }
+  return out;
+}
+
+/** Hydrates the in-memory cache from a snapshot produced by exportMarketDataCache. */
+export function importMarketDataCache(data: Record<string, TimeframeCacheEntry> | null | undefined): void {
+  if (!data || typeof data !== 'object') return;
+  for (const [k, v] of Object.entries(data)) {
+    if (v && Array.isArray(v.candles) && v.candles.length && typeof v.lastTimestamp === 'number') {
+      tfCache.set(k, v);
+    }
+  }
 }
 
 export interface MarketDataStats {
@@ -569,6 +674,35 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
       continue;
     }
 
+    // RULE (warm cache): if we already have a recent cache, fetch ONLY the new
+    // candles (delta) instead of re-pulling the full window. This is the core
+    // "remember what we already downloaded, check only the new against it" rule.
+    // Falls back to a full refetch on gap / insufficient / hard error.
+    if (cached && now - cached.fetchedAt < MAX_CACHE_AGE_MS) {
+      const delta = await fetchTimeframe(symbol, tf, { now, since: cached.lastTimestamp, category: opts.category });
+      if (delta.candles.length) {
+        const { merged, gap } = mergeDelta(cached.candles, delta.candles, spec.ms, MAX_CANDLES_PER_TF);
+        if (!gap && merged.length >= spec.minCandles) {
+          candles[tf] = merged;
+          sources[tf] = delta.source;
+          tfCache.set(key, { candles: merged, source: delta.source, fetchedAt: now, lastTimestamp: merged[merged.length - 1].timestamp });
+          telemetry[tf] = { received: delta.received, closed: delta.closed, valid: merged.length, required: spec.minCandles, source: delta.source };
+          continue;
+        }
+        issues.push(`${tf}:delta-${gap ? 'gap' : 'insufficient'}-full-refetch`);
+      } else if (delta.reason === 'RATE_LIMIT' || delta.reason === 'API_ERROR' || delta.reason === 'NO_NEW_CANDLES') {
+        // Transient upstream failure (or simply no new candle yet): serve
+        // last-known-good rather than dropping the asset or re-pulling the window.
+        candles[tf] = cached.candles;
+        sources[tf] = 'cache';
+        telemetry[tf].source = 'cache';
+        issues.push(`${tf}:served-stale-cache(${delta.reason})`);
+        continue;
+      }
+      // SYMBOL_NOT_FOUND or gap/insufficient → fall through to a full refetch.
+    }
+
+    // FULL fetch (cold / too stale / delta failed).
     const result = await fetchTimeframe(symbol, tf, { now, limit: opts.limits?.[tf], category: opts.category });
     issues.push(...result.issues);
     telemetry[tf] = { received: result.received, closed: result.closed, valid: result.valid, required: result.required, source: result.source };

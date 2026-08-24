@@ -146,9 +146,10 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   meanReversionRsiMax: 35,
   meanReversionRsiMin: 65,
 
-  entryScoreMin: 58,
+  entryScoreMin: 50,
   entryScoreStrong: 68,
-  entryConfirmationsMin: 2,
+  /** Min entry confirmations (per setup type) for the 5M trigger to confirm (§24) */
+  entryConfirmationsMin: 1,
   maxChaseAtr: 1.2,
   entryLimitOffsetAtr: 0.15,
   minEntryRelativeVolume: 0.7,

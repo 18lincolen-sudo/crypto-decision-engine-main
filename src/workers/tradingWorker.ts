@@ -20,7 +20,8 @@ import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../services/intradayEngine';
 import { buildPortfolioRiskStats } from '../services/intradayBridge';
-import { getMultiTimeframeData } from '../services/marketDataService';
+import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '../services/marketDataService';
+import { toBybitSymbol } from '../services/assetUniverse';
 import { TARGET_SYMBOLS } from '../shared/targetSymbols';
 import { createKVStore } from './kvStore';
 
@@ -203,7 +204,6 @@ const state = {
   decisions: [] as ScanResult[],
   orders: [] as { at: string; dryRun: boolean; symbol: string; side: string; reason?: string; error?: string; result?: unknown }[],
   openedSymbols: new Map<string, { at: number; type: 'SPOT' | 'FUTURES' }>(),
-  candleCache: {} as Record<string, { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]>,
   skippedSymbols: [...unsupportedSymbols] as { symbol: string; reason: string }[],
   // Pending Limit Orders: symbol → { orderId, placedAt, expiresAt }
   // Auto-cancelled after LIMIT_ORDER_TTL_MS if not filled.
@@ -402,7 +402,6 @@ function serializeState(): string {
     decisions: state.decisions,
     orders: state.orders,
     openedSymbols: Object.fromEntries(state.openedSymbols),
-    candleCache: state.candleCache,
     skippedSymbols: state.skippedSymbols,
     pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
     health
@@ -428,7 +427,6 @@ async function hydrate(): Promise<void> {
   } else {
     state.openedSymbols = new Map();
   }
-  state.candleCache = typeof s.candleCache === 'object' && s.candleCache !== null ? s.candleCache as Record<string, { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]> : {};
   state.skippedSymbols = Array.isArray(s.skippedSymbols) ? s.skippedSymbols as { symbol: string; reason: string }[] : [];
   // Restore pending limit orders (if any survived a restart)
   const savedPending = s.pendingLimitOrders;
@@ -440,6 +438,58 @@ async function hydrate(): Promise<void> {
     state.pendingLimitOrders = new Map();
   }
   health.lastScanAt = typeof (s.health as Record<string, unknown> | undefined)?.lastScanAt === 'string' ? (s.health as Record<string, unknown> | undefined)?.lastScanAt as string : null;
+}
+
+// ── Warm market-data cache (Firestore in prod / local file in dev) ──────────────
+// The in-memory timeframe cache in marketDataService is the hot path. On boot we
+// hydrate it from the KV store so a restart/deploy doesn't re-pull every full
+// window; afterwards we only delta-fetch what changed. Persistence is THROTTLED
+// (not per-scan) and split per-symbol so each document stays well under the
+// Firestore 1MB limit while still carrying enough history (minCandles) to let the
+// first post-restart scan evaluate immediately instead of doing a full refetch.
+const MARKET_CACHE_PERSIST_MS = 10 * 60 * 1000; // 10 min
+let lastCachePersistAt = 0;
+
+async function hydrateMarketCache(): Promise<void> {
+  for (const sym of symbols) {
+    const bybitSym = toBybitSymbol(sym);
+    try {
+      const saved = await store.get(`mcache:${bybitSym}`);
+      if (!saved) continue;
+      const doc = JSON.parse(saved) as Record<string, TimeframeCacheEntry>;
+      for (const tf of TIMEFRAME_ORDER) {
+        const entry = doc[tf];
+        if (entry && Array.isArray(entry.candles) && entry.candles.length && typeof entry.lastTimestamp === 'number') {
+          importMarketDataCache({ [`${bybitSym}:${tf}`]: entry });
+        }
+      }
+    } catch {
+      /* corrupt warm cache is non-fatal — fall back to a cold fetch */
+    }
+  }
+}
+
+async function persistMarketCache(): Promise<void> {
+  const now = Date.now();
+  if (now - lastCachePersistAt < MARKET_CACHE_PERSIST_MS) return;
+  lastCachePersistAt = now;
+  const full = exportMarketDataCache();
+  try {
+    for (const sym of symbols) {
+      const bybitSym = toBybitSymbol(sym);
+      const doc: Record<string, TimeframeCacheEntry> = {};
+      for (const tf of TIMEFRAME_ORDER) {
+        const entry = full[`${bybitSym}:${tf}`];
+        if (entry) {
+          // Trim to minCandles so each per-symbol document stays under the 1MB limit.
+          doc[tf] = { ...entry, candles: entry.candles.slice(-TIMEFRAME_SPECS[tf].minCandles) };
+        }
+      }
+      if (Object.keys(doc).length) await store.set(`mcache:${bybitSym}`, JSON.stringify(doc));
+    }
+  } catch {
+    /* never block a scan on cache persistence */
+  }
 }
 
 // Live Fear & Greed index (0-100). Falls back to neutral 50 on any failure so
@@ -695,10 +745,12 @@ async function scan(): Promise<void> {
     health.lastScanAt = state.lastScanAt;
     state.orders = state.orders.slice(0, 50);
     await store.set('state', serializeState());
+    await persistMarketCache();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown scan error';
     state.lastError = errorMessage;
     await store.set('state', serializeState());
+    await persistMarketCache();
     void sendTelegramAlert(errorMessage);
   } finally {
     scanInProgress = false;
@@ -881,6 +933,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
   await hydrate();
+  await hydrateMarketCache();
   await hydrateSim();
   if (simState.snapshot) simEngine.hydrate(simState.snapshot as SimSnapshot);
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
@@ -930,3 +983,15 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     }
   }, 4000);
 });
+
+// Graceful shutdown: flush bot state and the warm market-data cache (Firestore in
+// prod) so the next boot can delta-fetch instead of re-pulling every full window.
+async function shutdown(signal: string): Promise<void> {
+  console.log(`[shutdown] ${signal} — flushing state and warm cache`);
+  try { await store.set('state', serializeState()); } catch { /* ignore */ }
+  lastCachePersistAt = 0; // bypass throttle so the final flush always writes
+  try { await persistMarketCache(); } catch { /* ignore */ }
+  process.exit(0);
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
