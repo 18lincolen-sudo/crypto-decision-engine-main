@@ -355,10 +355,24 @@ export async function fetchTimeframe(
     return { candles: [], source: 'none', reason, issues, received: 0, closed: 0, valid: 0, required: spec.minCandles };
   }
 
-  const attempt = async (source: 'bybit' | 'binance'): Promise<Candle[]> =>
+  const attemptOnce = async (source: 'bybit' | 'binance'): Promise<Candle[]> =>
     source === 'bybit'
       ? fetchBybitKlines(symbol, tf, limit, { endTime: opts.endTime, category: opts.category })
       : fetchBinanceKlines(symbol, tf, limit, { endTime: opts.endTime });
+
+  // One retry on transient failures (429 / network / 5xx) — a single burst of
+  // concurrent requests across the universe can trip rate limits for a
+  // symbol that would otherwise have full data on the very next try (§7).
+  const attempt = async (source: 'bybit' | 'binance'): Promise<Candle[]> => {
+    try {
+      return await attemptOnce(source);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/10001|not supported symbols|invalid symbol|symbol not/i.test(msg)) throw e;
+      await new Promise((r) => setTimeout(r, 400));
+      return attemptOnce(source);
+    }
+  };
 
   let insufficientReason: string | null = null;
   const errors: string[] = [];
@@ -395,17 +409,17 @@ export async function fetchTimeframe(
   }
 
   // Classify the real failure so it is never masked as INSUFFICIENT_CANDLES.
-  // Scan ALL error messages (not just the last source) so a Bybit "symbol not
-  // found" is not overwritten by a Binance HTTP error.
-  let reason: string = 'INSUFFICIENT_CANDLES';
-  if (insufficientReason) {
-    reason = 'INSUFFICIENT_CANDLES';
-  } else {
-    const allErrors = errors.join(' | ');
-    if (/429|too many requests|rate limit|ratelimit/i.test(allErrors)) reason = 'RATE_LIMIT';
-    else if (/10001|not supported symbols|invalid symbol|symbol not/i.test(allErrors)) reason = 'SYMBOL_NOT_FOUND';
-    else reason = 'API_ERROR';
-  }
+  // Scan ALL error messages (not just the last source) — a genuine RATE_LIMIT
+  // or SYMBOL_NOT_FOUND on one source must win even when the OTHER source
+  // merely came back empty (insufficientReason set); otherwise a Binance 429
+  // gets silently relabeled as "not enough data" and looks unfixable (§7).
+  const allErrors = errors.join(' | ');
+  let reason: string;
+  if (/429|too many requests|rate limit|ratelimit/i.test(allErrors)) reason = 'RATE_LIMIT';
+  else if (/10001|not supported symbols|invalid symbol|symbol not/i.test(allErrors)) reason = 'SYMBOL_NOT_FOUND';
+  else if (insufficientReason) reason = 'INSUFFICIENT_CANDLES';
+  else if (errors.length) reason = 'API_ERROR';
+  else reason = 'INSUFFICIENT_CANDLES';
 
   return {
     candles: [],
