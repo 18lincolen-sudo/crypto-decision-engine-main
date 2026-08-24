@@ -786,7 +786,7 @@ export function routeTradeType(
   // All conditions required:
   // 1. Regime = TRENDING (ADX > 25)
   // 2. Volatility = LOW or NORMAL (ATR% <= 5%) [HIGH VOL -> FUTURES BLOCKED]
-  // 3. SignalScore >= 72
+  // 3. SignalScore >= 70
   // 4. Supertrend matches trade direction (LONG -> BULL, SHORT -> BEAR)
   // 5. No existing position on this asset
   // ═══════════════════════════════════════════════════════
@@ -802,7 +802,7 @@ export function routeTradeType(
     return {
       type: 'FUTURES',
       side,
-      reason: `התקיימו כל תנאי Futures: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= 72, תנודתיות ${layer0.volatility}, Supertrend ${layer0.supertrend.direction}`
+      reason: `התקיימו כל תנאי Futures: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= 70, תנודתיות ${layer0.volatility}, Supertrend ${layer0.supertrend.direction}`
     };
   }
 

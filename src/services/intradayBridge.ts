@@ -161,20 +161,25 @@ export function mapDecisionToSignalEvaluation(
       note: d.regime.strictMode ? 'EXTREME — סף מחמיר (§10)' : 'תנודתיות מתאימה'
     });
   }
-  if (d.setup && d.setup.setupType !== 'NONE') {
+  if (d.setup) {
+    const setupPassed = d.setup.setupType !== 'NONE';
     factors.push({
       label: 'Setup 15M',
-      value: `${d.setup.setupType} ${d.setup.direction} (${d.setup.setupScore})`,
-      impact: d.setup.strong ? 'positive' : 'neutral',
-      note: d.setup.blockers?.length ? d.setup.blockers[0] : 'Setup תקין'
+      value: setupPassed
+        ? `${d.setup.setupType} ${d.setup.direction} (${d.setup.setupScore})`
+        : `SetupScore ${d.setup.setupScore} (סף ${DEFAULT_INTRADAY_PARAMS.setupScoreMin}) — לא עבר`,
+      impact: !setupPassed ? 'negative' : d.setup.strong ? 'positive' : 'neutral',
+      note: d.setup.blockers?.length ? d.setup.blockers[0] : setupPassed ? 'Setup תקין' : 'לא זוהה Setup תקף'
     });
   }
-  if (d.entry && d.entry.entryScore) {
+  if (d.entry) {
     factors.push({
       label: 'Entry 5M',
-      value: `${d.entry.trigger} (${d.entry.entryScore})`,
-      impact: d.entry.strong ? 'positive' : 'neutral',
-      note: d.entry.blockers?.length ? d.entry.blockers[0] : 'אישור כניסה'
+      value: d.entry.confirmed
+        ? `${d.entry.trigger} (${d.entry.entryScore})`
+        : `EntryScore ${d.entry.entryScore} — לא אושר`,
+      impact: !d.entry.confirmed ? 'negative' : d.entry.strong ? 'positive' : 'neutral',
+      note: d.entry.blockers?.length ? d.entry.blockers[0] : d.entry.confirmed ? 'אישור כניסה' : 'לא אושרה כניסה'
     });
   }
   if (d.cost) {

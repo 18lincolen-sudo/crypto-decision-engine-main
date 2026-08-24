@@ -91,7 +91,7 @@ const SimulationBot = () => {
 
           <SimulationEngineColumn
             title="מנוע מקורי · Confidence Score"
-            subtitle="ציון משוקלל 7 אינדיקטורים (alg.md), סף 60/72%"
+            subtitle="ציון משוקלל 7 אינדיקטורים (alg.md), סף 60/70%"
             accentClass="text-cyan-400"
             cryptoData={cryptoData}
             cash={legacy.cash}
