@@ -27,7 +27,7 @@ async function fetchJson(url: string, tries = 4): Promise<any> {
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url);
-      const json = await res.json();
+      const json = (await res.json()) as { retCode: number; retMsg?: string; result?: unknown } | null;
       if (json && json.retCode === 0) return json;
       lastErr = new Error(`retCode ${json?.retCode} ${json?.retMsg}`);
     } catch (e) { lastErr = e; }
@@ -43,7 +43,7 @@ async function fetchBybit(symbol: string, interval: string, limit: number): Prom
 }
 async function fetchBinance(symbol: string, interval: string, limit: number): Promise<Candle[] | null> {
   const bi = BINANCE_INTERVAL[interval] ?? `${interval}m`;
-  try { const r = await fetch(`${BINANCE}/klines?symbol=${symbol}&interval=${bi}&limit=${limit}`); const l: any[] = await r.json(); if (!Array.isArray(l) || !l.length) return null; return l.map((c) => ({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) })).sort((a, b) => a.timestamp - b.timestamp); } catch { return null; }
+  try { const r = await fetch(`${BINANCE}/klines?symbol=${symbol}&interval=${bi}&limit=${limit}`); const l = (await r.json()) as unknown[][]; if (!Array.isArray(l) || !l.length) return null; return l.map((c) => ({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) })).sort((a, b) => a.timestamp - b.timestamp); } catch { return null; }
 }
 async function fetchKlines(symbol: string, interval: string, limit: number): Promise<Candle[]> {
   return (await fetchBybit(symbol, interval, limit)) || (await fetchBinance(symbol, interval, limit)) || [];

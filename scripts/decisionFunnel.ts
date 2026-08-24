@@ -42,7 +42,7 @@ async function fetchJson(url: string, tries = 4): Promise<any> {
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url);
-      const json = await res.json();
+      const json = (await res.json()) as { retCode: number; retMsg?: string; result?: unknown } | null;
       if (json && json.retCode === 0) return json;
       lastErr = new Error(`retCode ${json?.retCode} ${json?.retMsg}`);
     } catch (e) {
@@ -130,8 +130,8 @@ async function fetchTicker(symbol: string): Promise<{ turnover24h: number; sprea
   // Binance bookTicker + 24hr
   try {
     const [bt, hr] = await Promise.all([
-      fetch(`${BINANCE}/ticker/bookTicker?symbol=${symbol}`).then((r) => r.json()),
-      fetch(`${BINANCE}/ticker/24hr?symbol=${symbol}`).then((r) => r.json())
+      fetch(`${BINANCE}/ticker/bookTicker?symbol=${symbol}`).then((r) => r.json()) as Promise<{ bidPrice: string; askPrice: string }>,
+      fetch(`${BINANCE}/ticker/24hr?symbol=${symbol}`).then((r) => r.json()) as Promise<{ quoteVolume: string }>
     ]);
     const bid = Number(bt.bidPrice);
     const ask = Number(bt.askPrice);

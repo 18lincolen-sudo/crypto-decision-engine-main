@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'app.lovable.37a4152863674a4d9b1db78d781096ed',
   appName: 'crypto-decision-engine',
   webDir: 'dist',
-  bundledWebRuntime: false,
   plugins: {
     SplashScreen: {
       launchShowDuration: 3000,

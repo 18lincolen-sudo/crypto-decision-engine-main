@@ -10,7 +10,7 @@ import { Play, Pause, Square, Zap, Settings, ArrowDownCircle, ArrowUpCircle, Che
 import PortfolioPulseCard from './PortfolioPulseCard';
 import LivePositionChart from './LivePositionChart';
 import type { CryptoData } from '@/types/crypto';
-import type { SimBotConfig } from '@/hooks/useSimulationBot';
+import type { SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder, SignalEvaluation, DecisionFactor } from '@/hooks/useSimulationBot';
 
 export interface EngineColumnProps {
   title: string;
@@ -18,18 +18,18 @@ export interface EngineColumnProps {
   accentClass: string; // e.g. 'text-primary' or 'text-cyan-400' — column header + accent color
   cryptoData?: CryptoData[];
   cash: number;
-  positions: any[];
+  positions: SimPosition[];
   positionsValue: number;
   equity: number;
-  trades: any[];
-  history: any[];
-  pending: any[];
+  trades: SimTrade[];
+  history: SimPoint[];
+  pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
-  evaluations: any[];
+  evaluations: SignalEvaluation[];
   hasSavedSession: boolean;
   nextTickAt: number;
   config: SimBotConfig;
@@ -197,7 +197,7 @@ export default function SimulationEngineColumn({
                       </button>
                       {open && (
                         <div className="mt-2 border-t border-border/30 pt-2 space-y-1.5 bg-background/40 p-2.5 rounded">
-                          {rec.factors.map((f: any, i: number) => (
+                          {rec.factors.map((f: DecisionFactor, i: number) => (
                             <div key={i} className="flex items-start justify-between gap-2 text-xs py-1 border-b border-border/20 last:border-0">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.impact === 'positive' ? 'bg-green-400' : f.impact === 'negative' ? 'bg-red-400' : 'bg-muted-foreground'}`} />

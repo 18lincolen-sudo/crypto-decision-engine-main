@@ -1,5 +1,13 @@
 import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
-import { useLegacySimulationBot, SimBotConfig } from '../hooks/useLegacySimulationBot';
+import {
+  useLegacySimulationBot,
+  SimBotConfig,
+  SimPosition,
+  SimTrade,
+  SimPoint,
+  PendingOrder
+} from '../hooks/useLegacySimulationBot';
+import type { SignalEvaluation } from '../services/intradayBridge';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { fearGreedApi } from '../services/fearGreedApi';
 import type { SimStatus } from './SimulationBotContext';
@@ -19,19 +27,19 @@ const DEFAULT_LEGACY_CONFIG: SimBotConfig = {
 
 export interface LegacySimulationBotContextValue {
   cash: number;
-  positions: any[];
+  positions: SimPosition[];
   positionsValue: number;
   equity: number;
-  trades: any[];
-  history: any[];
-  pending: any[];
+  trades: SimTrade[];
+  history: SimPoint[];
+  pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
   lastEvaluation: string;
-  evaluations: any[];
+  evaluations: SignalEvaluation[];
   minConfidence: number;
   hasSavedSession: boolean;
   nextTickAt: number;

@@ -30,7 +30,7 @@ async function fetchKlinesPaged(symbol: string, interval: string, startMs: numbe
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const r = await fetch(url);
-        list = await r.json();
+        list = (await r.json()) as any[];
         if (Array.isArray(list)) break;
       } catch { /* retry */ }
       await sleep(300 * (attempt + 1));
