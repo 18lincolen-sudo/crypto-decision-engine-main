@@ -11,7 +11,7 @@ import {
 } from '../services/tradingApiClient';
 import { useSimulationBot, SimBotConfig } from '../hooks/useSimulationBot';
 import { useCryptoData } from '../hooks/useCryptoData';
-import { fearGreedApi } from '../services/fearGreedApi';
+import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 
 const DEFAULT_CONFIG: SimBotConfig = {
   riskLevel: 'medium',
@@ -67,26 +67,19 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   const [config, setConfigState] = useState<SimBotConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<SimStatus>('idle');
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
-  const [fearGreedIndex, setFearGreedIndex] = useState(50);
+  const fearGreedIndex = useFearGreedIndex();
 
   const isRunning = status === 'running';
 
   // Fetch live market data for simulation
   const { cryptoData } = useCryptoData();
 
-  useEffect(() => {
-    fearGreedApi.getFearGreedIndex()
-      .then(fg => {
-        if (fg?.value) setFearGreedIndex(fg.value);
-      })
-      .catch(() => {});
-  }, []);
-
   // Run autonomous client-side simulation engine
   const localSim = useSimulationBot({
     config,
     isRunning,
     cryptoData: cryptoData || [],
+    fearGreedIndex,
     persist: (state) => {
       pushSimState('browser-leader', state as any).catch(() => {});
     }

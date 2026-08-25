@@ -6,25 +6,14 @@
  * unreachable or not configured — the simulation must keep working offline.
  */
 import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { resolveWorkerBaseUrl } from './workerConfig';
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 min — avoid hammering the worker every render
 let cached: { symbols: string[]; fetchedAt: number } | null = null;
 let inFlight: Promise<string[]> | null = null;
 
-function resolveBaseUrl(): string {
-  try {
-    const saved = localStorage.getItem('workerConfig');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.baseUrl) return String(parsed.baseUrl).replace(/\/$/, '');
-    }
-  } catch { /* ignore */ }
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
-  return (env?.VITE_TRADING_API_URL || '').replace(/\/$/, '');
-}
-
 async function fetchLiveUniverse(): Promise<string[]> {
-  const base = resolveBaseUrl();
+  const base = resolveWorkerBaseUrl();
   if (!base) return TARGET_SYMBOLS;
   try {
     const controller = new AbortController();

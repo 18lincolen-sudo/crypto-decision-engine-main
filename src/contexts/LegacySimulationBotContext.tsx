@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import {
   useLegacySimulationBot,
   SimBotConfig,
@@ -9,7 +9,7 @@ import {
 } from '../hooks/useLegacySimulationBot';
 import type { SignalEvaluation } from '../services/intradayBridge';
 import { useCryptoData } from '../hooks/useCryptoData';
-import { fearGreedApi } from '../services/fearGreedApi';
+import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import type { SimStatus } from './SimulationBotContext';
 
 const DEFAULT_LEGACY_CONFIG: SimBotConfig = {
@@ -64,16 +64,10 @@ const LegacySimulationBotContext = createContext<LegacySimulationBotContextValue
 export function LegacySimulationBotProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<SimBotConfig>(DEFAULT_LEGACY_CONFIG);
   const [status, setStatus] = useState<SimStatus>('idle');
-  const [fearGreedIndex, setFearGreedIndex] = useState(50);
+  const fearGreedIndex = useFearGreedIndex();
 
   const isRunning = status === 'running';
   const { cryptoData } = useCryptoData();
-
-  useEffect(() => {
-    fearGreedApi.getFearGreedIndex()
-      .then((fg) => { if (fg?.value) setFearGreedIndex(fg.value); })
-      .catch(() => {});
-  }, []);
 
   const sim = useLegacySimulationBot({ config, isRunning, cryptoData: cryptoData || [], fearGreedIndex });
 

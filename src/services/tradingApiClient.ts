@@ -1,5 +1,6 @@
 // Typed client for the local trading worker (src/workers/tradingWorker.ts or dist/worker.js).
 import type { SimBotConfig } from '../hooks/useSimulationBot';
+import { resolveWorkerBaseUrl as resolveBaseUrl } from './workerConfig';
 // The browser never holds the Bybit secret and never signs orders.
 // Base URL comes from VITE_TRADING_API_URL (set at build time for Netlify),
 // falling back to a manually configured worker URL.
@@ -177,22 +178,6 @@ export async function setSimConfig(config: SimBotConfig): Promise<SimBotStateRes
   });
   if (!res.ok) throw new Error(`Sim config ${res.status}`);
   return (await res.json()) as SimBotStateResponse;
-}
-
-function resolveBaseUrl(configured?: string): string {
-  let savedUrl = '';
-  try {
-    const saved = localStorage.getItem('workerConfig');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.baseUrl) savedUrl = parsed.baseUrl;
-    }
-  } catch { /* ignore */ }
-  const fromEnv = import.meta.env.VITE_TRADING_API_URL as string | undefined;
-  // Prefer an explicitly configured (manually entered/saved) URL over the build-time
-  // VITE_TRADING_API_URL, so a saved Worker address is actually used.
-  const base = (configured || savedUrl || fromEnv || '').replace(/\/$/, '');
-  return base;
 }
 
 export function createTradingApiClient(configuredBaseUrl: string, adminToken: string): TradingApiClient {

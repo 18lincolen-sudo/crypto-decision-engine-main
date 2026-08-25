@@ -8,6 +8,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { SimulationBotProvider } from "./contexts/SimulationBotContext";
 import { LegacySimulationBotProvider } from "./contexts/LegacySimulationBotContext";
+import { WorkerAuthProvider } from "./contexts/WorkerAuthContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Index from "./pages/Index";
 import Portfolio from "./pages/Portfolio";
@@ -37,6 +38,7 @@ const App = () => {
             <Toaster />
             <Sonner />
             <BrowserRouter>
+              <WorkerAuthProvider>
               <SimulationBotProvider>
               <LegacySimulationBotProvider>
               <Routes>
@@ -51,6 +53,7 @@ const App = () => {
               </Routes>
               </LegacySimulationBotProvider>
               </SimulationBotProvider>
+              </WorkerAuthProvider>
             </BrowserRouter>
           </TooltipProvider>
         </ThemeProvider>

@@ -201,7 +201,6 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   const [lastEvaluation, setLastEvaluation] = useState<string>('');
   const [heartbeat, setHeartbeat] = useState(0);
   const [nextTickAt, setNextTickAt] = useState<number>(0);
-  const [activeMarketRegimes, setActiveMarketRegimes] = useState<Record<string, MarketRegimeResult>>({});
   const [candleRefreshAt, setCandleRefreshAt] = useState<number>(0);
   const [candleSourceHealth, setCandleSourceHealth] = useState<{ bybit: number; binance: number; coingecko: number; failed: number }>({ bybit: 0, binance: 0, coingecko: 0, failed: 0 });
 
@@ -311,7 +310,6 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     setTotalFees(0);
     setTotalSlippageCost(0);
     setLastEvaluation('');
-    setActiveMarketRegimes({});
     try {
       localStorage.removeItem(SIM_BOT_STORAGE_KEY);
       localStorage.removeItem('simulation-bot-state-v1');
@@ -462,13 +460,15 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     return results;
   }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, mtfData]);
 
-  // Sync activeMarketRegimes state from the latest evaluation pass
-  useEffect(() => {
+  // Purely derived from evaluations — a useState+useEffect pair here previously
+  // added an extra setState-triggered render on every evaluations change,
+  // compounding the render cascade on mount (§ Maximum update depth warning).
+  const activeMarketRegimes = useMemo(() => {
     const regimes: Record<string, MarketRegimeResult> = {};
     for (const ev of evaluations) {
       if (ev.regime) regimes[ev.symbol] = ev.regime;
     }
-    setActiveMarketRegimes(regimes);
+    return regimes;
   }, [evaluations]);
 
   // ═══════════════════════════════════════════════════════

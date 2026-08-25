@@ -83,7 +83,6 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   const [lastEvaluation, setLastEvaluation] = useState<string>('');
   const [heartbeat, setHeartbeat] = useState(0);
   const [nextTickAt, setNextTickAt] = useState<number>(0);
-  const [activeMarketRegimes, setActiveMarketRegimes] = useState<Record<string, MarketRegimeResult>>({});
 
   const cashRef = useRef(cash);
   const positionsRef = useRef(positions);
@@ -155,7 +154,6 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     setTotalFees(0);
     setTotalSlippageCost(0);
     setLastEvaluation('');
-    setActiveMarketRegimes({});
     try {
       localStorage.removeItem(LEGACY_SIM_BOT_STORAGE_KEY);
     } catch { /* ignore */ }
@@ -335,10 +333,13 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     return results;
   }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, candlesBySymbol, fearGreedIndex, closedTradeMetrics]);
 
-  useEffect(() => {
+  // Purely derived from evaluations — a useState+useEffect pair here previously
+  // added an extra setState-triggered render on every evaluations change,
+  // compounding the render cascade on mount (§ Maximum update depth warning).
+  const activeMarketRegimes = useMemo(() => {
     const regimes: Record<string, MarketRegimeResult> = {};
     for (const ev of evaluations) if (ev.regime) regimes[ev.symbol] = ev.regime;
-    setActiveMarketRegimes(regimes);
+    return regimes;
   }, [evaluations]);
 
   // ═══════════════════════════════════════════════════════

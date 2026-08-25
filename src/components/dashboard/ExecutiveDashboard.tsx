@@ -22,6 +22,7 @@ import {
 import { createTradingApiClient } from '@/services/tradingApiClient';
 import type { WorkerAccountSummary, WorkerBotState } from '@/services/tradingApiClient';
 import { useSimulationBotContextSafe } from '@/contexts/SimulationBotContext';
+import { useWorkerAuth } from '@/contexts/WorkerAuthContext';
 
 export const ExecutiveDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -97,22 +98,14 @@ export const ExecutiveDashboard: React.FC = () => {
     }
   }, [sim]);
 
+  // Shared with RealTradingBot.tsx via context (lives above the router, so it
+  // survives in-app navigation) — BOT_ADMIN_TOKEN is memory-only, never in
+  // localStorage. Entering it on the Real Trading Bot page is what makes the
+  // real account summary / bot state show up here too.
+  const { baseUrl: workerUrl, adminToken } = useWorkerAuth();
+
   const fetchWorkerData = useCallback(async () => {
-    let workerUrl = import.meta.env.VITE_TRADING_API_URL || '';
-    // BOT_ADMIN_TOKEN is intentionally memory-only (see RealTradingBot.tsx) —
-    // it is NEVER written to localStorage, so it cannot be read here. Account
-    // summary / bot state require it and are simply unavailable on this page;
-    // retrying every 15s against an admin-only endpoint with no token just
-    // spams "BOT_ADMIN_TOKEN לא הוגדר" and burns the worker's rate limit for
-    // every other tab/page polling it. Only /health (public) is fetched here.
-    try {
-      const savedConfig = localStorage.getItem('workerConfig');
-      if (savedConfig) {
-        const config = JSON.parse(savedConfig);
-        workerUrl = config.baseUrl || workerUrl;
-      }
-    } catch { /* no saved worker config */ }
-    const worker = createTradingApiClient(workerUrl, '');
+    const worker = createTradingApiClient(workerUrl, adminToken);
 
     if (!workerUrl) {
       setHasApiConfig(false);
@@ -128,10 +121,17 @@ export const ExecutiveDashboard: React.FC = () => {
       const health = await worker.getHealth();
       setWorkerHealth(health);
       setLastUpdated(new Date().toLocaleTimeString('he-IL'));
-      // Account summary / bot state need the admin token — only available
-      // after it's entered on the Real Trading Bot page, memory-only there too.
-      setWorkerSummary(null);
-      setWorkerState(null);
+
+      if (!adminToken) {
+        // Account summary / bot state need the admin token — enter it on the
+        // Real Trading Bot page; no error here, this is a normal not-yet-connected state.
+        setWorkerSummary(null);
+        setWorkerState(null);
+        return;
+      }
+      const [summary, state] = await Promise.all([worker.getAccountSummary(), worker.getState()]);
+      setWorkerSummary(summary);
+      setWorkerState(state);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'שגיאת התחברות ל-Worker';
       console.error('[Worker] fetchWorkerData error:', errMsg);
@@ -139,7 +139,7 @@ export const ExecutiveDashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [workerUrl, adminToken]);
 
   useEffect(() => {
     fetchWorkerData();

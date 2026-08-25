@@ -15,6 +15,7 @@ import {
   type WorkerDecision,
   type WorkerSkippedSymbol
 } from '@/services/tradingApiClient';
+import { useWorkerAuth } from '@/contexts/WorkerAuthContext';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Live trading is performed ONLY by the server worker (src/workers/tradingWorker.ts or dist/worker.js).
@@ -23,29 +24,12 @@ import {
 // the frontend only sends control commands and never trades on its own.
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface WorkerConfig {
-  baseUrl: string;
-  adminToken: string;
-}
-
-const ENV_API_URL = (import.meta.env.VITE_TRADING_API_URL as string | undefined) || '';
-
 const RealTradingBot = () => {
-  const [config, setConfig] = useState<WorkerConfig>(() => {
-    // BOT_ADMIN_TOKEN is intentionally memory-only (see security warning below) —
-    // only the non-sensitive baseUrl is ever persisted across page loads.
-    let baseUrl = ENV_API_URL;
-    try {
-      const saved = localStorage.getItem('workerConfig');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.baseUrl) baseUrl = parsed.baseUrl;
-      }
-    } catch { /* ignore */ }
-    // Purge any admin token persisted by an older build of this page.
-    try { localStorage.removeItem('workerAdminToken'); } catch { /* ignore */ }
-    return { baseUrl, adminToken: '' };
-  });
+  // Shared across pages (context lives above the router) so navigating away
+  // and back no longer forgets the token — it only resets on a full reload,
+  // matching the security warning below.
+  const { baseUrl, adminToken, setBaseUrl, setAdminToken, persistBaseUrl } = useWorkerAuth();
+  const config = { baseUrl, adminToken };
   const [botState, setBotState] = useState<WorkerBotState | null>(null);
   const [account, setAccount] = useState<WorkerAccountSummary | null>(null);
   const [online, setOnline] = useState(false);
@@ -98,11 +82,9 @@ const RealTradingBot = () => {
       alert('נא להזין כתובת Worker');
       return;
     }
-    try {
-      // Only baseUrl is persisted — adminToken stays memory-only, matching the
-      // security warning shown on this page.
-      localStorage.setItem('workerConfig', JSON.stringify({ baseUrl: config.baseUrl }));
-    } catch { /* ignore */ }
+    // Only baseUrl is persisted — adminToken stays memory-only (shared via
+    // WorkerAuthContext, matching the security warning shown on this page).
+    persistBaseUrl();
     void refresh();
   };
 
@@ -215,7 +197,7 @@ const RealTradingBot = () => {
                 <Input
                   placeholder="https://<tunnel>.trycloudflare.com"
                   value={config.baseUrl}
-                  onChange={(e) => setConfig({ ...config, baseUrl: e.target.value })}
+                  onChange={(e) => setBaseUrl(e.target.value)}
                 />
               </div>
               <div>
@@ -224,7 +206,7 @@ const RealTradingBot = () => {
                   type="password"
                   placeholder="טוקן אדמין מה-Worker"
                   value={config.adminToken}
-                  onChange={(e) => setConfig({ ...config, adminToken: e.target.value })}
+                  onChange={(e) => setAdminToken(e.target.value)}
                 />
               </div>
               <Button onClick={saveConfig} className="bg-primary hover:bg-primary/90">שמור והתחבר</Button>
