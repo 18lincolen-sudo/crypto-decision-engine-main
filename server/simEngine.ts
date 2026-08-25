@@ -19,6 +19,7 @@ import {
 } from '../src/services/intradayBridge';
 import { getUniverseMarketData } from '../src/services/marketDataService';
 import type { IntradayDecision } from '../src/services/intradayEngine';
+import { reanchorLevel, computeEntryBudget, isInEntryCooldown } from '../src/services/simExecution';
 
 interface SimEvaluationResult {
   symbol: string;
@@ -156,6 +157,9 @@ interface SimBotConfig {
 }
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+// Normalizes either a bare ("LIT") or suffixed ("LITUSDT") symbol to its base
+// asset, so price lookups work regardless of which form the caller has.
+const toBaseSymbol = (s: string) => (s.toUpperCase().endsWith('USDT') ? s.toUpperCase().slice(0, -4) : s.toUpperCase());
 const TICK_MS = 4000;
 const CRYPTO_REFRESH_MS = 60_000;  // 60s — Bybit/Binance are fast, no need to hammer CoinGecko
 const CANDLE_REFRESH_MS = 5 * 60_000;
@@ -180,7 +184,7 @@ async function sendSimTelegramMessage(message: string): Promise<void> {
   }
 }
 
-export function createSimEngine() {
+export function createSimEngine(getSymbols?: () => string[]) {
   let cash = 10000;
   let positions: SimPosition[] = [];
   let trades: SimTrade[] = [];
@@ -194,7 +198,6 @@ export function createSimEngine() {
   // Safety net against rapid re-entry churn: after a LOSING full exit, skip new
   // entries on that symbol for a cooldown window even if the signal still fires.
   const exitCooldown: Record<string, number> = {};
-  const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
 
   let liveCandles: Record<string, MultiTimeframeSnapshot> = {};
   let cryptoData: CryptoData[] = [];
@@ -210,15 +213,21 @@ export function createSimEngine() {
     }
   }
 
+  // Positions/orders always carry the SUFFIXED symbol ("LITUSDT", from the MTF
+  // snapshot), but cryptoData/lastPrices are keyed by the BARE ticker symbol
+  // ("lit", from the price aggregator) — comparing them directly never matched,
+  // so priceFor() silently returned undefined for every open position and mark-
+  // to-market prices (and therefore chart currentPrice) froze at the entry fill
+  // price forever. Normalize both sides to the base asset before comparing.
   function priceFor(symbol: string): number | undefined {
-    const up = symbol.toUpperCase();
-    if (typeof lastPrices[up] === 'number') return lastPrices[up];
-    const c = cryptoData.find((x) => x.symbol.toUpperCase() === up);
+    const base = toBaseSymbol(symbol);
+    if (typeof lastPrices[base] === 'number') return lastPrices[base];
+    const c = cryptoData.find((x) => toBaseSymbol(x.symbol) === base);
     return c?.current_price;
   }
 
   function buildCandlesForSymbol(symbol: string): Candle[] {
-    const snap = liveCandles[symbol.toUpperCase()];
+    const snap = liveCandles[toBaseSymbol(symbol)];
     return snap && snap.m5 && snap.m5.length ? snap.m5 : [];
   }
 
@@ -267,12 +276,18 @@ export function createSimEngine() {
     const now = Date.now();
     if (now - cryptoRefreshAt > CRYPTO_REFRESH_MS || cryptoData.length === 0) {
       try {
-        // Use multi-source aggregator: Bybit → Binance → CoinGecko (rate-gated)
-        const data = await getAggregatedPrices();
+        // Use multi-source aggregator: Bybit → Binance → CoinGecko (rate-gated).
+        // Restrict to the SAME curated liquid universe the real bot trades —
+        // without this filter, getAggregatedPrices() returns EVERY Bybit USDT
+        // pair (400+), and refreshCandles() below then has to fetch 1H/15M/5M
+        // klines for all of them every cycle. That starves the pipeline under
+        // rate limits so only a handful of symbols ever reach READY status,
+        // meaning most SIGNAL evaluations never get a chance to actually fill.
+        const data = await getAggregatedPrices(getSymbols?.());
         if (data && data.length) {
           cryptoData = data;
           cryptoRefreshAt = now;
-          for (const c of data) lastPrices[c.symbol.toUpperCase()] = c.current_price;
+          for (const c of data) lastPrices[toBaseSymbol(c.symbol)] = c.current_price;
         }
       } catch {
         /* keep last-known-good prices */
@@ -298,7 +313,11 @@ export function createSimEngine() {
     try {
       const { snapshots } = await getUniverseMarketData(symbols, { log: true });
       const next: Record<string, MultiTimeframeSnapshot> = {};
-      for (const [sym, snap] of snapshots) next[sym] = snap;
+      // getUniverseMarketData keys its Map by the SUFFIXED symbol (snap.symbol,
+      // e.g. "LITUSDT"); liveCandles is looked up elsewhere with the bare ticker
+      // symbol from cryptoData ("LIT"). Normalize to base-asset form here so
+      // every reader/writer of liveCandles agrees on one key format.
+      for (const [sym, snap] of snapshots) next[toBaseSymbol(sym)] = snap;
       liveCandles = next;
     } catch {
       /* keep last-known-good MTF data on failure */
@@ -337,7 +356,7 @@ export function createSimEngine() {
       const currentPrice = crypto.current_price;
       const priceChange24h = crypto.price_change_percentage_24h || 0;
 
-      const snap = liveCandles[symbol];
+      const snap = liveCandles[toBaseSymbol(symbol)];
       if (!snap || snap.status !== 'READY') continue;
 
       const ev = evaluateSymbolFromSnapshot(
@@ -347,9 +366,14 @@ export function createSimEngine() {
         openPositionsForEngine
       );
 
-      const isQueued = queued.some((o) => o.symbol === symbol);
-      const isHeld = openPos.some((p) => p.symbol === symbol);
-      const hasExistingFutures = openPos.some((p) => p.symbol === symbol && p.type === 'FUTURES');
+      // `symbol` here is bare (from cryptoData); queued/openPos entries store
+      // the SUFFIXED symbol (from ev.symbol → order.symbol → position.symbol).
+      // Comparing them directly (as this used to) always returned false, so
+      // the bot could never detect it already held or had queued a symbol —
+      // same bare-vs-suffixed mismatch already fixed for pricing/candles.
+      const isQueued = queued.some((o) => toBaseSymbol(o.symbol) === symbol);
+      const isHeld = openPos.some((p) => toBaseSymbol(p.symbol) === symbol);
+      const hasExistingFutures = openPos.some((p) => toBaseSymbol(p.symbol) === symbol && p.type === 'FUTURES');
 
       let status = ev.status;
       let willExecute = ev.willExecute;
@@ -461,16 +485,13 @@ export function createSimEngine() {
       if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
       if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
 
-      const lastLoss = exitCooldown[ev.symbol];
-      if (lastLoss && Date.now() - lastLoss < ENTRY_COOLDOWN_MS) continue;
+      if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
 
       const orderSide = ev.tradeType === 'FUTURES'
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
         : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-      const budget = ev.tradeType === 'FUTURES'
-        ? Math.min(cash * 0.05, 500)
-        : Math.min(cash * 0.15, 1000);
+      const budget = computeEntryBudget(cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
 
       if (budget < 5) continue;
 
@@ -528,15 +549,7 @@ export function createSimEngine() {
         feesAdded += fee;
         slipAdded += Math.abs(fillPrice - market) * quantity;
 
-        // SL/TP were computed relative to the SIGNAL price at evaluation time,
-        // which can be stale by the time the order actually fills (execution
-        // delay + live price drift). Re-anchor by preserving the SIGNED offset
-        // from the signal price so SL stays below / TP stays above entry for a
-        // LONG (opposite for SHORT) — reusing the absolute levels verbatim let
-        // a position open already past its own stop-loss, and this engine (not
-        // the browser hooks) is the one actually running 24/7 in production.
-        const reanchor = (level: number | undefined): number | undefined =>
-          level === undefined ? undefined : fillPrice + (level - order.signalPrice);
+        const reanchor = (level: number | undefined) => reanchorLevel(fillPrice, order.signalPrice, level);
 
         const newPos: SimPosition = {
           id: uid(order.symbol),
@@ -746,7 +759,7 @@ export function createSimEngine() {
       cash = initialAmount;
     }
     await refreshMarketData();
-    for (const c of cryptoData) lastPrices[c.symbol.toUpperCase()] = c.current_price;
+    for (const c of cryptoData) lastPrices[toBaseSymbol(c.symbol)] = c.current_price;
 
     // Mark-to-market live price updates on each tick for open positions
     positions = positions.map((p) => {

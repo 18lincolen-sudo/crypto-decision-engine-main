@@ -17,6 +17,7 @@ import {
 } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
+import { reanchorLevel, computeEntryBudget, isInEntryCooldown } from '../services/simExecution';
 
 export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 
@@ -216,7 +217,6 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   // symbol from re-entering immediately and bleeding fees/slippage on repeat
   // near-instant round trips.
   const exitCooldownRef = useRef<Record<string, number>>({});
-  const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
 
   cashRef.current = cash;
   positionsRef.current = positions;
@@ -433,9 +433,14 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         openPositionsForEngine
       );
 
-      const isQueued = queuedOrders.some(o => o.symbol === symbol);
-      const isHeld = openPos.some(p => p.symbol === symbol);
-      const hasExistingFutures = openPos.some(p => p.symbol === symbol && p.type === 'FUTURES');
+      // `symbol` here is bare (from cryptoData); queuedOrders/openPos store the
+      // SUFFIXED symbol (ev.symbol → order.symbol → position.symbol traces back
+      // to snap.symbol). Comparing them directly always returned false, so the
+      // bot could never detect it already held or had queued a symbol — same
+      // bare-vs-suffixed mismatch already fixed for pricing/candles server-side.
+      const isQueued = queuedOrders.some(o => toBaseAsset(o.symbol) === symbol);
+      const isHeld = openPos.some(p => toBaseAsset(p.symbol) === symbol);
+      const hasExistingFutures = openPos.some(p => toBaseAsset(p.symbol) === symbol && p.type === 'FUTURES');
 
       let status = ev.status;
       let willExecute = ev.willExecute;
@@ -561,16 +566,15 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     for (const ev of evaluations) {
       if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
       if (newOrders.some(o => o.symbol === ev.symbol) || queued.some(o => o.symbol === ev.symbol)) continue;
-      const lastLoss = exitCooldownRef.current[ev.symbol];
-      if (lastLoss && Date.now() - lastLoss < ENTRY_COOLDOWN_MS) continue;
+      if (isInEntryCooldown(exitCooldownRef.current[ev.symbol])) continue;
 
       const orderSide = ev.tradeType === 'FUTURES'
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
         : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
       const budget = (ev.stopLoss && ev.tradeType === 'FUTURES')
-        ? Math.min(cashRef.current * 0.05, 500)
-        : Math.min(cashRef.current * 0.15, 1000);
+        ? computeEntryBudget(cashRef.current, 'FUTURES')
+        : computeEntryBudget(cashRef.current, 'SPOT');
 
       if (budget < 5) continue;
 
@@ -688,21 +692,8 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
           feesAdded += fee;
           slipAdded += Math.abs(fillPrice - market) * quantity;
 
-          // SL/TP were computed relative to the SIGNAL price at evaluation time,
-          // which can be seconds-to-minutes stale by the time the order actually
-          // fills (execution delay + live price drift). Re-anchor them to the
-          // ACTUAL fill price by preserving the intended risk DISTANCE instead of
-          // reusing the absolute levels verbatim — otherwise a position can open
-          // already past its own stop-loss, guaranteeing an instant stop-out on
-          // the very next tick (seen as rapid entry/SL-exit/re-entry loops).
           const isLongSide = order.side === 'buy' || order.side === 'long';
-          // Preserve the SIGNED offset from the signal price (level - signalPrice),
-          // not just the distance — SL sits below entry and TP sits above entry for
-          // a LONG (opposite for SHORT), so forcing a single sign here (as an earlier
-          // version of this fix did) silently flipped TP1/TP2 to the wrong side of
-          // the fill price, causing "TP2 reached" exits that were actually losses.
-          const reanchor = (level: number | undefined): number | undefined =>
-            level === undefined ? undefined : fillPrice + (level - order.signalPrice);
+          const reanchor = (level: number | undefined) => reanchorLevel(fillPrice, order.signalPrice, level);
 
           const newPos: SimPosition = {
             id: uid(order.symbol),

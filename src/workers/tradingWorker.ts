@@ -419,7 +419,10 @@ const simState = {
 
 // The simulation engine now runs SERVER-SIDE (24/7, no browser required).
 // It is the single source of truth; clients are pure viewers.
-const simEngine = createSimEngine();
+// Pass a getter (not the array) so it always reads the CURRENT `symbols` —
+// refreshUniverseIfStale() reassigns that binding, and capturing it once here
+// would freeze the sim engine on the boot-time universe.
+const simEngine = createSimEngine(() => symbols);
 
 async function hydrateSim() {
   const saved = await simStore.get('state');

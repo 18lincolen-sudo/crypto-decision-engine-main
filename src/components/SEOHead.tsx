@@ -11,20 +11,20 @@ interface SEOHeadProps {
 }
 
 const SEOHead: React.FC<SEOHeadProps> = ({
-  title = 'CryptoBot AI - בוט מסחר חכם לקריפטו',
+  title = 'בוט מסחר של מנחם - בוט מסחר חכם לקריפטו',
   description = 'בוט מסחר חכם לקריפטו עם בינה מלאכותית, ניתוח טכני מתקדם ומסחר אוטומטי. השקעה חכמה ובטוחה בשוק הקריפטו.',
   keywords = ['קריפטו', 'בוט מסחר', 'בינה מלאכותית', 'ביטקוין', 'אתריום', 'מסחר אוטומטי'],
   image = '/placeholder.svg',
   url = 'https://cryptobot-ai.netlify.app'
 }) => {
-  const fullTitle = title.includes('CryptoBot AI') ? title : `${title} | CryptoBot AI`;
+  const fullTitle = title.includes('בוט מסחר של מנחם') ? title : `${title} | בוט מסחר של מנחם`;
   
   return (
     <Helmet>
       <title>{fullTitle}</title>
       <meta name="description" content={description} />
       <meta name="keywords" content={keywords.join(', ')} />
-      <meta name="author" content="CryptoBot AI" />
+      <meta name="author" content="בוט מסחר של מנחם" />
       <meta name="robots" content="index, follow" />
       <meta name="language" content="he" />
       <meta name="direction" content="rtl" />
@@ -35,7 +35,7 @@ const SEOHead: React.FC<SEOHeadProps> = ({
       <meta property="og:description" content={description} />
       <meta property="og:image" content={image} />
       <meta property="og:url" content={url} />
-      <meta property="og:site_name" content="CryptoBot AI" />
+      <meta property="og:site_name" content="בוט מסחר של מנחם" />
       <meta property="og:locale" content="he_IL" />
       
       {/* Twitter */}
@@ -48,7 +48,7 @@ const SEOHead: React.FC<SEOHeadProps> = ({
       <meta name="theme-color" content="#22c55e" />
       <meta name="apple-mobile-web-app-capable" content="yes" />
       <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-      <meta name="apple-mobile-web-app-title" content="CryptoBot AI" />
+      <meta name="apple-mobile-web-app-title" content="בוט מסחר של מנחם" />
       
       {/* Favicon */}
       <link rel="icon" type="image/svg+xml" href="/favicon.ico" />

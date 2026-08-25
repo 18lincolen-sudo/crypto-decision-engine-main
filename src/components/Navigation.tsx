@@ -32,6 +32,9 @@ const Navigation = () => {
 
   return (
     <nav className="bg-card border-b border-border sticky top-0 z-50 backdrop-blur-md bg-opacity-90">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-right pt-1">
+        <span className="text-xs font-mono text-muted-foreground">בס״ד</span>
+      </div>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           {/* Logo */}
@@ -40,7 +43,7 @@ const Navigation = () => {
               <BarChart3 className="w-5 h-5 text-white" />
             </div>
             <span className="text-xl font-bold font-mono text-foreground hidden sm:block">
-              🚀 CryptoBot AI
+              🚀 בוט מסחר של מנחם
             </span>
           </Link>
 

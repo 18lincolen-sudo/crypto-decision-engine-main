@@ -22,6 +22,7 @@ import {
 import type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
+import { reanchorLevel, computeEntryBudget, isInEntryCooldown } from '../services/simExecution';
 import type {
   SimPosition,
   SimTrade,
@@ -91,7 +92,6 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   const configRef = useRef(config);
   // Cooldown after a losing exit — see useSimulationBot.ts for full explanation.
   const exitCooldownRef = useRef<Record<string, number>>({});
-  const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
   const tradesRef = useRef(trades);
 
   cashRef.current = cash;
@@ -408,16 +408,13 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     for (const ev of evaluations) {
       if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
       if (newOrders.some((o) => o.symbol === ev.symbol) || queued.some((o) => o.symbol === ev.symbol)) continue;
-      const lastLoss = exitCooldownRef.current[ev.symbol];
-      if (lastLoss && Date.now() - lastLoss < ENTRY_COOLDOWN_MS) continue;
+      if (isInEntryCooldown(exitCooldownRef.current[ev.symbol])) continue;
 
       const orderSide = ev.tradeType === 'FUTURES'
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
         : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-      const budget = (ev.tradeType === 'FUTURES')
-        ? Math.min(cashRef.current * 0.05, 500)
-        : Math.min(cashRef.current * 0.15, 1000);
+      const budget = computeEntryBudget(cashRef.current, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
 
       if (budget < 5) continue;
 
@@ -514,16 +511,8 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
           feesAdded += fee;
           slipAdded += Math.abs(fillPrice - market) * quantity;
 
-          // Re-anchor SL/TP to the ACTUAL fill price by preserving the risk
-          // distance from the (possibly stale) signal price, instead of reusing
-          // the absolute levels verbatim — see useSimulationBot.ts for the full
-          // explanation (rapid entry/instant-SL/re-entry loops otherwise).
           const isLongSide = order.side === 'buy' || order.side === 'long';
-          // Preserve the SIGNED offset from the signal price — forcing a single
-          // sign here flips TP1/TP2 to the wrong side of the fill price for a
-          // LONG (see useSimulationBot.ts for the full explanation).
-          const reanchor = (level: number | undefined): number | undefined =>
-            level === undefined ? undefined : fillPrice + (level - order.signalPrice);
+          const reanchor = (level: number | undefined) => reanchorLevel(fillPrice, order.signalPrice, level);
 
           const newPos: SimPosition = {
             id: uid(order.symbol), symbol: order.symbol, type: order.type,

@@ -57,14 +57,16 @@ async function bybitApiCall<T>(endpoint: string, params: Record<string, string> 
 
 import { getActiveSymbols } from './liveUniverse';
 import { TARGET_SYMBOLS as STATIC_TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { toBaseAsset, toBybitSymbol } from './assetUniverse';
 
-// Internal symbol to Bybit symbol mapping (auto-generated from TARGET_SYMBOLS)
+// This file used to carry its own naive USDT-stripping/-adding pair, which (a)
+// duplicated assetUniverse.ts's logic and (b) wasn't idempotent — calling it
+// with an already-suffixed symbol produced "XUSDTUSDT". Delegates to the
+// shared, robust implementation (handles PERP suffixes, separators, etc.)
+// instead — see also server/simEngine.ts and cryptoPriceAggregator.ts, which
+// hit real bare-vs-suffixed symbol bugs from exactly this kind of duplication.
 function toInternalSymbol(bybitSymbol: string): string {
-  return bybitSymbol.replace('USDT', '').toLowerCase();
-}
-
-function toBybitSymbol(internalSymbol: string): string {
-  return `${internalSymbol.toUpperCase()}USDT`;
+  return toBaseAsset(bybitSymbol).toLowerCase();
 }
 
 export const bybitApi = {

@@ -14,6 +14,7 @@
 
 import { CryptoData } from '../types/crypto';
 import { Candle } from './tradeEngine';
+import { toBaseAsset } from './assetUniverse';
 
 // ── Binance ticker shape ──────────────────────────────────────────────────────
 interface BinanceTicker {
@@ -156,7 +157,7 @@ async function fetchBybitAllTickers(): Promise<CryptoData[]> {
     const tickers = data.result.list
       .filter(t => t.symbol.endsWith('USDT'))
       .map(t => {
-        const sym = t.symbol.replace('USDT', '').toLowerCase();
+        const sym = toBaseAsset(t.symbol).toLowerCase();
         return {
           id: sym,
           symbol: sym,
@@ -216,12 +217,22 @@ async function fetchCoinGeckoPrices(): Promise<CryptoData[]> {
 }
 
 // ── Main: getCurrentPrices — Bybit → Binance → CoinGecko ─────────────────────
+// Both tickers (t.symbol, mapped bare e.g. "lit") and targetSymbols (caller-
+// supplied, usually suffixed e.g. "LITUSDT") need the SAME base-asset form
+// before comparing — comparing "LIT" to "LITUSDT" directly never matches,
+// which silently emptied the target-filtered result down to the CoinGecko
+// fallback (ignoring targetSymbols entirely) whenever a caller filtered.
+// Uses the shared toBaseAsset() (assetUniverse.ts) rather than a local
+// ad-hoc implementation — every price/candle source in this file used to
+// carry its own copy of this normalization, which is exactly how the
+// bare-vs-suffixed mismatches shipped in the first place.
 export async function getAggregatedPrices(targetSymbols?: string[]): Promise<CryptoData[]> {
+  const targetBases = targetSymbols?.map(toBaseAsset);
   // 1) Try Bybit (fastest, real-time)
   const bybitTickers = await fetchBybitAllTickers();
   if (bybitTickers.length > 10) {
-    const filtered = targetSymbols
-      ? bybitTickers.filter(t => targetSymbols.some(s => t.symbol.toUpperCase() === s.toUpperCase()))
+    const filtered = targetBases
+      ? bybitTickers.filter(t => targetBases.includes(toBaseAsset(t.symbol)))
       : bybitTickers;
     if (filtered.length > 10) {
       priceCache = { data: filtered, fetchedAt: Date.now(), source: 'bybit' };
@@ -234,13 +245,13 @@ export async function getAggregatedPrices(targetSymbols?: string[]): Promise<Cry
   if (binanceTickers.length > 10) {
     const mapped: CryptoData[] = binanceTickers
       .filter(t => {
-        const sym = t.symbol.replace('USDT', '').toLowerCase();
-        return targetSymbols
-          ? targetSymbols.some(s => s.toUpperCase() === sym.toUpperCase())
+        const sym = toBaseAsset(t.symbol).toLowerCase();
+        return targetBases
+          ? targetBases.includes(toBaseAsset(sym))
           : true;
       })
       .map(t => {
-        const sym = t.symbol.replace('USDT', '').toLowerCase();
+        const sym = toBaseAsset(t.symbol).toLowerCase();
         const price = parseFloat(t.lastPrice);
         const vol   = parseFloat(t.quoteVolume);
         return {
@@ -276,10 +287,11 @@ export async function getAggregatedPrices(targetSymbols?: string[]): Promise<Cry
 export async function getAggregatedCandles(symbol: string, days = 60): Promise<Candle[]> {
   // Accept either a base symbol ("STX") or an already-suffixed pair ("STXUSDT") —
   // callers pass both (e.g. LivePositionChart receives Bybit position symbols,
-  // which already include "USDT"). Strip any existing suffix before re-adding it
-  // to avoid building "STXUSDTUSDT" (which Binance/Bybit reject, surfacing as a
-  // confusing CORS error in the browser since the error response has no CORS header).
-  const BASE = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase().slice(0, -4) : symbol.toUpperCase();
+  // which already include "USDT"). toBaseAsset() strips any existing suffix
+  // before re-adding it, avoiding "STXUSDTUSDT" (which Binance/Bybit reject,
+  // surfacing as a confusing CORS error in the browser since the error
+  // response has no CORS header).
+  const BASE = toBaseAsset(symbol);
   const SYM = BASE;
   const now = Date.now();
 
