@@ -4,6 +4,7 @@
 import {
   calculateTradingFee,
   simulateSlippage,
+  formatDynamicPrice,
   Candle
 } from '../src/services/tradeEngine';
 import { getAggregatedPrices } from '../src/services/cryptoPriceAggregator';
@@ -159,6 +160,26 @@ const TICK_MS = 4000;
 const CRYPTO_REFRESH_MS = 60_000;  // 60s — Bybit/Binance are fast, no need to hammer CoinGecko
 const CANDLE_REFRESH_MS = 5 * 60_000;
 
+// Telegram notifications for the simulation bot (paper trades) — same
+// TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars as the real bot's alerts,
+// but this engine previously had NO Telegram integration at all: the sim
+// bot's entries/exits were never announced, only the real (dry-run) bot's
+// entries were. Never throws — a Telegram failure must not affect trading.
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
+const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
+async function sendSimTelegramMessage(message: string): Promise<void> {
+  if (!telegramBotToken || !telegramChatId) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: telegramChatId, text: message })
+    });
+  } catch {
+    // ignore — notification failures must not affect the simulation
+  }
+}
+
 export function createSimEngine() {
   let cash = 10000;
   let positions: SimPosition[] = [];
@@ -170,6 +191,10 @@ export function createSimEngine() {
   let totalSlippageCost = 0;
   let lastEvaluation = '';
   let lastEvaluations: SimEvaluationResult[] = [];
+  // Safety net against rapid re-entry churn: after a LOSING full exit, skip new
+  // entries on that symbol for a cooldown window even if the signal still fires.
+  const exitCooldown: Record<string, number> = {};
+  const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
 
   let liveCandles: Record<string, MultiTimeframeSnapshot> = {};
   let cryptoData: CryptoData[] = [];
@@ -436,12 +461,15 @@ export function createSimEngine() {
       if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
       if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
 
+      const lastLoss = exitCooldown[ev.symbol];
+      if (lastLoss && Date.now() - lastLoss < ENTRY_COOLDOWN_MS) continue;
+
       const orderSide = ev.tradeType === 'FUTURES'
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
         : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
       const budget = ev.tradeType === 'FUTURES'
-        ? cash * 0.05
+        ? Math.min(cash * 0.05, 500)
         : Math.min(cash * 0.15, 1000);
 
       if (budget < 5) continue;
@@ -500,6 +528,16 @@ export function createSimEngine() {
         feesAdded += fee;
         slipAdded += Math.abs(fillPrice - market) * quantity;
 
+        // SL/TP were computed relative to the SIGNAL price at evaluation time,
+        // which can be stale by the time the order actually fills (execution
+        // delay + live price drift). Re-anchor by preserving the SIGNED offset
+        // from the signal price so SL stays below / TP stays above entry for a
+        // LONG (opposite for SHORT) — reusing the absolute levels verbatim let
+        // a position open already past its own stop-loss, and this engine (not
+        // the browser hooks) is the one actually running 24/7 in production.
+        const reanchor = (level: number | undefined): number | undefined =>
+          level === undefined ? undefined : fillPrice + (level - order.signalPrice);
+
         const newPos: SimPosition = {
           id: uid(order.symbol),
           symbol: order.symbol,
@@ -512,10 +550,10 @@ export function createSimEngine() {
           leverage,
           marginUsd: budget,
           notionalUsd: notional,
-          stopLoss: order.stopLoss || (order.side === 'short' ? fillPrice * 1.05 : fillPrice * 0.95),
-          takeProfit1: order.takeProfit1,
-          takeProfit2: order.takeProfit2,
-          takeProfit: order.takeProfit || fillPrice * 1.05,
+          stopLoss: reanchor(order.stopLoss) ?? (order.side === 'short' ? fillPrice * 1.05 : fillPrice * 0.95),
+          takeProfit1: reanchor(order.takeProfit1),
+          takeProfit2: reanchor(order.takeProfit2),
+          takeProfit: reanchor(order.takeProfit) ?? (order.side === 'short' ? fillPrice * 0.95 : fillPrice * 1.05),
           tp1Hit: false,
           highestPrice: fillPrice,
           lowestPrice: fillPrice,
@@ -545,6 +583,18 @@ export function createSimEngine() {
           reason: order.reason,
           confidence: order.confidence
         });
+
+        void sendSimTelegramMessage(
+          `🟢 סימולציה — כניסה\n\n` +
+          `סמל: ${order.symbol}\n` +
+          `כיוון: ${newPos.side}${isFutures ? ` (${leverage}x)` : ''}\n` +
+          `מחיר כניסה: $${formatDynamicPrice(fillPrice)}\n` +
+          `SL: $${formatDynamicPrice(newPos.stopLoss)}\n` +
+          (newPos.takeProfit1 ? `TP1: $${formatDynamicPrice(newPos.takeProfit1)}\n` : '') +
+          (newPos.takeProfit2 ? `TP2: $${formatDynamicPrice(newPos.takeProfit2)}\n` : '') +
+          `סיבה: ${order.reason || '-'}\n` +
+          `זמן: ${now}`
+        );
       } else if (order.side === 'partial_tp1') {
         const posIdx = workingPositions.findIndex((p) => p.symbol === order.symbol && p.type === 'FUTURES');
         if (posIdx >= 0) {
@@ -590,6 +640,17 @@ export function createSimEngine() {
             pnl,
             pnlPercent: (pnl / (pos.marginUsd * 0.5)) * 100
           });
+
+          const partialPnlPercent = (pnl / (pos.marginUsd * 0.5)) * 100;
+          void sendSimTelegramMessage(
+            `${pnl >= 0 ? '✅' : '🔴'} סימולציה — יציאה חלקית (TP1, 50%)\n\n` +
+            `סמל: ${order.symbol}\n` +
+            `כיוון: ${pos.side}\n` +
+            `מחיר כניסה: $${formatDynamicPrice(pos.entryPrice)}\n` +
+            `מחיר יציאה: $${formatDynamicPrice(fillPrice)}\n` +
+            `רווח/הפסד (חלקי): ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${partialPnlPercent >= 0 ? '+' : ''}${partialPnlPercent.toFixed(2)}%)\n` +
+            `זמן: ${now}`
+          );
         }
       } else {
         const pos = workingPositions.find((p) => p.symbol === order.symbol);
@@ -612,6 +673,7 @@ export function createSimEngine() {
           feesAdded += fee;
           slipAdded += Math.abs(market - fillPrice) * pos.quantity;
           workingPositions = workingPositions.filter((p) => p.id !== pos.id);
+          if (pnl < 0) exitCooldown[pos.symbol] = Date.now();
 
           newTrades.push({
             id: order.id,
@@ -635,6 +697,20 @@ export function createSimEngine() {
               ? (pnl / (pos.quantity * pos.avgPrice)) * 100
               : (pnl / pos.marginUsd) * 100
           });
+
+          const pnlPercent = pos.type === 'SPOT'
+            ? (pnl / (pos.quantity * pos.avgPrice)) * 100
+            : (pnl / pos.marginUsd) * 100;
+          void sendSimTelegramMessage(
+            `${pnl >= 0 ? '✅' : '🔴'} סימולציה — יציאה\n\n` +
+            `סמל: ${order.symbol}\n` +
+            `כיוון: ${pos.side}\n` +
+            `מחיר כניסה: $${formatDynamicPrice(pos.entryPrice)}\n` +
+            `מחיר יציאה: $${formatDynamicPrice(fillPrice)}\n` +
+            `רווח/הפסד: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
+            `סיבה: ${order.reason || '-'}\n` +
+            `זמן: ${now}`
+          );
         }
       }
     }

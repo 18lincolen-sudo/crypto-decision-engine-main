@@ -519,8 +519,11 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
           // the absolute levels verbatim — see useSimulationBot.ts for the full
           // explanation (rapid entry/instant-SL/re-entry loops otherwise).
           const isLongSide = order.side === 'buy' || order.side === 'long';
+          // Preserve the SIGNED offset from the signal price — forcing a single
+          // sign here flips TP1/TP2 to the wrong side of the fill price for a
+          // LONG (see useSimulationBot.ts for the full explanation).
           const reanchor = (level: number | undefined): number | undefined =>
-            level === undefined ? undefined : fillPrice + (isLongSide ? -1 : 1) * Math.abs(order.signalPrice - level);
+            level === undefined ? undefined : fillPrice + (level - order.signalPrice);
 
           const newPos: SimPosition = {
             id: uid(order.symbol), symbol: order.symbol, type: order.type,

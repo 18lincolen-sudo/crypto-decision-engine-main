@@ -696,8 +696,13 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
           // already past its own stop-loss, guaranteeing an instant stop-out on
           // the very next tick (seen as rapid entry/SL-exit/re-entry loops).
           const isLongSide = order.side === 'buy' || order.side === 'long';
+          // Preserve the SIGNED offset from the signal price (level - signalPrice),
+          // not just the distance — SL sits below entry and TP sits above entry for
+          // a LONG (opposite for SHORT), so forcing a single sign here (as an earlier
+          // version of this fix did) silently flipped TP1/TP2 to the wrong side of
+          // the fill price, causing "TP2 reached" exits that were actually losses.
           const reanchor = (level: number | undefined): number | undefined =>
-            level === undefined ? undefined : fillPrice + (isLongSide ? -1 : 1) * Math.abs(order.signalPrice - level);
+            level === undefined ? undefined : fillPrice + (level - order.signalPrice);
 
           const newPos: SimPosition = {
             id: uid(order.symbol),

@@ -1,7 +1,7 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Bot, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Bot, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import PortfolioRiskMeter from '../components/trading/PortfolioRiskMeter';
 import SimulationEngineColumn from '../components/trading/SimulationEngineColumn';
@@ -9,12 +9,44 @@ import { useSimulationBotContext } from '../contexts/SimulationBotContext';
 import { useLegacySimulationBotContext } from '../contexts/LegacySimulationBotContext';
 import { useWorkerAuth } from '../contexts/WorkerAuthContext';
 import { useCryptoData } from '../hooks/useCryptoData';
+import { SIM_BOT_STORAGE_KEY } from '../hooks/useSimulationBot';
+import { LEGACY_SIM_BOT_STORAGE_KEY } from '../hooks/useLegacySimulationBot';
+
+// Keys that hold the bots' remembered history (positions/trades/equity).
+// Distinct from workerConfig/theme/credentials — those are connection/app
+// settings, not simulation state, and are intentionally left untouched.
+const SIM_CACHE_KEYS = [
+  SIM_BOT_STORAGE_KEY,
+  'simulation-bot-state-v1',
+  LEGACY_SIM_BOT_STORAGE_KEY,
+  'crypto-portfolio'
+];
 
 const SimulationBot = () => {
   const intraday = useSimulationBotContext();
   const legacy = useLegacySimulationBotContext();
   const { cryptoData, isLoading } = useCryptoData();
   const { baseUrl, setBaseUrl, persistBaseUrl } = useWorkerAuth();
+
+  const clearAllCache = () => {
+    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של שני המנועים ותרענן את הדף.')) {
+      return;
+    }
+    for (const key of SIM_CACHE_KEYS) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // ignore
+      }
+    }
+    // resetAll() on the intraday engine also calls the server's /api/sim/reset,
+    // clearing the persisted server-side snapshot (sim-state.json) that
+    // otherwise survives a fresh deploy — that's the "remembers the past even
+    // after I uploaded a new dist" symptom.
+    intraday.resetAll();
+    legacy.resetAll();
+    window.location.reload();
+  };
 
   const combinedPositionsCount = intraday.positions.length + legacy.positions.length;
   const combinedFuturesCount =
@@ -35,6 +67,15 @@ const SimulationBot = () => {
           <p className="text-sm sm:text-base text-muted-foreground font-mono">
             מנוע חדש (רב-שכבתי Multi-Timeframe) מול מנוע מקורי (ציון ביטחון משוקלל, alg.md) — כל אחד עם הון וסטטיסטיקה נפרדים
           </p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={clearAllCache}
+            className="mt-3 gap-2 text-destructive border-destructive/40 hover:bg-destructive/10"
+          >
+            <Trash2 className="w-4 h-4" />
+            איפוס מלא של כל המטמון (מקומי + שרת)
+          </Button>
         </div>
 
         {/* Cross-device sync status — the shared server state (so a second device

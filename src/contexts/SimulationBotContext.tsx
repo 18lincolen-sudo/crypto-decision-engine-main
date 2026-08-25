@@ -14,17 +14,21 @@ import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
 
+// Matches server/simEngine.ts DEFAULT_SIM_CONFIG — this engine is server-driven
+// (the poll effect below overwrites this with the server's real config on sync),
+// so this is only the pre-sync placeholder shown for a moment on first load.
 const DEFAULT_CONFIG: SimBotConfig = {
   riskLevel: 'medium',
   initialAmount: 10000,
   stopLoss: 4.2,
   takeProfit: 3,
-  maxPositions: 7,
+  maxPositions: 5,
   maxFuturesPositions: 2,
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
-  minConfidenceOverride: 0
+  minConfidenceOverride: 0,
+  positionPercent: 10
 };
 
 const POLL_INTERVAL_MS = 5000;
