@@ -12,6 +12,7 @@ import {
 import { useSimulationBot, SimBotConfig } from '../hooks/useSimulationBot';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
+import { useWorkerAuth } from './WorkerAuthContext';
 
 const DEFAULT_CONFIG: SimBotConfig = {
   riskLevel: 'medium',
@@ -59,6 +60,11 @@ export interface SimulationBotContextValue {
   start: () => void;
   pause: () => void;
   resetAll: () => void;
+  /** Whether this device is showing the shared server-synced bot state, or an
+   *  unstarted local-only fallback because the Worker URL isn't reachable
+   *  from THIS device (localStorage config is per-device, not synced). */
+  syncStatus: 'synced' | 'local-only' | 'connecting';
+  syncError: string | null;
 }
 
 const SimulationBotContext = createContext<SimulationBotContextValue | null>(null);
@@ -67,7 +73,10 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   const [config, setConfigState] = useState<SimBotConfig>(DEFAULT_CONFIG);
   const [status, setStatus] = useState<SimStatus>('idle');
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'local-only' | 'connecting'>('connecting');
+  const [syncError, setSyncError] = useState<string | null>(null);
   const fearGreedIndex = useFearGreedIndex();
+  const { baseUrl } = useWorkerAuth();
 
   const isRunning = status === 'running';
 
@@ -81,7 +90,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     cryptoData: cryptoData || [],
     fearGreedIndex,
     persist: (state) => {
-      pushSimState('browser-leader', state as any).catch(() => {});
+      pushSimState('browser-leader', state as any, baseUrl).catch(() => {});
     }
   });
 
@@ -97,16 +106,24 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Poll server state if a dedicated worker backend is present
+  // Poll server state if a dedicated worker backend is present. Failure here
+  // (no baseUrl configured on THIS device, or the Worker unreachable) means
+  // this device silently falls back to an unstarted local-only simulation —
+  // surfaced via syncStatus/syncError instead of failing silently, since
+  // localStorage baseUrl is per-device and commonly unset on a second device.
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
       try {
-        const st = await getSimState();
+        const st = await getSimState(baseUrl);
         if (cancelled) return;
         applyServerState(st);
-      } catch {
-        /* no backend server; client engine runs locally */
+        setSyncStatus('synced');
+        setSyncError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setSyncStatus('local-only');
+        setSyncError(e instanceof Error ? e.message : 'שגיאת סנכרון עם Worker');
       }
     };
     poll();
@@ -115,29 +132,29 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearInterval(id);
     };
-  }, [applyServerState]);
+  }, [applyServerState, baseUrl]);
 
   const start = useCallback(() => {
     setStatus('running');
-    startSim().catch(() => {});
-  }, []);
+    startSim(baseUrl).catch(() => {});
+  }, [baseUrl]);
 
   const pause = useCallback(() => {
     setStatus('idle');
-    stopSim().catch(() => {});
-  }, []);
+    stopSim(baseUrl).catch(() => {});
+  }, [baseUrl]);
 
   const resetAll = useCallback(() => {
     setStatus('idle');
     localSim.reset();
     setServerSnapshot(null);
-    resetSim().catch(() => {});
-  }, [localSim]);
+    resetSim(baseUrl).catch(() => {});
+  }, [localSim, baseUrl]);
 
   const setConfig = useCallback((c: SimBotConfig) => {
     setConfigState(c);
-    setSimConfig(c).catch(() => {});
-  }, []);
+    setSimConfig(c, baseUrl).catch(() => {});
+  }, [baseUrl]);
 
   // If server has an active snapshot with data, use server data; otherwise use local client simulation engine
   const useServer = serverSnapshot !== null && (
@@ -175,7 +192,9 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     isRunning,
     start,
     pause,
-    resetAll
+    resetAll,
+    syncStatus,
+    syncError
   };
 
   return <SimulationBotContext.Provider value={value}>{children}</SimulationBotContext.Provider>;

@@ -89,6 +89,9 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   const pendingRef = useRef(pending);
   const cryptoRef = useRef(cryptoData);
   const configRef = useRef(config);
+  // Cooldown after a losing exit — see useSimulationBot.ts for full explanation.
+  const exitCooldownRef = useRef<Record<string, number>>({});
+  const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
   const tradesRef = useRef(trades);
 
   cashRef.current = cash;
@@ -405,6 +408,8 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     for (const ev of evaluations) {
       if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
       if (newOrders.some((o) => o.symbol === ev.symbol) || queued.some((o) => o.symbol === ev.symbol)) continue;
+      const lastLoss = exitCooldownRef.current[ev.symbol];
+      if (lastLoss && Date.now() - lastLoss < ENTRY_COOLDOWN_MS) continue;
 
       const orderSide = ev.tradeType === 'FUTURES'
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
@@ -509,14 +514,22 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
           feesAdded += fee;
           slipAdded += Math.abs(fillPrice - market) * quantity;
 
+          // Re-anchor SL/TP to the ACTUAL fill price by preserving the risk
+          // distance from the (possibly stale) signal price, instead of reusing
+          // the absolute levels verbatim — see useSimulationBot.ts for the full
+          // explanation (rapid entry/instant-SL/re-entry loops otherwise).
+          const isLongSide = order.side === 'buy' || order.side === 'long';
+          const reanchor = (level: number | undefined): number | undefined =>
+            level === undefined ? undefined : fillPrice + (isLongSide ? -1 : 1) * Math.abs(order.signalPrice - level);
+
           const newPos: SimPosition = {
             id: uid(order.symbol), symbol: order.symbol, type: order.type,
             side: order.side === 'long' ? 'LONG' : order.side === 'short' ? 'SHORT' : 'BUY',
             quantity, entryPrice: fillPrice, avgPrice: fillPrice, currentPrice: fillPrice, leverage,
             marginUsd: budget, notionalUsd: notional,
-            stopLoss: order.stopLoss || (order.side === 'short' ? fillPrice * 1.05 : fillPrice * 0.95),
-            takeProfit1: order.takeProfit1, takeProfit2: order.takeProfit2,
-            takeProfit: order.takeProfit || fillPrice * 1.05, tp1Hit: false,
+            stopLoss: reanchor(order.stopLoss) ?? (isLongSide ? fillPrice * 0.95 : fillPrice * 1.05),
+            takeProfit1: reanchor(order.takeProfit1), takeProfit2: reanchor(order.takeProfit2),
+            takeProfit: reanchor(order.takeProfit) ?? (isLongSide ? fillPrice * 1.05 : fillPrice * 0.95), tp1Hit: false,
             highestPrice: fillPrice, lowestPrice: fillPrice, openedAt: now, openTimestamp: Date.now(),
             reason: order.reason, confidence: order.confidence, entryFee: fee
           };
@@ -576,6 +589,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
             feesAdded += fee;
             slipAdded += Math.abs(market - fillPrice) * pos.quantity;
             workingPositions = workingPositions.filter((p) => p.id !== pos.id);
+            if (pnl < 0) exitCooldownRef.current[order.symbol] = Date.now();
 
             newTrades.push({
               id: order.id, symbol: order.symbol, type: pos.type, side: order.side as SimTrade['side'],

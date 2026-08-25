@@ -1,16 +1,20 @@
 import { Card, CardContent } from '@/components/ui/card';
-import { Bot, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Bot, RefreshCw, AlertTriangle } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import PortfolioRiskMeter from '../components/trading/PortfolioRiskMeter';
 import SimulationEngineColumn from '../components/trading/SimulationEngineColumn';
 import { useSimulationBotContext } from '../contexts/SimulationBotContext';
 import { useLegacySimulationBotContext } from '../contexts/LegacySimulationBotContext';
+import { useWorkerAuth } from '../contexts/WorkerAuthContext';
 import { useCryptoData } from '../hooks/useCryptoData';
 
 const SimulationBot = () => {
   const intraday = useSimulationBotContext();
   const legacy = useLegacySimulationBotContext();
   const { cryptoData, isLoading } = useCryptoData();
+  const { baseUrl, setBaseUrl, persistBaseUrl } = useWorkerAuth();
 
   const combinedPositionsCount = intraday.positions.length + legacy.positions.length;
   const combinedFuturesCount =
@@ -32,6 +36,39 @@ const SimulationBot = () => {
             מנוע חדש (רב-שכבתי Multi-Timeframe) מול מנוע מקורי (ציון ביטחון משוקלל, alg.md) — כל אחד עם הון וסטטיסטיקה נפרדים
           </p>
         </div>
+
+        {/* Cross-device sync status — the shared server state (so a second device
+            sees the SAME running bot) needs a Worker URL configured on THIS
+            device too; localStorage is per-device and never syncs on its own. */}
+        {intraday.syncStatus === 'local-only' && (
+          <Card className="border-yellow-500/40 bg-yellow-500/5">
+            <CardContent className="p-4 space-y-2 font-mono">
+              <div className="flex items-center gap-2 text-yellow-400 text-sm font-bold">
+                <AlertTriangle className="w-4 h-4" />
+                מנוע חדש לא מסונכרן עם שרת — מציג סימולציה מקומית בלבד במכשיר הזה
+              </div>
+              <p className="text-xs text-muted-foreground">
+                אם הפעלת את הבוט במכשיר אחר, לא תראה כאן את אותה פעילות עד שתחבר את המכשיר הזה לאותה כתובת Worker.
+                {intraday.syncError ? ` (${intraday.syncError})` : ''}
+              </p>
+              <div className="flex gap-2 flex-wrap items-center">
+                <Input
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder="https://<worker>.onrender.com או כתובת tunnel"
+                  className="flex-1 min-w-[220px] text-xs"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <Button size="sm" onClick={persistBaseUrl}>
+                  שמור כתובת Worker
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Live data status */}
         <Card className="border-primary/30 bg-card/50 backdrop-blur">

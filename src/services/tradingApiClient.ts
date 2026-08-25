@@ -109,16 +109,21 @@ export interface TradingApiClient {
 // The simulation bot is a single shared instance for every viewer. One browser
 // runs the engine (leader) and pushes snapshots; others read the same state.
 
-export async function getSimState(): Promise<SimBotStateResponse> {
-  const base = resolveBaseUrl();
+// Every function below accepts an optional `configuredBaseUrl` so callers that
+// already hold the live WorkerAuthContext value (shared, synced across pages
+// on this device) can pass it explicitly instead of relying on this module's
+// own separate re-read of localStorage — avoids the two ever silently drifting.
+
+export async function getSimState(configuredBaseUrl?: string): Promise<SimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/state`);
   if (!res.ok) throw new Error(`Sim ${res.status}`);
   return (await res.json()) as SimBotStateResponse;
 }
 
-export async function pushSimState(leaderId: string, snapshot: SimBotSnapshot): Promise<{ ok: boolean; updatedAt: number }> {
-  const base = resolveBaseUrl();
+export async function pushSimState(leaderId: string, snapshot: SimBotSnapshot, configuredBaseUrl?: string): Promise<{ ok: boolean; updatedAt: number }> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/state`, {
     method: 'POST',
@@ -132,8 +137,8 @@ export async function pushSimState(leaderId: string, snapshot: SimBotSnapshot): 
   return (await res.json()) as { ok: boolean; updatedAt: number };
 }
 
-export async function claimSimLeadership(leaderId: string): Promise<{ claimed: boolean; leaderId: string | null }> {
-  const base = resolveBaseUrl();
+export async function claimSimLeadership(leaderId: string, configuredBaseUrl?: string): Promise<{ claimed: boolean; leaderId: string | null }> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/claim`, {
     method: 'POST',
@@ -144,32 +149,32 @@ export async function claimSimLeadership(leaderId: string): Promise<{ claimed: b
   return (await res.json()) as { claimed: boolean; leaderId: string | null };
 }
 
-export async function startSim(): Promise<SimBotStateResponse> {
-  const base = resolveBaseUrl();
+export async function startSim(configuredBaseUrl?: string): Promise<SimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/start`, { method: 'POST' });
   if (!res.ok) throw new Error(`Sim start ${res.status}`);
   return (await res.json()) as SimBotStateResponse;
 }
 
-export async function stopSim(): Promise<SimBotStateResponse> {
-  const base = resolveBaseUrl();
+export async function stopSim(configuredBaseUrl?: string): Promise<SimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/stop`, { method: 'POST' });
   if (!res.ok) throw new Error(`Sim stop ${res.status}`);
   return (await res.json()) as SimBotStateResponse;
 }
 
-export async function resetSim(): Promise<SimBotStateResponse> {
-  const base = resolveBaseUrl();
+export async function resetSim(configuredBaseUrl?: string): Promise<SimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/reset`, { method: 'POST' });
   if (!res.ok) throw new Error(`Sim reset ${res.status}`);
   return (await res.json()) as SimBotStateResponse;
 }
 
-export async function setSimConfig(config: SimBotConfig): Promise<SimBotStateResponse> {
-  const base = resolveBaseUrl();
+export async function setSimConfig(config: SimBotConfig, configuredBaseUrl?: string): Promise<SimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/config`, {
     method: 'POST',

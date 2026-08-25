@@ -211,6 +211,12 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   const configRef = useRef(config);
   const tradesRef = useRef(trades);
   const historyRef = useRef(history);
+  // Cooldown after a losing exit — a stale/re-anchored SL can still legitimately
+  // re-trigger seconds later in a fast-moving market; this stops the same
+  // symbol from re-entering immediately and bleeding fees/slippage on repeat
+  // near-instant round trips.
+  const exitCooldownRef = useRef<Record<string, number>>({});
+  const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
 
   cashRef.current = cash;
   positionsRef.current = positions;
@@ -555,6 +561,8 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     for (const ev of evaluations) {
       if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
       if (newOrders.some(o => o.symbol === ev.symbol) || queued.some(o => o.symbol === ev.symbol)) continue;
+      const lastLoss = exitCooldownRef.current[ev.symbol];
+      if (lastLoss && Date.now() - lastLoss < ENTRY_COOLDOWN_MS) continue;
 
       const orderSide = ev.tradeType === 'FUTURES'
         ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
@@ -680,6 +688,17 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
           feesAdded += fee;
           slipAdded += Math.abs(fillPrice - market) * quantity;
 
+          // SL/TP were computed relative to the SIGNAL price at evaluation time,
+          // which can be seconds-to-minutes stale by the time the order actually
+          // fills (execution delay + live price drift). Re-anchor them to the
+          // ACTUAL fill price by preserving the intended risk DISTANCE instead of
+          // reusing the absolute levels verbatim — otherwise a position can open
+          // already past its own stop-loss, guaranteeing an instant stop-out on
+          // the very next tick (seen as rapid entry/SL-exit/re-entry loops).
+          const isLongSide = order.side === 'buy' || order.side === 'long';
+          const reanchor = (level: number | undefined): number | undefined =>
+            level === undefined ? undefined : fillPrice + (isLongSide ? -1 : 1) * Math.abs(order.signalPrice - level);
+
           const newPos: SimPosition = {
             id: uid(order.symbol),
             symbol: order.symbol,
@@ -692,10 +711,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
             leverage,
             marginUsd: budget,
             notionalUsd: notional,
-            stopLoss: order.stopLoss || (order.side === 'short' ? fillPrice * 1.05 : fillPrice * 0.95),
-            takeProfit1: order.takeProfit1,
-            takeProfit2: order.takeProfit2,
-            takeProfit: order.takeProfit || fillPrice * 1.05,
+            stopLoss: reanchor(order.stopLoss) ?? (isLongSide ? fillPrice * 0.95 : fillPrice * 1.05),
+            takeProfit1: reanchor(order.takeProfit1),
+            takeProfit2: reanchor(order.takeProfit2),
+            takeProfit: reanchor(order.takeProfit) ?? (isLongSide ? fillPrice * 1.05 : fillPrice * 0.95),
             tp1Hit: false,
             highestPrice: fillPrice,
             lowestPrice: fillPrice,
@@ -799,6 +818,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
             feesAdded += fee;
             slipAdded += Math.abs(market - fillPrice) * pos.quantity;
             workingPositions = workingPositions.filter(p => p.id !== pos.id);
+            if (pnl < 0) exitCooldownRef.current[order.symbol] = Date.now();
 
             newTrades.push({
               id: order.id,
