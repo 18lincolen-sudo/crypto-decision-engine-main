@@ -3,11 +3,16 @@ import { resolveWorkerBaseUrl } from '../services/workerConfig';
 
 // Shared worker connection state — lives above the router so it survives
 // in-app navigation between pages (RealTradingBot, ExecutiveDashboard, ...).
-// BOT_ADMIN_TOKEN is intentionally kept in React state only, NEVER written to
-// localStorage — it is a real secret that authorizes live trading control.
-// It resets on a full page reload (by design) but no longer resets just from
-// switching pages, which was the actual bug: each page previously held its
-// own local useState, so navigating away and back unmounted/remounted it.
+//
+// BOT_ADMIN_TOKEN is persisted to localStorage on THIS device by explicit
+// user request, so it only has to be entered once per browser instead of
+// after every full page reload. This is a deliberate security trade-off:
+// the token authorizes live trading control (start/stop real orders), and
+// localStorage is readable by any script running on this origin and by
+// anyone with access to this browser profile. Only opt into this on a
+// device you trust. If that trade-off ever needs reverting, drop the
+// localStorage read/write below and go back to a plain useState('').
+const ADMIN_TOKEN_KEY = 'workerAdminToken';
 
 interface WorkerAuthContextValue {
   baseUrl: string;
@@ -20,14 +25,19 @@ interface WorkerAuthContextValue {
 const WorkerAuthContext = createContext<WorkerAuthContextValue | null>(null);
 
 export function WorkerAuthProvider({ children }: { children: ReactNode }) {
-  const [baseUrl, setBaseUrlState] = useState<string>(() => {
-    // Purge any admin token persisted by an older build of this page.
-    try { localStorage.removeItem('workerAdminToken'); } catch { /* ignore */ }
-    return resolveWorkerBaseUrl();
+  const [baseUrl, setBaseUrlState] = useState<string>(() => resolveWorkerBaseUrl());
+  const [adminToken, setAdminTokenState] = useState<string>(() => {
+    try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch { return ''; }
   });
-  const [adminToken, setAdminToken] = useState('');
 
   const setBaseUrl = (url: string) => setBaseUrlState(url);
+  const setAdminToken = (token: string) => {
+    setAdminTokenState(token);
+    try {
+      if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token);
+      else localStorage.removeItem(ADMIN_TOKEN_KEY);
+    } catch { /* ignore */ }
+  };
   const persistBaseUrl = () => {
     try {
       localStorage.setItem('workerConfig', JSON.stringify({ baseUrl }));

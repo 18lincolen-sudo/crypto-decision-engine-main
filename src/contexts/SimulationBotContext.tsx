@@ -73,9 +73,25 @@ export interface SimulationBotContextValue {
 
 const SimulationBotContext = createContext<SimulationBotContextValue | null>(null);
 
+// The server is the actual execution authority for this engine — a reload or
+// network blip on the client never pauses real trading, it only affects what
+// this device can currently SEE. But starting from a hardcoded 'idle' on every
+// mount meant a reload that happens to land while offline briefly showed
+// "idle"/enabled Start button even though the server was still running fine,
+// which reads as "the bot stopped" even though it never did. Seed from the
+// last known value so a reload-while-offline keeps showing the truth until
+// the next successful poll corrects it (see applyServerState below).
+const LAST_KNOWN_RUNNING_KEY = 'sim-bot-last-known-running';
+
 export function SimulationBotProvider({ children }: { children: ReactNode }) {
   const [config, setConfigState] = useState<SimBotConfig>(DEFAULT_CONFIG);
-  const [status, setStatus] = useState<SimStatus>('idle');
+  const [status, setStatus] = useState<SimStatus>(() => {
+    try {
+      return localStorage.getItem(LAST_KNOWN_RUNNING_KEY) === '1' ? 'running' : 'idle';
+    } catch {
+      return 'idle';
+    }
+  });
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'local-only' | 'connecting'>('connecting');
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -104,6 +120,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     }
     if (typeof st.running === 'boolean') {
       setStatus(st.running ? 'running' : 'idle');
+      try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, st.running ? '1' : '0'); } catch { /* ignore */ }
     }
     if (st.config) {
       setConfigState(st.config as SimBotConfig);
