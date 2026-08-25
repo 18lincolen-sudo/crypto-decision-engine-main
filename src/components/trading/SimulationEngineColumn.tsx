@@ -318,7 +318,7 @@ export default function SimulationEngineColumn({
           <Tabs defaultValue="positions">
             <TabsList className="grid grid-cols-2 w-full mb-3">
               <TabsTrigger value="positions" className="font-mono text-xs">פוזיציות ({positions.length})</TabsTrigger>
-              <TabsTrigger value="trades" className="font-mono text-xs">עסקאות ({trades.length})</TabsTrigger>
+              <TabsTrigger value="trades" className="font-mono text-xs">יומן ביצוע ({trades.length} · נסגרו {closedTrades})</TabsTrigger>
             </TabsList>
 
             <TabsContent value="positions">
@@ -372,6 +372,9 @@ export default function SimulationEngineColumn({
                             <ArrowDownCircle className="w-3.5 h-3.5 text-red-400" />
                           )}
                           <Badge variant="outline" className="text-[10px]">{trade.symbol}</Badge>
+                          <Badge className={`text-[10px] ${trade.pnl !== undefined ? 'bg-orange-500/20 text-orange-300 border-orange-500/40' : 'bg-blue-500/20 text-blue-300 border-blue-500/40'}`} variant="outline">
+                            {trade.side === 'partial_tp1' ? 'יציאה חלקית' : trade.pnl !== undefined ? 'יציאה' : 'כניסה'}
+                          </Badge>
                           <span className="text-muted-foreground">{trade.timestamp}</span>
                         </div>
                         <div className="text-xs">

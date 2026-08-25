@@ -198,7 +198,17 @@ const RealTradingBot = () => {
                   placeholder="https://<tunnel>.trycloudflare.com"
                   value={config.baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
+                {/* Saved via localStorage — PER DEVICE/BROWSER, never synced. A phone
+                    opening this page for the first time starts with the build-time
+                    default and needs this field entered/saved here too, not just the token. */}
+                <p className="text-xs text-muted-foreground mt-1">
+                  כתובת זו נשמרת רק במכשיר הנוכחי — יש להזין ולשמור אותה בנפרד בכל מכשיר (טלפון, מחשב וכו׳).
+                </p>
               </div>
               <div>
                 <label className="text-sm text-muted-foreground mb-1 block">BOT_ADMIN_TOKEN</label>
@@ -207,10 +217,21 @@ const RealTradingBot = () => {
                   placeholder="טוקן אדמין מה-Worker"
                   value={config.adminToken}
                   onChange={(e) => setAdminToken(e.target.value)}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </div>
               <Button onClick={saveConfig} className="bg-primary hover:bg-primary/90">שמור והתחבר</Button>
-              {error && <div className="text-red-400 text-sm">שגיאה: {error}</div>}
+              {error && (
+                <div className="text-red-400 text-sm">
+                  שגיאה: {error}
+                  <div className="text-xs text-muted-foreground mt-1">
+                    מנסה להתחבר אל: {config.baseUrl || '(כתובת ריקה — יש להזין ולשמור למעלה)'}
+                  </div>
+                </div>
+              )}
               {online && botState && (
                 <div className="text-green-400 text-sm">
                   מחובר ✓ | מצב: {botState.mode} | DRY-RUN: {botState.dryRun ? 'כן' : 'לא'} | סמלים: {botState.symbols}
