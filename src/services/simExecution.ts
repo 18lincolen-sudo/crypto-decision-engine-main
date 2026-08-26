@@ -293,10 +293,21 @@ export interface OrderGenContext {
   priceFor: (symbol: string) => number | undefined;
   buildCandlesForSymbol: (symbol: string) => Candle[];
   computeAtr5: (candles: Candle[]) => number;
+  /** Position-count caps — evaluations were gated against the count as it
+   *  stood at the START of this tick (see buildEvaluations), so several
+   *  symbols can all carry willExecute=true simultaneously. Without
+   *  re-checking a running total as THIS batch is built, a tick where N
+   *  symbols qualify at once queues all N regardless of the cap — observed
+   *  live: 10 MEAN_REVERSION signals fired in the same tick and opened 10
+   *  positions against a configured max of 5. */
+  maxPositions: number;
+  maxFuturesPositions: number;
 }
 
+const ENTRY_ORDER_SIDES = new Set(['buy', 'sell', 'long', 'short']);
+
 export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
-  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, buildCandlesForSymbol, computeAtr5 } = ctx;
+  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, buildCandlesForSymbol, computeAtr5, maxPositions, maxFuturesPositions } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -378,11 +389,23 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     }
   }
 
-  // New entries from evaluations that passed every gate
+  // New entries from evaluations that passed every gate. Running counts,
+  // seeded from open positions PLUS already-pending entries (not yet
+  // filled) and incremented as this batch adds more — the per-symbol
+  // evaluations were all gated against the position count as it stood at
+  // the START of this tick, so a batch cap here is the only thing standing
+  // between "N symbols qualified simultaneously" and "N new positions
+  // regardless of maxPositions".
+  let totalPositionCount = positions.length + pending.filter((o) => ENTRY_ORDER_SIDES.has(o.side)).length;
+  let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
+    pending.filter((o) => o.type === 'FUTURES' && ENTRY_ORDER_SIDES.has(o.side)).length;
+
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
     if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
+    if (totalPositionCount >= maxPositions) continue;
+    if (ev.tradeType === 'FUTURES' && futuresPositionCount >= maxFuturesPositions) continue;
 
     const orderSide = ev.tradeType === 'FUTURES'
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
@@ -390,6 +413,9 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
 
     const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
     if (budget < 5) continue;
+
+    totalPositionCount++;
+    if (ev.tradeType === 'FUTURES') futuresPositionCount++;
 
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`),
@@ -426,6 +452,54 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
 // SL/TP reanchor. Pure — callers own applying the returned state and sending
 // any notifications from `events`.
 
+const EXIT_ORDER_SIDES = new Set(['close_long', 'close_short', 'partial_tp1']);
+
+/** Matches tradingWorker.ts's own LIMIT_ORDER_TTL_MS for the real bot. */
+export const LIMIT_ORDER_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+export interface FillableOrdersResult {
+  due: PendingOrder[];
+  expired: PendingOrder[];
+}
+
+/**
+ * Splits pending orders into those ready to fill now and those that expired
+ * unfilled. EXIT orders (SL/TP/trailing/time-stop closes) behave like real
+ * market/stop orders: once the execution delay elapses they fire
+ * immediately, no price condition — matching how the real bot's SL/TP
+ * brackets fire on the exchange side. ENTRY orders behave like a real
+ * resting LIMIT order: the delay only marks the earliest check time: they
+ * only actually become due once the live price has crossed to the order's
+ * own limit (signalPrice) or better — a BUY/LONG limit only at or below its
+ * price, a SELL/SHORT limit only at or above. If price never crosses within
+ * LIMIT_ORDER_TTL_MS the order expires unfilled (mirrors the real bot's own
+ * TTL-cancel in tradingWorker.ts) instead of being force-filled at whatever
+ * the live price happens to be — which previously turned every "Limit"
+ * order in this simulation into a delayed MARKET order and let entries fill
+ * on the wrong side of their own stated limit (observed live: "Limit BUY @
+ * $1.3680" filled at $1.3756).
+ */
+export function selectFillableOrders(pending: PendingOrder[], now: number, priceFor: (symbol: string) => number | undefined): FillableOrdersResult {
+  const due: PendingOrder[] = [];
+  const expired: PendingOrder[] = [];
+  for (const o of pending) {
+    if (now < o.executeAt) continue;
+    if (EXIT_ORDER_SIDES.has(o.side)) {
+      due.push(o);
+      continue;
+    }
+    const live = priceFor(o.symbol) ?? o.signalPrice;
+    const isLongSide = o.side === 'buy' || o.side === 'long';
+    const crossed = isLongSide ? live <= o.signalPrice : live >= o.signalPrice;
+    if (crossed) {
+      due.push(o);
+    } else if (now - o.createdAt >= LIMIT_ORDER_TTL_MS) {
+      expired.push(o);
+    }
+  }
+  return { due, expired };
+}
+
 export interface FillEvent {
   kind: 'entry' | 'partial_exit' | 'exit';
   symbol: string;
@@ -459,11 +533,22 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
 
   for (const order of due) {
     const market = priceFor(order.symbol) ?? order.signalPrice;
+    const isEntryOrder = order.side === 'buy' || order.side === 'long' || order.side === 'short';
+    // ENTRY orders are real resting LIMIT orders (see selectFillableOrders —
+    // they only reach `due` once price has actually crossed the limit), so
+    // they fill at their own limit price or BETTER, exactly like a real
+    // exchange limit fill — never at "live price + adverse slippage", which
+    // previously let a "Limit BUY @ $1.3680" fill at $1.3756. EXIT orders
+    // (SL/TP/trailing/time-stop) stay market-style: urgent, fills at live
+    // price with slippage, matching how the real bot's SL/TP brackets fire.
     const sideForSlippage = order.side === 'buy' || order.side === 'long' ? 'BUY' : 'SELL';
-    const { fillPrice, slippagePercent } = simulateSlippage(market, sideForSlippage);
+    const isLongSide = order.side === 'buy' || order.side === 'long';
+    const { fillPrice, slippagePercent } = isEntryOrder
+      ? { fillPrice: isLongSide ? Math.min(market, order.signalPrice) : Math.max(market, order.signalPrice), slippagePercent: 0 }
+      : simulateSlippage(market, sideForSlippage);
     const delayMs = Date.now() - order.createdAt;
 
-    if (order.side === 'buy' || order.side === 'long' || order.side === 'short') {
+    if (isEntryOrder) {
       const budget = Math.min(order.budgetUsd ?? 100, workingCash);
       if (budget < 5) continue;
 
@@ -477,7 +562,6 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       feesAdded += fee;
       slipAdded += Math.abs(fillPrice - market) * quantity;
 
-      const isLongSide = order.side === 'buy' || order.side === 'long';
       const reanchor = (level: number | undefined) => reanchorLevel(fillPrice, order.signalPrice, level);
 
       const newPos: SimPosition = {

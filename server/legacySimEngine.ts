@@ -12,7 +12,7 @@ import { CryptoData } from '../src/types/crypto';
 import { MultiTimeframeSnapshot } from '../src/services/intradayBridge';
 import { getUniverseMarketData } from '../src/services/marketDataService';
 import { toBaseAsset } from '../src/services/assetUniverse';
-import { fillDueOrders, SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../src/services/simExecution';
+import { fillDueOrders, selectFillableOrders, SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../src/services/simExecution';
 import { buildLegacyEvaluations, generateLegacyOrders, MIN_LEGACY_CANDLES } from '../src/services/legacySimExecution';
 import type { SignalEvaluation } from '../src/services/intradayBridge';
 
@@ -231,11 +231,18 @@ export function createLegacySimEngine(getSymbols?: () => string[]) {
       cash,
       exitCooldown,
       priceFor,
-      candlesBySymbol
+      candlesBySymbol,
+      maxPositions: config.maxPositions || 7,
+      maxFuturesPositions: config.maxFuturesPositions || 2
     });
     if (newOrders.length) pending = [...pending, ...newOrders];
 
-    const due = pending.filter((o) => Date.now() >= o.executeAt);
+    const { due, expired } = selectFillableOrders(pending, Date.now(), priceFor);
+    if (expired.length) {
+      const expiredIds = new Set(expired.map((o) => o.id));
+      pending = pending.filter((o) => !expiredIds.has(o.id));
+      for (const o of expired) console.log(`[legacy-sim-engine] limit order expired unfilled: ${o.symbol} @ ${o.signalPrice}`);
+    }
     if (due.length) {
       const result = fillDueOrders(due, cash, positions, priceFor, formatDynamicPrice);
       const dueIds = new Set(due.map((o) => o.id));

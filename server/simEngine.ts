@@ -16,6 +16,7 @@ import {
   buildEvaluations,
   generateNewOrders,
   fillDueOrders,
+  selectFillableOrders,
   SimPosition,
   SimTrade,
   SimPoint,
@@ -253,11 +254,18 @@ export function createSimEngine(getSymbols?: () => string[]) {
       exitCooldown,
       priceFor,
       buildCandlesForSymbol,
-      computeAtr5
+      computeAtr5,
+      maxPositions: config.maxPositions || 7,
+      maxFuturesPositions: config.maxFuturesPositions || 2
     });
     if (newOrders.length) pending = [...pending, ...newOrders];
 
-    const due = pending.filter((o) => Date.now() >= o.executeAt);
+    const { due, expired } = selectFillableOrders(pending, Date.now(), priceFor);
+    if (expired.length) {
+      const expiredIds = new Set(expired.map((o) => o.id));
+      pending = pending.filter((o) => !expiredIds.has(o.id));
+      for (const o of expired) console.log(`[sim-engine] limit order expired unfilled: ${o.symbol} @ ${o.signalPrice}`);
+    }
     if (due.length) {
       const result = fillDueOrders(due, cash, positions, priceFor, formatDynamicPrice);
       const dueIds = new Set(due.map((o) => o.id));

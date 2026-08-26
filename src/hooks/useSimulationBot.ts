@@ -14,6 +14,7 @@ import {
   buildEvaluations,
   generateNewOrders,
   fillDueOrders,
+  selectFillableOrders,
   SimPosition,
   SimTrade,
   SimPoint,
@@ -353,7 +354,9 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       exitCooldown: exitCooldownRef.current,
       priceFor: priceForRef.current,
       buildCandlesForSymbol,
-      computeAtr5
+      computeAtr5,
+      maxPositions: config.maxPositions || 7,
+      maxFuturesPositions: config.maxFuturesPositions || 2
     });
 
     if (newOrders.length) {
@@ -417,7 +420,11 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     if (!isRunning) return;
 
     const tick = () => {
-      const due = pendingRef.current.filter((o) => Date.now() >= o.executeAt);
+      const { due, expired } = selectFillableOrders(pendingRef.current, Date.now(), priceForRef.current);
+      if (expired.length) {
+        const expiredIds = new Set(expired.map((o) => o.id));
+        setPending((prev) => prev.filter((o) => !expiredIds.has(o.id)));
+      }
       if (!due.length) return;
 
       const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice);

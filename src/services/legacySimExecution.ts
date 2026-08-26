@@ -188,10 +188,17 @@ export interface LegacyOrderGenContext {
   priceFor: (symbol: string) => number | undefined;
   /** Single-timeframe (H1) candles keyed by BASE asset — same map passed to buildLegacyEvaluations. */
   candlesBySymbol: Record<string, Candle[]>;
+  /** Position-count caps — see the identical doc comment on simExecution.ts's
+   *  OrderGenContext.maxPositions for why a running check within this batch
+   *  (not just the per-symbol evaluations) is required. */
+  maxPositions: number;
+  maxFuturesPositions: number;
 }
 
+const LEGACY_ENTRY_ORDER_SIDES = new Set(['buy', 'sell', 'long', 'short']);
+
 export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[] {
-  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, candlesBySymbol } = ctx;
+  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, candlesBySymbol, maxPositions, maxFuturesPositions } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -244,10 +251,16 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     }
   }
 
+  let totalPositionCount = positions.length + pending.filter((o) => LEGACY_ENTRY_ORDER_SIDES.has(o.side)).length;
+  let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
+    pending.filter((o) => o.type === 'FUTURES' && LEGACY_ENTRY_ORDER_SIDES.has(o.side)).length;
+
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
     if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
+    if (totalPositionCount >= maxPositions) continue;
+    if (ev.tradeType === 'FUTURES' && futuresPositionCount >= maxFuturesPositions) continue;
 
     const orderSide = ev.tradeType === 'FUTURES'
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
@@ -255,6 +268,9 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
 
     const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
     if (budget < 5) continue;
+
+    totalPositionCount++;
+    if (ev.tradeType === 'FUTURES') futuresPositionCount++;
 
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`), symbol: ev.symbol, type: ev.tradeType as 'SPOT' | 'FUTURES',

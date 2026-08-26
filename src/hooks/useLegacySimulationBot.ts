@@ -17,7 +17,7 @@ import { Candle, ClosedTradeMetric, formatDynamicPrice } from '../services/trade
 import type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
-import { fillDueOrders } from '../services/simExecution';
+import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
 import {
   buildLegacyEvaluations,
   generateLegacyOrders,
@@ -288,7 +288,9 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
       cash: cashRef.current,
       exitCooldown: exitCooldownRef.current,
       priceFor: priceForRef.current,
-      candlesBySymbol: candlesRef.current
+      candlesBySymbol: candlesRef.current,
+      maxPositions: config.maxPositions || 7,
+      maxFuturesPositions: config.maxFuturesPositions || 2
     });
 
     if (newOrders.length) setPending((prev) => [...prev, ...newOrders]);
@@ -346,7 +348,11 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     if (!isRunning) return;
 
     const tick = () => {
-      const due = pendingRef.current.filter((o) => Date.now() >= o.executeAt);
+      const { due, expired } = selectFillableOrders(pendingRef.current, Date.now(), priceForRef.current);
+      if (expired.length) {
+        const expiredIds = new Set(expired.map((o) => o.id));
+        setPending((prev) => prev.filter((o) => !expiredIds.has(o.id)));
+      }
       if (!due.length) return;
 
       const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice);
