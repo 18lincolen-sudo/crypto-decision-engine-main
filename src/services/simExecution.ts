@@ -57,6 +57,13 @@ export interface SimPosition {
   reason: string;
   confidence: number;
   entryFee: number;
+  /** Per-setup-type hold budget from the entry-time RiskPlan (intradayRisk.ts).
+   *  Without these, the exit engine falls back to a single hardcoded default
+   *  (TREND_PULLBACK's 90min) for every position regardless of its actual
+   *  setup type — e.g. a MEAN_REVERSION position (meant to time-stop at 45min)
+   *  would incorrectly get held up to twice as long. */
+  maxHoldMs?: number;
+  timeStopMs?: number;
 }
 
 export interface SimTrade {
@@ -103,6 +110,9 @@ export interface PendingOrder {
   confidence: number;
   executeAt: number;
   createdAt: number;
+  /** Carried from the entry-time RiskPlan through to the resulting SimPosition — see SimPosition.maxHoldMs. */
+  maxHoldMs?: number;
+  timeStopMs?: number;
 }
 
 export interface SimBotConfig {
@@ -309,7 +319,9 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
         highestPrice: pos.highestPrice,
         lowestPrice: pos.lowestPrice,
         highestPriceSinceTP1: pos.highestPriceSinceTP1,
-        lowestPriceSinceTP1: pos.lowestPriceSinceTP1
+        lowestPriceSinceTP1: pos.lowestPriceSinceTP1,
+        maxHoldMs: pos.maxHoldMs,
+        timeStopMs: pos.timeStopMs
       },
       livePrice,
       atr5,
@@ -377,7 +389,12 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       reason: ev.reasoning,
       confidence: ev.confidence,
       executeAt: Date.now() + delayMs,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      // Carry the setup-type-correct hold budget from the entry-time RiskPlan
+      // (see the SimPosition.maxHoldMs doc comment) — without this, every
+      // position falls back to a single hardcoded default at exit-check time.
+      maxHoldMs: ev.decision?.risk?.maxHoldMs,
+      timeStopMs: ev.decision?.risk?.timeStopMs
     });
   }
 
@@ -467,7 +484,9 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
         openTimestamp: Date.now(),
         reason: order.reason,
         confidence: order.confidence,
-        entryFee: fee
+        entryFee: fee,
+        maxHoldMs: order.maxHoldMs,
+        timeStopMs: order.timeStopMs
       };
 
       workingPositions.push(newPos);

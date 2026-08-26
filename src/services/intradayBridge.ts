@@ -336,6 +336,11 @@ export interface ExitPositionInput {
   lowestPrice?: number;
   highestPriceSinceTP1?: number;
   lowestPriceSinceTP1?: number;
+  /** Per-setup-type hold budget from the entry-time RiskPlan. Without these,
+   *  evaluateIntradayExit falls back to a single hardcoded default
+   *  (TREND_PULLBACK's) for every position regardless of its real setup type. */
+  maxHoldMs?: number;
+  timeStopMs?: number;
 }
 
 export function buildExitView(pos: ExitPositionInput): IntradayPositionView {
@@ -355,7 +360,9 @@ export function buildExitView(pos: ExitPositionInput): IntradayPositionView {
     highestPrice: pos.highestPrice,
     lowestPrice: pos.lowestPrice,
     highestPriceSinceTP1: pos.highestPriceSinceTP1,
-    lowestPriceSinceTP1: pos.lowestPriceSinceTP1
+    lowestPriceSinceTP1: pos.lowestPriceSinceTP1,
+    maxHoldMs: pos.maxHoldMs,
+    timeStopMs: pos.timeStopMs
   };
 }
 

@@ -1344,11 +1344,17 @@ export function evaluateExit(
   }
 
   if (isFutures && hoursHeld >= 24 && !pos.tp1Hit) {
-    // Futures: if after 24h TP1 wasn't hit -> reduce position by 50%
+    // Futures: TP1 wasn't hit after 24h — full close, same as the SPOT
+    // stagnation exit above. This previously said "reduce the position by
+    // 50%" in the message, but nothing downstream ever treated exitType
+    // 'TIME_BASED' as a partial exit (only 'PARTIAL_50' is handled that
+    // way, in the order generator) — so it always fully closed regardless
+    // of what the message claimed. Fixed the message to match the real
+    // (and, matching the SPOT case, intentionally decisive) behavior.
     return {
       shouldExit: true,
       exitType: 'TIME_BASED',
-      reason: `יציאת זמן (24 שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
+      reason: `יציאת זמן (24 שעות): TP1 לא הושג — סגירת הפוזיציה במלואה`
     };
   }
 
