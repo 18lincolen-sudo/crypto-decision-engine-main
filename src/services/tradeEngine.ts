@@ -677,6 +677,22 @@ export function evaluateSignals(
     signalScore = Math.max(buyScore, sellScore);
   }
 
+  // §Volume-neutral penalty: Volume Surge NEUTRAL -> ×0.6
+  // §Ranging penalty: ADX<20 (RANGING) -> ×0.7
+  // Both documented explicitly in alg.md Layer 1 and applied here — the
+  // confidence used by Layer 2 routing is the post-penalty score.
+  let confidence = signalScore;
+  const volumeSignal = signals.find((s) => s.name === 'Volume Surge');
+  if (volumeSignal && volumeSignal.signal === 'NEUTRAL') {
+    confidence = confidence * 0.6;
+    penalties.push('קנס חוסר נפח: Volume Surge נייטרלי — Confidence × 0.6');
+  }
+  if (layer0.regime === 'RANGING') {
+    confidence = confidence * 0.7;
+    penalties.push('קנס שוק דשדוש: ADX < 20 — Confidence × 0.7');
+  }
+  confidence = Number(confidence.toFixed(2));
+
   // Log sentiment context without bypassing Hard Gates
   if (fearGreedIndex < 25) {
     penalties.push(`סנטימנט שוק: פחד קיצוני (${fearGreedIndex}/100)`);
@@ -689,9 +705,9 @@ export function evaluateSignals(
     buyScore,
     sellScore,
     signalScore,
-    confidence: signalScore, // alias for backward compatibility
+    confidence, // post-penalty score — what Layer 2 routes on
     signals,
-    rawConfidence: signalScore,
+    rawConfidence: signalScore, // pre-penalty alias
     penalties
   };
 }
@@ -699,12 +715,12 @@ export function evaluateSignals(
 // ═══════════════════════════════════════════════════════
 // LAYER 2 — TRADE ROUTER & HARD GATES
 // Hard Gate Order:
-// 1. Weekly Drawdown Lock (>= 13%)
-// 2. Daily Drawdown Block (>= 6%)
+// 1. Weekly Drawdown Lock (>= 15%)
+// 2. Daily Drawdown Block (>= 8%)
 // 3. Transitional Market Regime Block (20 <= ADX <= 25)
 // 4. Same-Asset Cross-Market Block (No dual Spot + Futures)
 // 5. High Volatility Futures Block (ATR% > 5%)
-// 6. Routing Thresholds (Futures >= 70 & TRENDING; Spot >= 58 [or >= 62 in High Vol])
+// 6. Routing Thresholds (Futures >= 72 & TRENDING; Spot >= 60)
 // ═══════════════════════════════════════════════════════
 
 export interface TradeRouterOptions {
@@ -733,7 +749,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'WEEKLY_DRAWDOWN_LOCK',
-      reason: 'נעילת מערכת שבועית (הפסד >= 13%) — נדרש שחרור ידני'
+      reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני'
     };
   }
 
@@ -744,7 +760,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'DAILY_DRAWDOWN_BLOCK',
-      reason: 'הגנת תיק יומית (הפסד >= 6%) — חסימת כניסות חדשות עד יום המסחר הבא'
+      reason: 'הגנת תיק יומית (הפסד >= 8%) — חסימת כניסות חדשות עד יום המסחר הבא'
     };
   }
 
@@ -792,26 +808,24 @@ export function routeTradeType(
 
   // ═══════════════════════════════════════════════════════
   // FUTURES ROUTING EVALUATION
-  // All conditions required:
+  // All conditions required (alg.md §Layer2.1 — 5 conditions, NO Supertrend-match):
   // 1. Regime = TRENDING (ADX > 25)
   // 2. Volatility = LOW or NORMAL (ATR% <= 5%) [HIGH VOL -> FUTURES BLOCKED]
-  // 3. SignalScore >= 70
-  // 4. Supertrend matches trade direction (LONG -> BULL, SHORT -> BEAR)
-  // 5. No existing position on this asset
+  // 3. SignalScore >= 72
+  // 4. No existing Futures position on this asset
+  // 5. (Supertrend is NOT a routing condition per alg.md — it is a Layer 1
+  //    signal component, already scored into SignalScore)
   // ═══════════════════════════════════════════════════════
   const isTrending = layer0.regime === 'TRENDING' && layer0.adx > 25;
   const isVolatilitySafeForFutures = layer0.volatility === 'LOW' || layer0.volatility === 'NORMAL';
-  const isSupertrendDirectionMatched =
-    (action === 'BUY' && layer0.supertrend.direction === 'BULL') ||
-    (action === 'SELL' && layer0.supertrend.direction === 'BEAR');
-  const isFuturesScorePassed = signalScore >= 70;
+  const isFuturesScorePassed = signalScore >= 72;
 
-  if (isTrending && isVolatilitySafeForFutures && isSupertrendDirectionMatched && isFuturesScorePassed) {
+  if (isTrending && isVolatilitySafeForFutures && isFuturesScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'LONG' : 'SHORT';
     return {
       type: 'FUTURES',
       side,
-      reason: `התקיימו כל תנאי Futures: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= 70, תנודתיות ${layer0.volatility}, Supertrend ${layer0.supertrend.direction}`
+      reason: `כל תנאי Futures התקיימו: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= 72, תנודתיות ${layer0.volatility}`
     };
   }
 
@@ -819,24 +833,21 @@ export function routeTradeType(
   // SPOT ROUTING EVALUATION (Evaluated independently)
   // Conditions:
   // 1. Regime in ['TRENDING', 'RANGING'] (Never TRANSITIONAL)
-  // 2. In LOW/NORMAL Volatility: SignalScore >= 58
-  // 3. In HIGH Volatility: SignalScore >= 62
+  // 2. SignalScore >= 60 (flat threshold, per alg.md)
   // ═══════════════════════════════════════════════════════
   const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING';
-  const requiredSpotScore = layer0.volatility === 'HIGH' ? 62 : 58;
+  const requiredSpotScore = 60;
   const isSpotScorePassed = signalScore >= requiredSpotScore;
 
   if (isSpotRegimeValid && isSpotScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'BUY' : 'SELL';
     let reason = `עסקת Spot מאושרת: SignalScore ${signalScore} >= ${requiredSpotScore} במצב ${layer0.regime} (${layer0.volatility} VOL)`;
     if (layer0.volatility === 'HIGH') {
-      reason += ' [HIGH VOL: Futures חסום, Spot מאושר בסף מוגבר 62]';
+      reason += ' [HIGH VOL: Futures חסום, Spot מאושר]';
     } else if (!isTrending) {
       reason += ' [Ranging: רק Spot מותר]';
-    } else if (!isSupertrendDirectionMatched) {
-      reason += ` [Supertrend ${layer0.supertrend.direction} לא תואם Futures — Spot מאושר]`;
-    } else if (signalScore < 70) {
-      reason += ` [ציון ${signalScore} מתחת ל-70 של Futures — Spot מאושר]`;
+    } else if (signalScore < 72) {
+      reason += ` [ציון ${signalScore} מתחת ל-72 של Futures — Spot מאושר]`;
     }
     return {
       type: 'SPOT',
@@ -854,15 +865,15 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'SPOT_SCORE_BELOW_HIGH_VOL_THRESHOLD',
-      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש 62 בתנודתיות גבוהה (${layer0.atrPercent}%)`
+      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש 60 בתנודתיות גבוהה (${layer0.atrPercent}%)`
     };
   }
 
-  if (signalScore < 58) {
+  if (signalScore < 60) {
     return {
       type: 'HOLD',
       side: 'NONE',
-      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (58)`
+      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (60)`
     };
   }
 
@@ -1104,12 +1115,13 @@ export function calculateRiskParameters(
     leverage = Math.min(5, Math.max(1, baseLeverage));
   }
 
-  // 3. Position Sizing — Risk First (0.75% Portfolio Risk Budget)
-  const maxPortfolioRiskRate = 0.0075; // 0.75% max risk
-  let maxRiskAmount = portfolioValue * maxPortfolioRiskRate;
-
-  // Kelly Modifier (only with >= 30 closed trades)
+  // 3. Position Sizing — Direct Kelly Criterion (§Layer3.3)
+  // BetSize = Portfolio × clamp(Kelly×0.5, 0, 0.10), default 3% without >=30 closed trades.
+  // This is a materially different formula from the previous risk-first approach
+  // (risk 0.75% of equity / stop distance scaled by half-Kelly) — the spec
+  // defines Kelly as DIRECTLY setting the bet size as a fraction of portfolio.
   let kellyFraction = 0;
+  let betFraction = 0.03;
   if (closedTrades.length >= 30) {
     const winning = closedTrades.filter(t => t.pnl > 0);
     const losing = closedTrades.filter(t => t.pnl < 0);
@@ -1122,23 +1134,16 @@ export function calculateRiskParameters(
     if (historicalR > 0) {
       kellyFraction = winRate - (1 - winRate) / historicalR;
     }
-    // Half Kelly scaling, strictly capped so risk never exceeds 0.75%
-    const kellyScale = Math.min(1.0, Math.max(0.2, kellyFraction * 0.5));
-    maxRiskAmount = maxRiskAmount * kellyScale;
+    betFraction = Math.min(Math.max(0, kellyFraction * 0.5), 0.10);
   }
-
-  const stopDistance = Math.abs(entryPrice - stopLoss);
-  if (stopDistance <= 0) return null;
-
-  // Total position size (Notional in USD) based on stop distance
-  const positionSizeUnits = maxRiskAmount / stopDistance;
-  let notionalUsd = positionSizeUnits * entryPrice;
+  const betSizeUsd = portfolioValue * betFraction;
 
   // Sizing Caps:
   // Spot: Notional cap (e.g. 15% of portfolio)
-  // Futures: Margin required = notionalUsd / leverage
+  // Futures: Margin required = betSizeUsd (capital committed), notional = betSizeUsd × leverage
+  let notionalUsd: number;
   if (tradeType === 'SPOT') {
-    notionalUsd = Math.min(notionalUsd, portfolioValue * 0.15);
+    notionalUsd = Math.min(betSizeUsd, portfolioValue * 0.15);
   } else {
     // Futures leveraged exposure check:
     // Total leveraged exposure must NOT exceed 20% of portfolio value
@@ -1146,16 +1151,16 @@ export function calculateRiskParameters(
     const remainingExposureRoom = maxAllowedLeveragedExposure - currentLeveragedExposureUsd;
 
     // Hard block if new trade causes leveraged exposure to exceed 20%
+    notionalUsd = betSizeUsd * leverage;
     if (notionalUsd > remainingExposureRoom) {
       return null; // Exposure Hard Block
     }
   }
 
-  // Margin/Cash required for order
-  const betSizeUsd = tradeType === 'FUTURES' ? notionalUsd / leverage : notionalUsd;
-
   // Minimal order size constraint ($5)
   if (betSizeUsd < 5) return null;
+
+  const stopDistance = Math.abs(entryPrice - stopLoss);
 
   return {
     stopLoss: Number(stopLoss.toFixed(8)),
@@ -1167,7 +1172,7 @@ export function calculateRiskParameters(
     positionPercentOfPortfolio: Number(((betSizeUsd / portfolioValue) * 100).toFixed(2)),
     riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
     kellyFraction: Number(kellyFraction.toFixed(4)),
-    maxRiskAmountUsd: Number(maxRiskAmount.toFixed(2)),
+    maxRiskAmountUsd: Number(betSizeUsd.toFixed(2)),
     stopDistanceUsd: Number(stopDistance.toFixed(8))
   };
 }
@@ -1344,17 +1349,14 @@ export function evaluateExit(
   }
 
   if (isFutures && hoursHeld >= 24 && !pos.tp1Hit) {
-    // Futures: TP1 wasn't hit after 24h — full close, same as the SPOT
-    // stagnation exit above. This previously said "reduce the position by
-    // 50%" in the message, but nothing downstream ever treated exitType
-    // 'TIME_BASED' as a partial exit (only 'PARTIAL_50' is handled that
-    // way, in the order generator) — so it always fully closed regardless
-    // of what the message claimed. Fixed the message to match the real
-    // (and, matching the SPOT case, intentionally decisive) behavior.
+    // Futures: TP1 wasn't hit after 24h — 50% partial reduction per alg.md §Layer4.4.
+    // The previous code always fully closed (exitType 'TIME_BASED' was never
+    // treated as a partial exit downstream) — fixed to return PARTIAL_50 so
+    // the order generator closes exactly half the position.
     return {
       shouldExit: true,
-      exitType: 'TIME_BASED',
-      reason: `יציאת זמן (24 שעות): TP1 לא הושג — סגירת הפוזיציה במלואה`
+      exitType: 'PARTIAL_50',
+      reason: `יציאת זמן (24 שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
     };
   }
 

@@ -117,7 +117,7 @@ describe('evaluateExit', () => {
     expect(result.exitType).toBe('TIME_BASED');
   });
 
-  it('returns TIME_BASED for futures after 24h without TP1', () => {
+  it('returns PARTIAL_50 for futures after 24h without TP1', () => {
     const pos = makePosition({
       type: 'FUTURES',
       side: 'LONG',
@@ -127,7 +127,7 @@ describe('evaluateExit', () => {
     });
     const result = evaluateExit(pos, 100, 1, { buy: 0, sell: 0 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
     expect(result.shouldExit).toBe(true);
-    expect(result.exitType).toBe('TIME_BASED');
+    expect(result.exitType).toBe('PARTIAL_50');
   });
 
   it('returns NONE when no exit conditions met', () => {

@@ -27,13 +27,13 @@ describe('calculateRiskParameters', () => {
     expect(result).toBeNull();
   });
 
-  it('calculates SPOT risk parameters with 0.75% portfolio risk budget', () => {
+  it('calculates SPOT risk parameters with direct Kelly (3% default)', () => {
     const result = calculateRiskParameters(100, 'SPOT', 'BUY', 4, 'NORMAL', 65, 20000);
     expect(result).not.toBeNull();
     expect(result!.stopLoss).toBeCloseTo(100 - 4 * 1.8, 4);
     expect(result!.takeProfit).toBeCloseTo(100 + 4 * 2.7, 4);
     expect(result!.leverage).toBe(1);
-    expect(result!.maxRiskAmountUsd).toBeCloseTo(150, 1); // 20000 * 0.0075 = 150
+    expect(result!.maxRiskAmountUsd).toBeCloseTo(600, 1); // 20000 * 0.03 = 600
   });
 
   it('calculates FUTURES LONG risk parameters correctly', () => {
@@ -77,12 +77,16 @@ describe('calculateRiskParameters', () => {
     expect(result).toBeNull();
   });
 
-  it('uses Kelly criterion when >= 30 closed trades without exceeding 0.75% risk', () => {
+  it('uses Kelly criterion when >= 30 closed trades without exceeding 10% bet fraction', () => {
     const closedTrades = Array.from({ length: 30 }, (_, i) => ({
       pnl: i < 20 ? 100 : -50
     }));
     const result = calculateRiskParameters(100, 'SPOT', 'BUY', 4, 'NORMAL', 65, 20000, closedTrades);
     expect(result).not.toBeNull();
-    expect(result!.maxRiskAmountUsd).toBeLessThanOrEqual(150);
+    // With 20 wins / 10 losses, avgWin=100, avgLoss=50, R=2, winRate=0.667
+    // Kelly = 0.667 - (1-0.667)/2 = 0.667 - 0.167 = 0.5
+    // Half Kelly = 0.25, capped at 0.10
+    // betSizeUsd = 20000 * 0.10 = 2000
+    expect(result!.maxRiskAmountUsd).toBeLessThanOrEqual(2000);
   });
 });

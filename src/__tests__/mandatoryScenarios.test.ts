@@ -161,9 +161,9 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
   // ─────────────────────────────────────────────────────────────
   // Test 6 — Below Spot threshold
   // ADX = 32, ATR = 3, SignalScore = 55
-  // Expected: HOLD (55 < 58)
+  // Expected: HOLD (55 < 60)
   // ─────────────────────────────────────────────────────────────
-  it('Test 6: Below Spot threshold (55 < 58) — Returns HOLD', () => {
+  it('Test 6: Below Spot threshold (55 < 60) — Returns HOLD', () => {
     const regime = makeRegime({
       adx: 32,
       atr: 3,
@@ -176,29 +176,28 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('HOLD');
-    expect(result.reason).toContain('58');
+    expect(result.reason).toContain('60');
   });
 
   // ─────────────────────────────────────────────────────────────
-  // Test 7 — Supertrend mismatch
-  // ADX = 32, ATR = 3%, SignalScore = 73, BUY, Supertrend = BEAR
-  // Expected: FUTURES = BLOCKED, SPOT BUY eligible (Score 73 >= 58)
+  // Test 7 — Score between SPOT and FUTURES thresholds
+  // ADX = 32, ATR = 3%, SignalScore = 70, BUY, Supertrend = BEAR
+  // Expected: FUTURES = BLOCKED (70 < 72), SPOT BUY eligible (70 >= 60)
   // ─────────────────────────────────────────────────────────────
-  it('Test 7: Supertrend mismatch — Blocks Futures and routes to SPOT BUY', () => {
+  it('Test 7: Score below Futures threshold (70 < 72) — Routes to SPOT BUY', () => {
     const regime = makeRegime({
       adx: 32,
       atr: 3,
       atrPercent: 3,
       volatility: 'NORMAL',
       regime: 'TRENDING',
-      supertrend: { value: 105, direction: 'BEAR' } // Mismatch with BUY
+      supertrend: { value: 105, direction: 'BEAR' }
     });
-    const signal = makeSignal({ action: 'BUY', signalScore: 73 });
+    const signal = makeSignal({ action: 'BUY', signalScore: 70 });
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('SPOT');
     expect(result.side).toBe('BUY');
-    expect(result.reason).toContain('Supertrend');
   });
 
   // ─────────────────────────────────────────────────────────────

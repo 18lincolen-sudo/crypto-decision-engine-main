@@ -65,7 +65,7 @@ describe('routeTradeType', () => {
     expect(result.blockReason).toBe('TRANSITIONAL_HARD_BLOCK');
   });
 
-  it('routes to SPOT in RANGING regime when Score >= 58', () => {
+  it('routes to SPOT in RANGING regime when Score >= 60', () => {
     const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 65 }), rangingLayer0);
     expect(result.type).toBe('SPOT');
     expect(result.side).toBe('BUY');
@@ -77,16 +77,16 @@ describe('routeTradeType', () => {
     expect(result.hardGateBlocked).toBe(true);
   });
 
-  it('routes to SPOT in HIGH VOL when Score >= 64', () => {
+  it('routes to SPOT in HIGH VOL when Score >= 60', () => {
     const highVolRegime = makeRegime({ regime: 'TRENDING', volatility: 'HIGH', atrPercent: 6.5, adx: 30 });
     const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 70 }), highVolRegime);
     expect(result.type).toBe('SPOT');
     expect(result.side).toBe('BUY');
   });
 
-  it('blocks SPOT in HIGH VOL when Score < 62', () => {
+  it('blocks SPOT in HIGH VOL when Score < 60', () => {
     const highVolRegime = makeRegime({ regime: 'TRENDING', volatility: 'HIGH', atrPercent: 6.5, adx: 30 });
-    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 60 }), highVolRegime);
+    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 59 }), highVolRegime);
     expect(result.type).toBe('HOLD');
     expect(result.hardGateBlocked).toBe(true);
     expect(result.blockReason).toBe('SPOT_SCORE_BELOW_HIGH_VOL_THRESHOLD');

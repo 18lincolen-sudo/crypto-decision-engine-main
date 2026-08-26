@@ -174,7 +174,7 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   setupConfirmationsMin: 2,
   setupWeights: { trend: 0.25, momentum: 0.2, location: 0.2, participation: 0.15, structure: 0.2 },
   pullbackMaxAtrFromEma: 2.0,
-  compressionPercentileMax: 45,
+  compressionPercentileMax: 40,
   breakoutVolumeMin: 1.3,
   meanReversionVwapAtr: 1.0,
   meanReversionRsiMax: 35,
@@ -222,7 +222,7 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   // double the exposure the UI showed as the limit (observed live: 62%
   // exposure against a displayed "20% max", flagged as "limit exceeded").
   maxLeveragedExposurePercent: 20,
-  maxOpenPositions: 5,
+  maxOpenPositions: 7,
   maxOpenFutures: 2,
   minOrderUsd: 5,
   allowShortDuringHighVolatility: false,
@@ -238,8 +238,8 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   touchFillProbability: 0.5,
   partialFillRatio: 0.5,
 
-  dailyDrawdownBlockPercent: 6,
-  weeklyDrawdownLockPercent: 13,
+  dailyDrawdownBlockPercent: 8,
+  weeklyDrawdownLockPercent: 15,
   weeklyDrawdownFlattenPercent: 15
 };
 

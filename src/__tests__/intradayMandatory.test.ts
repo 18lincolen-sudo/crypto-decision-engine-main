@@ -263,28 +263,28 @@ describe('E. Risk plan', () => {
 });
 
 describe('F. Circuit breaker', () => {
-  it('Daily drawdown >= 6% blocks with CIRCUIT_BREAKER gate', () => {
+  it('Daily drawdown >= 8% blocks with CIRCUIT_BREAKER gate', () => {
     const { h1, m15, m5 } = bullScenario();
     const d = evaluateIntradayDecision({
       symbol: 'BTCUSDT',
       h1, m15, m5,
       spreadPercent: 0.02,
       quoteVolume24h: 1e12,
-      portfolio: basePortfolio({ dailyDrawdownPercent: 7 }),
+      portfolio: basePortfolio({ dailyDrawdownPercent: 9 }),
       openPositions: []
     });
     expect(d.gate).toBe('CIRCUIT_BREAKER');
     expect(d.outcome).toBe('NO_SIGNAL');
   });
 
-  it('Weekly drawdown >= 13% locks the system', () => {
+  it('Weekly drawdown >= 15% locks the system', () => {
     const { h1, m15, m5 } = bullScenario();
     const d = evaluateIntradayDecision({
       symbol: 'BTCUSDT',
       h1, m15, m5,
       spreadPercent: 0.02,
       quoteVolume24h: 1e12,
-      portfolio: basePortfolio({ weeklyDrawdownPercent: 14 }),
+      portfolio: basePortfolio({ weeklyDrawdownPercent: 16 }),
       openPositions: []
     });
     expect(d.gate).toBe('CIRCUIT_BREAKER');
