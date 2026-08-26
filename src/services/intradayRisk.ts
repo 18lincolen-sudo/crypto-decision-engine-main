@@ -204,7 +204,14 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
   // ── Stop: structure first, ATR as the MINIMUM distance (§30) ───────────────
   const structuralStop = input.stopReference - s * params.stopStructureBufferAtr * atr5;
   const structuralDistance = Math.abs(entry - structuralStop);
-  const minDistance = Math.max(params.minStopAtrMult * atr5, (entry * params.minStopPercent) / 100);
+  // MEAN_REVERSION gets its own (optionally wider) floor — see the doc
+  // comment on meanReversionMinStopAtrMult in intradayParams.ts for why its
+  // structural stop is prone to being unusually tight. Falls back to the
+  // general floor when unset (no behavior change).
+  const isMeanReversion = input.setupType === 'MEAN_REVERSION';
+  const minStopAtrMult = (isMeanReversion && params.meanReversionMinStopAtrMult) || params.minStopAtrMult;
+  const minStopPercent = (isMeanReversion && params.meanReversionMinStopPercent) || params.minStopPercent;
+  const minDistance = Math.max(minStopAtrMult * atr5, (entry * minStopPercent) / 100);
   const maxDistance = Math.min(params.maxStopAtrMult * atr5, (entry * params.maxStopPercent) / 100);
 
   let stopDistance = Math.max(structuralDistance, minDistance);

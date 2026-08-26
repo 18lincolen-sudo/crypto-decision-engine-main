@@ -63,6 +63,11 @@ export interface IntradayExitContext {
     setupScore: number;
     entryConfirmed: boolean;
   };
+  /** Close of the last fully-CLOSED 5M candle (not the live/forming price) —
+   *  only used for MEAN_REVERSION's stop-loss check when
+   *  params.meanReversionCloseConfirmStop is on. See that flag's doc comment
+   *  in intradayParams.ts. */
+  lastClosedCandleClose?: number;
 }
 
 export interface IntradayExitDecision {
@@ -111,12 +116,22 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   }
 
   // 2 ── Stop loss ───────────────────────────────────────────────────────────
-  if ((isLong && price <= pos.stopLoss) || (!isLong && price >= pos.stopLoss)) {
+  // MEAN_REVERSION can optionally require the SL breach to survive a full 5M
+  // candle close (not just a live-price touch) — see meanReversionCloseConfirmStop
+  // in intradayParams.ts. Every other setup type keeps the live-price check.
+  const useCloseConfirmStop =
+    pos.setupType === 'MEAN_REVERSION' &&
+    !!params.meanReversionCloseConfirmStop &&
+    ctx.lastClosedCandleClose !== undefined;
+  const slCheckPrice = useCloseConfirmStop ? ctx.lastClosedCandleClose! : price;
+  if ((isLong && slCheckPrice <= pos.stopLoss) || (!isLong && slCheckPrice >= pos.stopLoss)) {
     return {
       shouldExit: true,
       exitType: 'FULL',
       reasonCode: 'STOP_LOSS',
-      reason: `Stop Loss ב-$${formatDynamicPrice(pos.stopLoss)} (מחיר $${formatDynamicPrice(price)})`,
+      reason: useCloseConfirmStop
+        ? `Stop Loss ב-$${formatDynamicPrice(pos.stopLoss)} (אושר בסגירת נר 5M ב-$${formatDynamicPrice(slCheckPrice)})`
+        : `Stop Loss ב-$${formatDynamicPrice(pos.stopLoss)} (מחיר $${formatDynamicPrice(price)})`,
       ...base
     };
   }

@@ -25,7 +25,19 @@ import {
   MultiTimeframeSnapshot,
   SignalEvaluation
 } from './intradayBridge';
-import { DEFAULT_INTRADAY_PARAMS } from './intradayParams';
+import { DEFAULT_INTRADAY_PARAMS, IntradayParams, SetupType } from './intradayParams';
+
+// Simulation-only tuning — NOT applied to the real bot: tradingWorker.ts's
+// scan() calls evaluateIntradayDecision directly with no params override, so
+// it always gets DEFAULT_INTRADAY_PARAMS unmodified. Both knobs are being
+// evaluated against real simulation results before being considered for the
+// live bot. See each flag's own doc comment in intradayParams.ts.
+const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
+  allowShortDuringHighVolatility: true,
+  meanReversionMinStopAtrMult: 1.6,
+  meanReversionMinStopPercent: 0.25,
+  meanReversionCloseConfirmStop: true
+};
 
 // ── Shared data shapes ───────────────────────────────────────────────────────
 
@@ -64,6 +76,8 @@ export interface SimPosition {
    *  would incorrectly get held up to twice as long. */
   maxHoldMs?: number;
   timeStopMs?: number;
+  /** Needed at exit-check time to apply MEAN_REVERSION-specific stop handling — see meanReversionCloseConfirmStop in intradayParams.ts. */
+  setupType?: SetupType;
 }
 
 export interface SimTrade {
@@ -113,6 +127,7 @@ export interface PendingOrder {
   /** Carried from the entry-time RiskPlan through to the resulting SimPosition — see SimPosition.maxHoldMs. */
   maxHoldMs?: number;
   timeStopMs?: number;
+  setupType?: SetupType;
 }
 
 export interface SimBotConfig {
@@ -228,14 +243,9 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
       // the limit in the UI had no real effect once past 5 positions.
       {
         ...DEFAULT_INTRADAY_PARAMS,
+        ...SIM_INTRADAY_PARAMS_OVERRIDE,
         maxOpenPositions: config.maxPositions || DEFAULT_INTRADAY_PARAMS.maxOpenPositions,
-        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures,
-        // Simulation-only for now (real bot uses DEFAULT_INTRADAY_PARAMS
-        // unmodified — see tradingWorker.ts's scan()): lets a SHORT setup
-        // still trade FUTURES during HIGH volatility instead of being forced
-        // to SPOT-only (which can't short), so results can be evaluated
-        // before deciding whether to enable this on real money.
-        allowShortDuringHighVolatility: true
+        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures
       }
     );
 
@@ -295,7 +305,12 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     if (pending.some((o) => o.symbol === pos.symbol) || newOrders.some((o) => o.symbol === pos.symbol)) continue;
 
     const livePrice = priceFor(pos.symbol) ?? pos.currentPrice;
-    const atr5 = computeAtr5(buildCandlesForSymbol(pos.symbol));
+    const candles5 = buildCandlesForSymbol(pos.symbol);
+    const atr5 = computeAtr5(candles5);
+    // Last fully-CLOSED 5M candle's close — used only for MEAN_REVERSION's
+    // close-confirmed stop (meanReversionCloseConfirmStop). candles5 already
+    // excludes the forming candle, so its last element IS the last closed one.
+    const lastClosedCandleClose = candles5.length ? candles5[candles5.length - 1].close : undefined;
 
     const currentEval = evaluations.find((e) => e.symbol === pos.symbol);
     const decision = currentEval?.decision;
@@ -321,12 +336,15 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
         highestPriceSinceTP1: pos.highestPriceSinceTP1,
         lowestPriceSinceTP1: pos.lowestPriceSinceTP1,
         maxHoldMs: pos.maxHoldMs,
-        timeStopMs: pos.timeStopMs
+        timeStopMs: pos.timeStopMs,
+        setupType: pos.setupType
       },
       livePrice,
       atr5,
       { dailyDrawdownPercent, weeklyDrawdownPercent },
-      reversal
+      reversal,
+      { ...DEFAULT_INTRADAY_PARAMS, ...SIM_INTRADAY_PARAMS_OVERRIDE },
+      lastClosedCandleClose
     );
 
     if (!exitCheck.shouldExit) continue;
@@ -394,7 +412,8 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       // (see the SimPosition.maxHoldMs doc comment) — without this, every
       // position falls back to a single hardcoded default at exit-check time.
       maxHoldMs: ev.decision?.risk?.maxHoldMs,
-      timeStopMs: ev.decision?.risk?.timeStopMs
+      timeStopMs: ev.decision?.risk?.timeStopMs,
+      setupType: ev.decision?.setupType
     });
   }
 
@@ -486,7 +505,8 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
         confidence: order.confidence,
         entryFee: fee,
         maxHoldMs: order.maxHoldMs,
-        timeStopMs: order.timeStopMs
+        timeStopMs: order.timeStopMs,
+        setupType: order.setupType
       };
 
       workingPositions.push(newPos);

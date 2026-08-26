@@ -113,6 +113,29 @@ export interface IntradayParams {
    *  evaluated against real results before enabling it on the live bot.
    */
   allowShortDuringHighVolatility: boolean;
+  // MEAN_REVERSION's stopReference is the swing low/high over just the last 6
+  // 5M candles (30 min) — and MEAN_REVERSION only fires in a RANGING regime,
+  // where ATR5 is naturally small too — so its computed stop distance is
+  // structurally tighter than trend/breakout setups, making it prone to
+  // whipsaw: a brief wick stops the trade out, and moments later the SAME
+  // setup (still-valid oversold/extreme reading) fires again, sometimes at a
+  // worse price than the original entry (MEAN_REVERSION also has no
+  // chase-penalty protection against that — see intradayEntry.ts). Both knobs
+  // below default to unset (no effect — same behavior as before) and are
+  // simulation-only for now (see SIM_INTRADAY_PARAMS_OVERRIDE in
+  // simExecution.ts), evaluated against real results before considering them
+  // for the live bot.
+  /** Overrides minStopAtrMult specifically for MEAN_REVERSION positions. */
+  meanReversionMinStopAtrMult?: number;
+  /** Overrides minStopPercent specifically for MEAN_REVERSION positions. */
+  meanReversionMinStopPercent?: number;
+  /** When true, a MEAN_REVERSION position's stop-loss only triggers once a
+   *  CLOSED 5M candle is beyond the level (not a live-price touch) — filters
+   *  out a wick that reverses within the same candle. Only implementable in
+   *  the simulation engines: the real bot's SL is a native Bybit bracket
+   *  order, touch-triggered by the exchange itself, with no "confirm on
+   *  close" order type. */
+  meanReversionCloseConfirmStop?: boolean;
 
   // ── Duration / time stops (§28/§29) ───────────────────────────────────────
   maxHoldMinutes: Record<Exclude<SetupType, 'NONE'>, number>;
