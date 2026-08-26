@@ -20,6 +20,10 @@ import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
 // Server-side legacy simulation engine (original alg.md algorithm) — same
 // server, same infra, only the decision logic differs (see legacySimEngine.ts).
 import { createLegacySimEngine, LegacySimSnapshot } from '../../server/legacySimEngine.ts';
+// Server-side "Bot Pro" — a literal, verified-faithful implementation of
+// ASSETS/alg.md, independent from the (drifted) legacy engine above. Same
+// server, same infra, only the decision logic differs (see proSimEngine.ts).
+import { createProSimEngine, ProSimSnapshot } from '../../server/proSimEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../services/intradayEngine';
 import { buildPortfolioRiskStats } from '../services/intradayBridge';
@@ -479,6 +483,7 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
 const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
 const legacySimStore = createKVStore('legacy-sim-state', join(DATA_DIR, 'legacy-sim-state.json'));
+const proSimStore = createKVStore('pro-sim-state', join(DATA_DIR, 'pro-sim-state.json'));
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
 // ── Shared Simulation Bot state ───────────────────────────────────────────────
@@ -585,6 +590,50 @@ async function persistLegacySim() {
     config: legacySimState.config,
     snapshot: legacySimState.snapshot,
     updatedAt: legacySimState.updatedAt
+  }));
+}
+
+// ── Shared "Bot Pro" state — same shared-viewer model as the two engines
+// above; a literal alg.md implementation, independent from the legacy
+// engine (which has drifted from alg.md — see proAlgEngine.ts's header for
+// the specifics). No leader election: fully server-driven.
+const DEFAULT_PRO_SIM_CONFIG = {
+  riskLevel: 'medium' as const,
+  initialAmount: 10000,
+  stopLoss: 4.2,
+  takeProfit: 3,
+  maxPositions: 7,
+  maxFuturesPositions: 2,
+  feePercent: 0.1,
+  slippagePercent: 0.05,
+  executionDelaySec: 3,
+  minConfidenceOverride: 0
+};
+const proSimState = {
+  running: false,
+  config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG,
+  snapshot: null as unknown | null,
+  updatedAt: 0
+};
+
+const proSimEngine = createProSimEngine(() => symbols);
+
+async function hydrateProSim() {
+  const saved = await proSimStore.get('state');
+  if (!saved) return;
+  const s = JSON.parse(saved) as Record<string, unknown>;
+  proSimState.running = typeof s.running === 'boolean' ? s.running : false;
+  proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...(typeof s.config === 'object' && s.config !== null ? s.config as Record<string, unknown> : {}) };
+  proSimState.snapshot = s.snapshot ?? null;
+  proSimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
+}
+
+async function persistProSim() {
+  await proSimStore.set('state', JSON.stringify({
+    running: proSimState.running,
+    config: proSimState.config,
+    snapshot: proSimState.snapshot,
+    updatedAt: proSimState.updatedAt
   }));
 }
 
@@ -1092,7 +1141,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, { symbols, generatedAt: universeGeneratedAt });
   }
 
-  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/legacy-sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
+  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/legacy-sim/') && !url.pathname.startsWith('/api/pro-sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
     return json(res, 401, { error: 'Unauthorized' });
   }
 
@@ -1241,6 +1290,46 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, legacySimState);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SHARED "BOT PRO" — same shared-viewer model as the two blocks above,
+  // running a literal alg.md implementation (server/proSimEngine.ts). No
+  // leader election: fully server-driven, clients are pure viewers.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  if (req.method === 'GET' && url.pathname === '/api/pro-sim/state') {
+    return json(res, 200, proSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pro-sim/start') {
+    proSimState.running = true;
+    await persistProSim();
+    return json(res, 200, proSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pro-sim/stop') {
+    proSimState.running = false;
+    await persistProSim();
+    return json(res, 200, proSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pro-sim/reset') {
+    proSimState.running = false;
+    proSimEngine.reset(proSimState.config);
+    proSimState.snapshot = proSimEngine.getSnapshot();
+    proSimState.updatedAt = Date.now();
+    await persistProSim();
+    return json(res, 200, proSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pro-sim/config') {
+    const body = await readJsonBody(req);
+    if (body && typeof body.config === 'object' && body.config !== null) {
+      proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...proSimState.config, ...(body.config as Record<string, unknown>) };
+    }
+    await persistProSim();
+    return json(res, 200, proSimState);
+  }
+
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
   await refreshUniverseIfStale();
@@ -1250,6 +1339,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (simState.snapshot) simEngine.hydrate(simState.snapshot as SimSnapshot);
   await hydrateLegacySim();
   if (legacySimState.snapshot) legacySimEngine.hydrate(legacySimState.snapshot as LegacySimSnapshot);
+  await hydrateProSim();
+  if (proSimState.snapshot) proSimEngine.hydrate(proSimState.snapshot as ProSimSnapshot);
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
   if (state.running) void scan();
   setInterval(() => void scan(), intervalMs);
@@ -1319,6 +1410,30 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       console.warn('[legacy-sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
     } finally {
       legacySimTickInProgress = false;
+    }
+  }, 4000);
+
+  // Server-side "Bot Pro" simulation loop — same cadence/shape, own
+  // in-progress guard so a slow tick on any one engine never blocks the
+  // others. Shares the same cached Fear & Greed value (same data source).
+  let proSimTickInProgress = false;
+  setInterval(async () => {
+    if (!proSimState.running || proSimTickInProgress) return;
+    proSimTickInProgress = true;
+    try {
+      const now = Date.now();
+      if (now - lastFgFetchAt > 15 * 60 * 1000) {
+        cachedSimFearGreed = await fetchFearGreed();
+        lastFgFetchAt = now;
+      }
+      const snap = await proSimEngine.tick(proSimState.config, cachedSimFearGreed);
+      proSimState.snapshot = snap;
+      proSimState.updatedAt = Date.now();
+      await persistProSim();
+    } catch (e: unknown) {
+      console.warn('[pro-sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
+    } finally {
+      proSimTickInProgress = false;
     }
   }, 4000);
 });

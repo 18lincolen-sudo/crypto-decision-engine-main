@@ -241,6 +241,62 @@ export async function setLegacySimConfig(config: SimBotConfig, configuredBaseUrl
   return (await res.json()) as LegacySimBotStateResponse;
 }
 
+// ── Shared "Bot Pro" API (public, no admin token) ──────────────────────────
+// Same shared-viewer model as the two blocks above, running
+// server/proSimEngine.ts (a literal alg.md implementation). Fully
+// server-driven — no leader election, so no claim/push counterpart.
+
+export interface ProSimBotStateResponse {
+  running: boolean;
+  config: SimBotConfig;
+  snapshot: SimBotSnapshot | null;
+  updatedAt: number;
+}
+
+export async function getProSimState(configuredBaseUrl?: string): Promise<ProSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/pro-sim/state`);
+  if (!res.ok) throw new Error(`Pro sim ${res.status}`);
+  return (await res.json()) as ProSimBotStateResponse;
+}
+
+export async function startProSim(configuredBaseUrl?: string): Promise<ProSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/pro-sim/start`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Pro sim start ${res.status}`);
+  return (await res.json()) as ProSimBotStateResponse;
+}
+
+export async function stopProSim(configuredBaseUrl?: string): Promise<ProSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/pro-sim/stop`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Pro sim stop ${res.status}`);
+  return (await res.json()) as ProSimBotStateResponse;
+}
+
+export async function resetProSim(configuredBaseUrl?: string): Promise<ProSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/pro-sim/reset`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Pro sim reset ${res.status}`);
+  return (await res.json()) as ProSimBotStateResponse;
+}
+
+export async function setProSimConfig(config: SimBotConfig, configuredBaseUrl?: string): Promise<ProSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/pro-sim/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config })
+  });
+  if (!res.ok) throw new Error(`Pro sim config ${res.status}`);
+  return (await res.json()) as ProSimBotStateResponse;
+}
+
 export function createTradingApiClient(configuredBaseUrl: string, adminToken: string): TradingApiClient {
   const baseUrl = resolveBaseUrl(configuredBaseUrl);
 
