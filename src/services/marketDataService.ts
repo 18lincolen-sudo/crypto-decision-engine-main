@@ -452,6 +452,14 @@ export interface LiquiditySnapshot {
 
 let liquidityCache: { at: number; map: Map<string, LiquiditySnapshot> } = { at: 0, map: new Map() };
 const LIQUIDITY_TTL_MS = 15_000;
+// Concurrent callers with the SAME symbol set (e.g. two overlapping full-
+// universe refreshes) can both miss the TTL cache in the same window and
+// each fire their own ticker fetch. Track in-flight requests keyed by the
+// exact requested symbol set — this function is called both with a single
+// symbol and with the full universe list, so sharing indiscriminately across
+// different symbol sets would silently hand a caller wanting many symbols
+// the result of a fetch that only looked for one.
+const liquidityInFlight = new Map<string, Promise<Map<string, LiquiditySnapshot>>>();
 
 interface BybitTickerRow {
   symbol: string;
@@ -470,7 +478,18 @@ export async function getLiquiditySnapshots(symbols: string[], now = Date.now())
   if (now - liquidityCache.at < LIQUIDITY_TTL_MS && liquidityCache.map.size) {
     return liquidityCache.map;
   }
+  const key = [...symbols].sort().join(',');
+  const existing = liquidityInFlight.get(key);
+  if (existing) return existing;
 
+  const promise = fetchLiquiditySnapshots(symbols, now).finally(() => {
+    liquidityInFlight.delete(key);
+  });
+  liquidityInFlight.set(key, promise);
+  return promise;
+}
+
+async function fetchLiquiditySnapshots(symbols: string[], now: number): Promise<Map<string, LiquiditySnapshot>> {
   const wanted = new Set(symbols.map((s) => toBybitSymbol(s)));
   const map = new Map<string, LiquiditySnapshot>();
 

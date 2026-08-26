@@ -28,3 +28,8 @@ server/.data/
 .env
 .env.*
 !.env.example
+
+# One-off manual reference dumps (raw exchange data pasted in for analysis),
+# not part of the app — kept on disk, not tracked.
+LIST.txt
+binancelist.md

@@ -217,6 +217,12 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
 
   const stopLoss = entry - s * stopDistance;
   if (stopLoss <= 0) return rejected('SL מחושב שלילי');
+  // Explicit direction check on top of the (already mathematically-correct-by-
+  // construction) formula above — catches a wrong-side SL immediately if the
+  // formula or the `s` sign ever gets disturbed upstream, instead of only
+  // failing the much later reanchor/exit logic downstream.
+  if (input.direction === 'LONG' && stopLoss >= entry) return rejected('SL חייב להיות מתחת למחיר הכניסה ב-LONG');
+  if (input.direction === 'SHORT' && stopLoss <= entry) return rejected('SL חייב להיות מעל מחיר הכניסה ב-SHORT');
 
   // ── Targets: structure + ATR + R:R (§31) ──────────────────────────────────
   const rrTp1 = entry + s * params.tp1RewardRisk * stopDistance;

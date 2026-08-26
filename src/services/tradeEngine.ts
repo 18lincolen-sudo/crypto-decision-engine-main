@@ -180,7 +180,16 @@ export function calculateSupertrend(candles: Candle[], period: number = 10, mult
   }
 
   const { trSeries } = calculateATR(candles, period);
-  
+
+  // ATR=0 (e.g. every candle has the same close — a very flat/illiquid market)
+  // collapses both bands to hl2, which flips BULL/BEAR on any tiny price
+  // noise around that single point. Not a divide-by-zero (there is none in
+  // this function), just a degenerate case worth short-circuiting cleanly.
+  if (trSeries.every((tr) => tr === 0)) {
+    const lastPrice = candles[candles.length - 1].close;
+    return { value: lastPrice, direction: 'BULL' };
+  }
+
   let upperBand = 0;
   let lowerBand = 0;
   let supertrend = 0;

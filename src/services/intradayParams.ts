@@ -173,7 +173,11 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   maxLeverage: 5,
   maxMarginPerTradePercent: 4,
   maxSpotNotionalPercent: 15,
-  maxLeveragedExposurePercent: 40,
+  // Matches the legacy engine's hard-coded 20% cap (tradeEngine.ts) and the
+  // 20% the risk-meter UI actually displays — was 40 here, silently allowing
+  // double the exposure the UI showed as the limit (observed live: 62%
+  // exposure against a displayed "20% max", flagged as "limit exceeded").
+  maxLeveragedExposurePercent: 20,
   maxOpenPositions: 5,
   maxOpenFutures: 2,
   minOrderUsd: 5,

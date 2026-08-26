@@ -53,6 +53,10 @@ services:
       - key: BOT_REQUEST_TIMEOUT_MS
         value: "15000"
       - key: CORS_ORIGIN
-        value: "*"
+        # Wildcard let ANY website make requests to this worker. The
+        # frontend's actual origin (matches .env locally) is the only one
+        # that legitimately needs it; add more as comma-separated if other
+        # trusted origins (a custom domain, a preview deploy) are added.
+        value: "https://crypto-d.netlify.app"
       - key: PORT
         value: "3001"

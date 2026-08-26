@@ -15,6 +15,7 @@
 import { CryptoData } from '../types/crypto';
 import { Candle } from './tradeEngine';
 import { toBaseAsset } from './assetUniverse';
+import { CRYPTO_IDS } from './coinGeckoIds';
 
 // ── Binance ticker shape ──────────────────────────────────────────────────────
 interface BinanceTicker {
@@ -63,35 +64,7 @@ const BINANCE_TICKER_TTL = 15_000;
 /** Bybit ticker cache TTL (10 seconds) */
 const BYBIT_TICKER_TTL = 10_000;
 
-// ── CoinGecko symbol → ID map (same as coinGeckoApi.ts) ──────────────────────
-const CRYPTO_IDS: Record<string, string> = {
-  'BTC': 'bitcoin', 'ETH': 'ethereum', 'BNB': 'binancecoin', 'SOL': 'solana',
-  'XRP': 'ripple', 'DOGE': 'dogecoin', 'TON': 'the-open-network', 'ADA': 'cardano',
-  'AVAX': 'avalanche-2', 'TRX': 'tron',
-  'DOT': 'polkadot', 'BCH': 'bitcoin-cash', 'NEAR': 'near', 'MATIC': 'matic-network',
-  'ICP': 'internet-computer', 'UNI': 'uniswap', 'LTC': 'litecoin', 'ETC': 'ethereum-classic',
-  'APT': 'aptos', 'SHIB': 'shiba-inu', 'LINK': 'chainlink', 'XLM': 'stellar',
-  'ATOM': 'cosmos', 'FIL': 'filecoin', 'HBAR': 'hedera-hashgraph',
-  'ARB': 'arbitrum', 'OP': 'optimism', 'IMX': 'immutable-x', 'MKR': 'maker',
-  'INJ': 'injective-protocol', 'GRT': 'the-graph', 'SUI': 'sui', 'SEI': 'sei-network',
-  'TIA': 'celestia', 'RNDR': 'render-token', 'FET': 'fetch-ai', 'THETA': 'theta-token',
-  'FTM': 'fantom', 'AAVE': 'aave', 'ALGO': 'algorand', 'FLOW': 'flow',
-  'AXS': 'axie-infinity', 'SAND': 'the-sandbox', 'MANA': 'decentraland', 'SNX': 'havven',
-  'LDO': 'lido-dao', 'EGLD': 'elrond-erd-2', 'XTZ': 'tezos', 'EOS': 'eos', 'NEO': 'neo',
-  'GALA': 'gala', 'CHZ': 'chiliz', 'APE': 'apecoin', 'CRV': 'curve-dao-token',
-  'LRC': 'loopring', 'ENA': 'ethena', 'WLD': 'worldcoin-wld', 'STX': 'blockstack',
-  'MINA': 'mina-protocol', 'CFX': 'conflux-token', 'RUNE': 'thorchain',
-  'COMP': 'compound-governance-token', 'DYDX': 'dydx', 'GMX': 'gmx', 'KAVA': 'kava',
-  'ZIL': 'zilliqa', 'IOTA': 'iota', 'CAKE': 'pancakeswap-token', '1INCH': '1inch',
-  'MASK': 'mask-network', 'PENDLE': 'pendle', 'AR': 'arweave', 'BLUR': 'blur',
-  'WOO': 'woo-network', 'SKL': 'skale',
-  'CELO': 'celo', 'KSM': 'kusama', 'ZRX': '0x', 'YFI': 'yearn-finance', 'BAT': 'basic-attention-token',
-  'ENS': 'ethereum-name-service', 'SSV': 'ssv-network', 'ANKR': 'ankr', 'BAND': 'band-protocol',
-  'OGN': 'origin-protocol', 'ONT': 'ontology', 'WAVES': 'waves', 'STORJ': 'storj',
-  'ONE': 'harmony', 'HOT': 'holotoken', 'IOST': 'iostoken', 'VET': 'vechain',
-  'DASH': 'dash', 'ZEN': 'zencash', 'QTUM': 'qtum', 'ZEC': 'zcash', 'ICX': 'icon',
-  'RVN': 'ravencoin', 'GLMR': 'moonbeam', 'BNT': 'bancor'
-};
+// ── CoinGecko symbol → ID map — see coinGeckoIds.ts ───────────────────────────
 
 // ── In-memory caches ──────────────────────────────────────────────────────────
 let priceCache: PriceCache | null = null;
@@ -165,7 +138,11 @@ async function fetchBybitAllTickers(): Promise<CryptoData[]> {
           current_price: parseFloat(t.lastPrice),
           price_change_percentage_24h: parseFloat(t.price24hPcnt) * 100,
           total_volume: parseFloat(t.volume24h),
-          market_cap: parseFloat(t.lastPrice) * parseFloat(t.volume24h) * 100,
+          // Real market cap needs circulating supply, which ticker endpoints
+          // don't provide — price × volume is NOT market cap. 0 means
+          // "genuinely unknown" (see recommendationEngine.ts, which treats
+          // 0 as neutral rather than assuming the smallest/riskiest tier).
+          market_cap: 0,
           last_updated: new Date().toISOString()
         } as CryptoData;
       });
@@ -261,7 +238,7 @@ export async function getAggregatedPrices(targetSymbols?: string[]): Promise<Cry
           current_price: price,
           price_change_percentage_24h: parseFloat(t.priceChangePercent),
           total_volume: vol,
-          market_cap: price * vol * 100,
+          market_cap: 0, // genuinely unknown — see the Bybit branch above for why
           last_updated: new Date().toISOString()
         } as CryptoData;
       });

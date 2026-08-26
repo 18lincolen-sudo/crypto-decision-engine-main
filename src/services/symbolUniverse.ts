@@ -2,15 +2,45 @@
  * Live liquidity-based trading universe — TS port of MISCHAR.py
  * (G:\claude-projects\MISCHAR.py). Sums real Bybit turnover24h across every
  * product type a base asset trades on (spot USDT, linear USDT, linear USDC,
- * inverse) to find genuinely liquid coins, then reports the actual USDT pair
- * the bot can execute on — gated by that pair's OWN volume, not the combined
- * total (a coin whose volume sits mostly in USDC/inverse would otherwise
- * "pass" while its actual USDT pair stays too thin to trade safely).
+ * inverse) to find genuinely liquid coins, then reports the actual tradeable
+ * Spot USDT pair the bot can execute on.
+ *
+ * This is the actual code that runs live (refreshUniverseIfStale() in
+ * tradingWorker.ts, daily) — MISCHAR.py is only an offline copy used to
+ * regenerate the static targetSymbols.ts fallback. Both used to prefer the
+ * LINEAR (futures) symbol over Spot when both existed (e.g. "1000PEPEUSDT",
+ * which doesn't exist on Spot at all — Bybit Spot lists the same coin as
+ * "PEPEUSDT"). The bot's price pipeline (fetchBybitAllTickers /
+ * getAggregatedPrices) only ever reads Bybit's SPOT tickers, so a
+ * linear-only symbol could never get live data — it just sat as a dead,
+ * permanently-pending slot in the universe. Multiplier-prefixed linear
+ * symbols (1000PEPE, 1000BONK, SHIB1000) also weren't normalized to their
+ * real base before grouping, so the same coin could enter the universe
+ * twice under two different symbol strings. Fixed 2026-08-26 (see
+ * baseAndKind's stripMultiplier and computeLiquidUniverse's tradeSymbol
+ * selection below) — kept in sync with the equivalent MISCHAR.py fix.
  */
 
 const BYBIT_PUBLIC_BASE = 'https://api.bybit.com';
 const LIQUID_THRESHOLD = 20_000_000;
 const NEAR_THRESHOLD = 8_000_000;
+// Sanity floor on the coin's OWN spot volume, separate from the near/liquid
+// tier thresholds above (which use total liquidity across all venues). A coin
+// can be genuinely liquid overall while its specific spot pair is a near-dead
+// listing — that pair still won't give the bot usable live price data.
+export const MIN_SPOT_VOLUME_FOR_INCLUSION = 200_000;
+
+// Matches MULTIPLIER_PREFIXES in assetUniverse.ts / MISCHAR.py — Bybit's
+// linear market often lists cheap tokens under a contract-size multiplier
+// (1000PEPEUSDT) that Spot doesn't use (PEPEUSDT); strip it so both resolve
+// to the same base coin instead of being counted as two unrelated coins.
+const MULTIPLIER_PREFIXES = ['1000000', '100000', '10000', '1000'];
+function stripMultiplier(base: string): string {
+  for (const prefix of MULTIPLIER_PREFIXES) {
+    if (base.startsWith(prefix) && base.length > prefix.length) return base.slice(prefix.length);
+  }
+  return base;
+}
 
 // Tokenized stocks/commodities/stablecoins on Bybit — excluded even if liquid;
 // the engine's regime/ATR/leverage logic is tuned for crypto volatility, and
@@ -36,10 +66,10 @@ async function fetchTickers(category: 'spot' | 'linear' | 'inverse'): Promise<By
 }
 
 function baseAndKind(symbol: string): { base: string; kind: 'usdt' | 'usdc' | 'inverse' } | null {
-  if (symbol.endsWith('USDT')) return { base: symbol.slice(0, -4), kind: 'usdt' };
-  if (symbol.endsWith('PERP')) return { base: symbol.slice(0, -4), kind: 'usdc' };
-  if (symbol.endsWith('USDC')) return { base: symbol.slice(0, -4), kind: 'usdc' };
-  if (symbol.endsWith('USD')) return { base: symbol.slice(0, -3), kind: 'inverse' };
+  if (symbol.endsWith('USDT')) return { base: stripMultiplier(symbol.slice(0, -4)), kind: 'usdt' };
+  if (symbol.endsWith('PERP')) return { base: stripMultiplier(symbol.slice(0, -4)), kind: 'usdc' };
+  if (symbol.endsWith('USDC')) return { base: stripMultiplier(symbol.slice(0, -4)), kind: 'usdc' };
+  if (symbol.endsWith('USD')) return { base: stripMultiplier(symbol.slice(0, -3)), kind: 'inverse' };
   return null;
 }
 
@@ -90,12 +120,17 @@ export async function computeLiquidUniverse(): Promise<LiquidUniverseResult> {
   for (const [base, entry] of coins) {
     if (EXCLUDE_BASES.has(base)) continue;
 
-    const tradeSymbol = entry.usdtLinear?.symbol ?? entry.usdtSpot?.symbol ?? null;
+    // MUST prefer Spot: the bot's price pipeline only ever reads Bybit Spot
+    // tickers, so a linear-only trade symbol would never get live data.
+    const tradeSymbol = entry.usdtSpot?.symbol ?? entry.usdtLinear?.symbol ?? null;
     if (!tradeSymbol) continue; // liquid only via USDC/inverse — not tradeable by this bot
 
-    // Gate on the volume of the pair the bot will actually execute on, not the
-    // combined total across product types (§ see module docstring).
-    const tradeableLiquidity = entry.usdtLinear ? entry.usdtLinear.vol : (entry.usdtSpot?.vol ?? 0);
+    const spotVol = entry.usdtSpot?.vol ?? 0;
+    if (!entry.usdtSpot || spotVol < MIN_SPOT_VOLUME_FOR_INCLUSION) continue; // no real Spot pair (or a near-dead one) — unreachable by the bot's price pipeline
+
+    // Rank by total liquidity across all venues (how "hot" the asset is
+    // overall) — only the trade symbol SELECTION above needs Spot specifically.
+    const tradeableLiquidity = spotVol + (entry.usdtLinear?.vol ?? 0) + entry.usdc + entry.inverse;
 
     if (tradeableLiquidity >= LIQUID_THRESHOLD) liquid.push({ symbol: tradeSymbol, vol: tradeableLiquidity });
     else if (tradeableLiquidity >= NEAR_THRESHOLD) close.push({ symbol: tradeSymbol, vol: tradeableLiquidity });

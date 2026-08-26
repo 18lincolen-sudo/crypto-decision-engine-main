@@ -9,7 +9,8 @@ import {
   SimBotSnapshot,
   SimBotStateResponse
 } from '../services/tradingApiClient';
-import { useSimulationBot, SimBotConfig } from '../hooks/useSimulationBot';
+import { useSimulationBot, SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder } from '../hooks/useSimulationBot';
+import type { SignalEvaluation } from '../services/intradayBridge';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
@@ -37,19 +38,19 @@ export type SimStatus = 'running' | 'paused' | 'idle';
 
 export interface SimulationBotContextValue {
   cash: number;
-  positions: any[];
+  positions: SimPosition[];
   positionsValue: number;
   equity: number;
-  trades: any[];
-  history: any[];
-  pending: any[];
+  trades: SimTrade[];
+  history: SimPoint[];
+  pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
   lastEvaluation: string;
-  evaluations: any[];
+  evaluations: SignalEvaluation[];
   minConfidence: number;
   hasSavedSession: boolean;
   nextTickAt: number;

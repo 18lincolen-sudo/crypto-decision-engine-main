@@ -20,18 +20,23 @@ function calculateSuggestedAmounts(
   // Adjust based on confidence
   const confidenceMultiplier = confidence / 100;
   
-  // Adjust based on market cap (smaller cap = smaller amounts)
+  // Adjust based on market cap (smaller cap = smaller amounts). marketCap <= 0
+  // means it's genuinely unknown (Bybit/Binance ticker data has no supply
+  // figure to compute a real market cap from) — treat as neutral rather than
+  // silently assuming the worst (smallest, riskiest) tier.
   let marketCapMultiplier = 1;
-  if (marketCap < 100000000) { // Under $100M market cap
-    marketCapMultiplier = 0.3;
-  } else if (marketCap < 1000000000) { // Under $1B market cap
-    marketCapMultiplier = 0.6;
-  } else if (marketCap < 10000000000) { // Under $10B market cap
-    marketCapMultiplier = 0.8;
+  if (marketCap > 0) {
+    if (marketCap < 100000000) { // Under $100M market cap
+      marketCapMultiplier = 0.3;
+    } else if (marketCap < 1000000000) { // Under $1B market cap
+      marketCapMultiplier = 0.6;
+    } else if (marketCap < 10000000000) { // Under $10B market cap
+      marketCapMultiplier = 0.8;
+    }
   }
-  
+
   // Adjust based on volume (lower volume = smaller amounts)
-  const volumeToMarketCapRatio = volume24h / marketCap;
+  const volumeToMarketCapRatio = marketCap > 0 ? volume24h / marketCap : 0;
   let volumeMultiplier = Math.min(volumeToMarketCapRatio * 10, 1); // Cap at 1
   volumeMultiplier = Math.max(volumeMultiplier, 0.1); // Floor at 0.1
   

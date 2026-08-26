@@ -31,7 +31,11 @@ export function useCryptoData() {
             current_price: parseFloat(ticker.lastPrice),
             price_change_percentage_24h: parseFloat(ticker.price24hPcnt ?? ticker.priceChangePercent),
             total_volume: parseFloat(ticker.volume24h),
-            market_cap: parseFloat(ticker.lastPrice) * parseFloat(ticker.volume24h) * 100,
+            // Real market cap needs circulating supply, which ticker
+            // endpoints don't provide — price × volume is NOT market cap.
+            // 0 = genuinely unknown; recommendationEngine.ts treats that as
+            // neutral instead of assuming the smallest/riskiest tier.
+            market_cap: 0,
             last_updated: new Date().toISOString()
           }));
         }
@@ -56,7 +60,7 @@ export function useCryptoData() {
               current_price: price,
               price_change_percentage_24h: parseFloat(t.priceChangePercent),
               total_volume: vol,
-              market_cap: price * vol * 100,
+              market_cap: 0, // genuinely unknown — see the Bybit branch above for why
               last_updated: new Date().toISOString()
             } as CryptoData;
           });

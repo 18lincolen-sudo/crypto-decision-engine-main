@@ -35,6 +35,24 @@ export interface BinanceKline {
 let _allTickersCache: { data: Binance24hTicker[]; fetchedAt: number } | null = null;
 const ALL_TICKERS_TTL_MS = 15_000; // 15 seconds
 
+/** getAllTickers() has its own TTL cache, but the per-symbol calls below (get24hTicker/getKlines) had no backoff at all — a 429 was treated the same as any other failure (silently swallowed, no retry). One retry with a short backoff is enough for Binance's generous 1200 req/min limit. */
+async function fetchWithBackoff(url: string, timeoutMs: number, attempt = 0): Promise<Response | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: controller.signal });
+    clearTimeout(timeout);
+    if (res.status === 429 && attempt < 2) {
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      return fetchWithBackoff(url, timeoutMs, attempt + 1);
+    }
+    return res;
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
 export const binancePublicApi = {
   /**
    * Fetch ALL 24h tickers in a single call (most efficient).
@@ -72,18 +90,10 @@ export const binancePublicApi = {
    * For bulk lookups, prefer getAllTickers() + filter instead.
    */
   async get24hTicker(symbol: string): Promise<Binance24hTicker | null> {
+    const formatted = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
+    const res = await fetchWithBackoff(`${BINANCE_BASE_URL}/ticker/24hr?symbol=${formatted}`, 6000);
+    if (!res?.ok) return null;
     try {
-      const formatted = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
-
-      const res = await fetch(`${BINANCE_BASE_URL}/ticker/24hr?symbol=${formatted}`, {
-        headers: { 'Accept': 'application/json' },
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
-
-      if (!res.ok) return null;
       return await res.json();
     } catch {
       return null;
@@ -95,23 +105,14 @@ export const binancePublicApi = {
    * No API key required. Supports up to 1000 candles per call.
    */
   async getKlines(symbol: string, interval = '1d', limit = 30): Promise<BinanceKline[]> {
+    const formatted = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
+    const res = await fetchWithBackoff(
+      `${BINANCE_BASE_URL}/klines?symbol=${formatted}&interval=${interval}&limit=${limit}`,
+      8000
+    );
+    if (!res?.ok) return [];
     try {
-      const formatted = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-
-      const res = await fetch(
-        `${BINANCE_BASE_URL}/klines?symbol=${formatted}&interval=${interval}&limit=${limit}`,
-        {
-          headers: { 'Accept': 'application/json' },
-          signal: controller.signal
-        }
-      );
-      clearTimeout(timeout);
-
-      if (!res.ok) return [];
       const data: unknown[][] = await res.json();
-
       return data.map(item => ({
         timestamp: item[0] as number,
         open:   parseFloat(item[1] as string),

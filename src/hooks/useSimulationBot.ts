@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CryptoData, CryptoRecommendation, MarketRegimeResult, TradeType, TradeSide } from '../types/crypto';
+import { CryptoData, CryptoRecommendation, MarketRegimeResult } from '../types/crypto';
 import { useBackgroundWorker } from './useBackgroundWorker';
+import { Candle, formatDynamicPrice } from '../services/tradeEngine';
 import {
-  calculateTradingFee,
-  simulateSlippage,
-  Candle
-} from '../services/tradeEngine';
-import {
-  evaluateSymbolFromSnapshot,
-  buildPortfolioRiskStats,
-  evaluatePositionExit,
   computeAtr5,
   MultiTimeframeSnapshot,
   SignalEvaluation,
@@ -17,99 +10,19 @@ import {
 } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
-import { reanchorLevel, computeEntryBudget, isInEntryCooldown } from '../services/simExecution';
+import {
+  buildEvaluations,
+  generateNewOrders,
+  fillDueOrders,
+  SimPosition,
+  SimTrade,
+  SimPoint,
+  PendingOrder,
+  SimBotConfig
+} from '../services/simExecution';
 
 export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
-
-export interface SimPosition {
-  id: string;
-  symbol: string;
-  type: 'SPOT' | 'FUTURES';
-  side: 'BUY' | 'SELL' | 'LONG' | 'SHORT';
-  quantity: number;
-  entryPrice: number;
-  avgPrice: number;
-  currentPrice: number;
-  leverage: number;
-  marginUsd: number;
-  notionalUsd: number;
-  stopLoss: number;
-  takeProfit1?: number;
-  takeProfit2?: number;
-  takeProfit?: number;
-  trailingStopActive?: boolean;
-  trailingStopPrice?: number;
-  tp1Hit: boolean;
-  highestPriceSinceTP1?: number;
-  lowestPriceSinceTP1?: number;
-  highestPrice?: number;
-  lowestPrice?: number;
-  openedAt: string;
-  openTimestamp: number;
-  reason: string;
-  confidence: number;
-  entryFee: number;
-}
-
-export interface SimTrade {
-  id: string;
-  symbol: string;
-  type: 'SPOT' | 'FUTURES';
-  side: 'buy' | 'sell' | 'long' | 'short' | 'close_long' | 'close_short' | 'partial_tp1';
-  price: number;
-  requestedPrice: number;
-  slippagePercent: number;
-  fee: number;
-  delayMs: number;
-  quantity: number;
-  usdValue: number;
-  leverage: number;
-  timestamp: string;
-  at: number;
-  reason: string;
-  confidence: number;
-  pnl?: number;
-  pnlPercent?: number;
-}
-
-export interface SimPoint {
-  timestamp: string;
-  at: number;
-  portfolio: number;
-}
-
-export interface PendingOrder {
-  id: string;
-  symbol: string;
-  type: 'SPOT' | 'FUTURES';
-  side: 'buy' | 'sell' | 'long' | 'short' | 'close_long' | 'close_short' | 'partial_tp1';
-  signalPrice: number;
-  quantity: number;
-  budgetUsd?: number;
-  leverage?: number;
-  stopLoss?: number;
-  takeProfit1?: number;
-  takeProfit2?: number;
-  takeProfit?: number;
-  reason: string;
-  confidence: number;
-  executeAt: number;
-  createdAt: number;
-}
-
-export interface SimBotConfig {
-  riskLevel: 'low' | 'medium' | 'high';
-  initialAmount: number;
-  stopLoss: number;
-  takeProfit: number;
-  maxPositions: number;
-  maxFuturesPositions?: number;
-  feePercent: number;
-  slippagePercent: number;
-  executionDelaySec: number;
-  minConfidenceOverride?: number;
-  positionPercent?: number;
-}
+export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../services/simExecution';
 
 // A snapshot the engine can hydrate from (server-shared state may omit hourlyHistory).
 interface HydratableSnapshot {
@@ -335,7 +248,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   priceForRef.current = priceFor;
 
   // Build 5M candles from the LIVE multi-timeframe cache (no mock / random data)
-  const buildCandlesForSymbol = useCallback((symbol: string, _currentPrice: number): Candle[] => {
+  const buildCandlesForSymbol = useCallback((symbol: string): Candle[] => {
     const snap = mtfdRef.current[symbol.toUpperCase()];
     return snap && snap.m5 && snap.m5.length > 0 ? snap.m5 : [];
   }, []);
@@ -396,79 +309,20 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   // ═══════════════════════════════════════════════════════
   const evaluations = useMemo<SignalEvaluation[]>(() => {
     if (!cryptoData?.length) return [];
-
-    const openPos = positions;
-    const queuedOrders = pending;
-    const maxTotalPositions = config.maxPositions || 7;
-    const maxFutures = 2;
-    const futuresCount = openPos.filter(p => p.type === 'FUTURES').length;
-
-    const portfolio = buildPortfolioRiskStats({
-      portfolioValue: equity,
+    return buildEvaluations({
+      cryptoData,
+      mtfData,
+      positions,
+      pending,
+      config,
+      equity,
       initialAmount: config.initialAmount,
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
-      openPositionsCount: openPos.length,
-      openFuturesPositionsCount: futuresCount,
-      totalLeveragedExposureUsd
+      totalLeveragedExposureUsd,
+      isRunning,
+      toBase: (s) => toBaseAsset(s)
     });
-
-    const openPositionsForEngine = openPos.map(p => ({ symbol: p.symbol, type: p.type as 'SPOT' | 'FUTURES' }));
-
-    const results: SignalEvaluation[] = [];
-
-    // Scan all loaded crypto assets; evaluate only those with READY 1H/15M/5M data.
-    for (const crypto of cryptoData) {
-      const symbol = crypto.symbol.toUpperCase();
-      const currentPrice = crypto.current_price;
-      const priceChange24h = crypto.price_change_percentage_24h || 0;
-
-      const snap = mtfData[symbol];
-      if (!snap || snap.status !== 'READY') continue;
-
-      const ev = evaluateSymbolFromSnapshot(
-        snap,
-        { price: currentPrice, priceChange24h },
-        portfolio,
-        openPositionsForEngine
-      );
-
-      // `symbol` here is bare (from cryptoData); queuedOrders/openPos store the
-      // SUFFIXED symbol (ev.symbol → order.symbol → position.symbol traces back
-      // to snap.symbol). Comparing them directly always returned false, so the
-      // bot could never detect it already held or had queued a symbol — same
-      // bare-vs-suffixed mismatch already fixed for pricing/candles server-side.
-      const isQueued = queuedOrders.some(o => toBaseAsset(o.symbol) === symbol);
-      const isHeld = openPos.some(p => toBaseAsset(p.symbol) === symbol);
-      const hasExistingFutures = openPos.some(p => toBaseAsset(p.symbol) === symbol && p.type === 'FUTURES');
-
-      let status = ev.status;
-      let willExecute = ev.willExecute;
-
-      if (!isRunning) {
-        status = 'הבוט מושבת';
-        willExecute = false;
-      } else if (isQueued) {
-        status = 'פקודה כבר נמצאת בתור ביצוע';
-        willExecute = false;
-      } else if (openPos.length >= maxTotalPositions) {
-        status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`;
-        willExecute = false;
-      } else if (ev.tradeType === 'FUTURES' && futuresCount >= maxFutures) {
-        status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`;
-        willExecute = false;
-      } else if (ev.tradeType === 'FUTURES' && hasExistingFutures) {
-        status = 'קיימת כבר פוזיציית Futures פתוחה';
-        willExecute = false;
-      } else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) {
-        status = 'כבר מוחזק בתיק (Spot)';
-        willExecute = false;
-      }
-
-      results.push({ ...ev, status, willExecute });
-    }
-
-    return results;
   }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, mtfData]);
 
   // Purely derived from evaluations — a useState+useEffect pair here previously
@@ -488,122 +342,26 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   useEffect(() => {
     if (!isRunning) return;
 
-    const delayMs = Math.max(0, config.executionDelaySec) * 1000;
-    const openPos = positionsRef.current;
-    const queued = pendingRef.current;
-    const newOrders: PendingOrder[] = [];
-
-    // Check Layer 4 Exits for all open positions
-    for (const pos of openPos) {
-      if (queued.some((o) => o.symbol === pos.symbol)) continue;
-
-      const livePrice = priceForRef.current(pos.symbol) ?? pos.currentPrice;
-      const atr5 = computeAtr5(buildCandlesForSymbol(pos.symbol, livePrice));
-
-      // Find current decision for reversal check
-      const currentEval = evaluations.find(e => e.symbol === pos.symbol);
-      const decision = currentEval?.decision;
-      const reversal = decision && decision.outcome === 'SIGNAL'
-        ? { direction: decision.direction, setupScore: decision.metrics.setupScore, entryConfirmed: !!decision.entry?.confirmed }
-        : undefined;
-
-      const exitCheck = evaluatePositionExit(
-        {
-          symbol: pos.symbol,
-          type: pos.type,
-          side: pos.side,
-          entryPrice: pos.entryPrice,
-          quantity: pos.quantity,
-          stopLoss: pos.stopLoss,
-          takeProfit1: pos.takeProfit1,
-          takeProfit2: pos.takeProfit2,
-          tp1Hit: pos.tp1Hit,
-          openTimestamp: pos.openTimestamp,
-          plannedStopDistance: Math.abs(pos.entryPrice - pos.stopLoss),
-          highestPrice: pos.highestPrice,
-          lowestPrice: pos.lowestPrice,
-          highestPriceSinceTP1: pos.highestPriceSinceTP1,
-          lowestPriceSinceTP1: pos.lowestPriceSinceTP1
-        },
-        livePrice,
-        atr5,
-        { dailyDrawdownPercent, weeklyDrawdownPercent },
-        reversal
-      );
-
-      if (exitCheck.shouldExit) {
-        if (exitCheck.exitType === 'PARTIAL_50') {
-          newOrders.push({
-            id: uid(`${pos.symbol}-tp1-50`),
-            symbol: pos.symbol,
-            type: pos.type,
-            side: 'partial_tp1',
-            signalPrice: livePrice,
-            quantity: pos.quantity * 0.5,
-            reason: exitCheck.reason,
-            confidence: pos.confidence,
-            executeAt: Date.now() + delayMs,
-            createdAt: Date.now()
-          });
-        } else {
-          newOrders.push({
-            id: uid(`${pos.symbol}-exit`),
-            symbol: pos.symbol,
-            type: pos.type,
-            side: pos.side === 'LONG' || pos.side === 'BUY' ? 'close_long' : 'close_short',
-            signalPrice: livePrice,
-            quantity: pos.quantity,
-            reason: exitCheck.reason,
-            confidence: pos.confidence,
-            executeAt: Date.now() + delayMs,
-            createdAt: Date.now()
-          });
-        }
-      }
-    }
-
-    // Process new entry signals from evaluations
-    for (const ev of evaluations) {
-      if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
-      if (newOrders.some(o => o.symbol === ev.symbol) || queued.some(o => o.symbol === ev.symbol)) continue;
-      if (isInEntryCooldown(exitCooldownRef.current[ev.symbol])) continue;
-
-      const orderSide = ev.tradeType === 'FUTURES'
-        ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
-        : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
-
-      const budget = (ev.stopLoss && ev.tradeType === 'FUTURES')
-        ? computeEntryBudget(cashRef.current, 'FUTURES')
-        : computeEntryBudget(cashRef.current, 'SPOT');
-
-      if (budget < 5) continue;
-
-      newOrders.push({
-        id: uid(`${ev.symbol}-${orderSide}`),
-        symbol: ev.symbol,
-        type: ev.tradeType as 'SPOT' | 'FUTURES',
-        side: orderSide as any,
-        signalPrice: ev.price,
-        quantity: (budget * (ev.leverage || 1)) / ev.price,
-        budgetUsd: budget,
-        leverage: ev.leverage || 1,
-        stopLoss: ev.stopLoss,
-        takeProfit1: ev.takeProfit1,
-        takeProfit2: ev.takeProfit2,
-        takeProfit: ev.takeProfit,
-        reason: ev.reasoning,
-        confidence: ev.confidence,
-        executeAt: Date.now() + delayMs,
-        createdAt: Date.now()
-      });
-    }
+    const newOrders = generateNewOrders({
+      positions: positionsRef.current,
+      pending: pendingRef.current,
+      evaluations,
+      executionDelaySec: config.executionDelaySec,
+      dailyDrawdownPercent,
+      weeklyDrawdownPercent,
+      cash: cashRef.current,
+      exitCooldown: exitCooldownRef.current,
+      priceFor: priceForRef.current,
+      buildCandlesForSymbol,
+      computeAtr5
+    });
 
     if (newOrders.length) {
       setPending((prev) => [...prev, ...newOrders]);
     }
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec]);
 
   // Heartbeat — reset countdown timer when bot starts/stops.
   // Equity recording is handled exclusively by the background worker below to avoid duplicates.
@@ -662,193 +420,21 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       const due = pendingRef.current.filter((o) => Date.now() >= o.executeAt);
       if (!due.length) return;
 
-      const now = new Date().toLocaleTimeString('he-IL');
-      let workingCash = cashRef.current;
-      let workingPositions = [...positionsRef.current];
-      const newTrades: SimTrade[] = [];
-      let feesAdded = 0;
-      let slipAdded = 0;
-
-      for (const order of due) {
-        const market = priceForRef.current(order.symbol) ?? order.signalPrice;
-        
-        // Realistic dynamic slippage (0.05% - 0.15%)
-        const sideForSlippage = order.side === 'buy' || order.side === 'long' ? 'BUY' : 'SELL';
-        const { fillPrice, slippagePercent } = simulateSlippage(market, sideForSlippage);
-        const delayMs = Date.now() - order.createdAt;
-
-        // Entry Orders (Spot Buy or Futures Long/Short)
-        if (order.side === 'buy' || order.side === 'long' || order.side === 'short') {
-          const budget = Math.min(order.budgetUsd ?? 100, workingCash);
-          if (budget < 5) continue;
-
-          const isFutures = order.type === 'FUTURES';
-          const leverage = order.leverage || 1;
-          const notional = budget * leverage;
-          const fee = calculateTradingFee(notional, order.type, true);
-          const quantity = notional / fillPrice;
-
-          workingCash -= budget;
-          feesAdded += fee;
-          slipAdded += Math.abs(fillPrice - market) * quantity;
-
-          const isLongSide = order.side === 'buy' || order.side === 'long';
-          const reanchor = (level: number | undefined) => reanchorLevel(fillPrice, order.signalPrice, level);
-
-          const newPos: SimPosition = {
-            id: uid(order.symbol),
-            symbol: order.symbol,
-            type: order.type,
-            side: order.side === 'long' ? 'LONG' : order.side === 'short' ? 'SHORT' : 'BUY',
-            quantity,
-            entryPrice: fillPrice,
-            avgPrice: fillPrice,
-            currentPrice: fillPrice,
-            leverage,
-            marginUsd: budget,
-            notionalUsd: notional,
-            stopLoss: reanchor(order.stopLoss) ?? (isLongSide ? fillPrice * 0.95 : fillPrice * 1.05),
-            takeProfit1: reanchor(order.takeProfit1),
-            takeProfit2: reanchor(order.takeProfit2),
-            takeProfit: reanchor(order.takeProfit) ?? (isLongSide ? fillPrice * 1.05 : fillPrice * 0.95),
-            tp1Hit: false,
-            highestPrice: fillPrice,
-            lowestPrice: fillPrice,
-            openedAt: now,
-            openTimestamp: Date.now(),
-            reason: order.reason,
-            confidence: order.confidence,
-            entryFee: fee
-          };
-
-          workingPositions.push(newPos);
-          newTrades.push({
-            id: order.id,
-            symbol: order.symbol,
-            type: order.type,
-            side: order.side as any,
-            price: fillPrice,
-            requestedPrice: order.signalPrice,
-            slippagePercent,
-            fee,
-            delayMs,
-            quantity,
-            usdValue: notional,
-            leverage,
-            timestamp: now,
-            at: Date.now(),
-            reason: order.reason,
-            confidence: order.confidence
-          });
-        }
-        // Partial TP1 50% Exit for Futures
-        else if (order.side === 'partial_tp1') {
-          const posIdx = workingPositions.findIndex(p => p.symbol === order.symbol && p.type === 'FUTURES');
-          if (posIdx >= 0) {
-            const pos = workingPositions[posIdx];
-            const closeQty = pos.quantity * 0.5;
-            const notional = closeQty * fillPrice;
-            const fee = calculateTradingFee(notional, 'FUTURES', true);
-
-            const pnl = pos.side === 'LONG'
-              ? (fillPrice - pos.entryPrice) * closeQty * pos.leverage
-              : (pos.entryPrice - fillPrice) * closeQty * pos.leverage;
-
-            workingCash += (pos.marginUsd * 0.5) + pnl - fee;
-            feesAdded += fee;
-            slipAdded += Math.abs(fillPrice - market) * closeQty;
-
-            // Update remaining position
-            workingPositions[posIdx] = {
-              ...pos,
-              quantity: pos.quantity - closeQty,
-              marginUsd: pos.marginUsd * 0.5,
-              notionalUsd: (pos.quantity - closeQty) * fillPrice * pos.leverage,
-              tp1Hit: true,
-              highestPriceSinceTP1: fillPrice,
-              lowestPriceSinceTP1: fillPrice
-            };
-
-            newTrades.push({
-              id: order.id,
-              symbol: order.symbol,
-              type: 'FUTURES',
-              side: 'partial_tp1',
-              price: fillPrice,
-              requestedPrice: order.signalPrice,
-              slippagePercent,
-              fee,
-              delayMs,
-              quantity: closeQty,
-              usdValue: notional,
-              leverage: pos.leverage,
-              timestamp: now,
-              at: Date.now(),
-              reason: order.reason,
-              confidence: order.confidence,
-              pnl,
-              pnlPercent: (pnl / (pos.marginUsd * 0.5)) * 100
-            });
-          }
-        }
-        // Full Exits (Close Long / Close Short / Spot Sell)
-        else {
-          const pos = workingPositions.find(p => p.symbol === order.symbol);
-          if (pos) {
-            const notional = pos.quantity * fillPrice;
-            const fee = calculateTradingFee(notional, pos.type, true);
-
-            let pnl = 0;
-            if (pos.type === 'SPOT') {
-              const netProceeds = notional - fee;
-              const costBasis = pos.quantity * pos.avgPrice;
-              pnl = netProceeds - costBasis - pos.entryFee;
-              workingCash += netProceeds;
-            } else {
-              pnl = pos.side === 'LONG'
-                ? (fillPrice - pos.entryPrice) * pos.quantity * pos.leverage
-                : (pos.entryPrice - fillPrice) * pos.quantity * pos.leverage;
-              workingCash += pos.marginUsd + pnl - fee;
-            }
-
-            feesAdded += fee;
-            slipAdded += Math.abs(market - fillPrice) * pos.quantity;
-            workingPositions = workingPositions.filter(p => p.id !== pos.id);
-            if (pnl < 0) exitCooldownRef.current[order.symbol] = Date.now();
-
-            newTrades.push({
-              id: order.id,
-              symbol: order.symbol,
-              type: pos.type,
-              side: order.side as any,
-              price: fillPrice,
-              requestedPrice: order.signalPrice,
-              slippagePercent,
-              fee,
-              delayMs,
-              quantity: pos.quantity,
-              usdValue: notional,
-              leverage: pos.leverage,
-              timestamp: now,
-              at: Date.now(),
-              reason: order.reason,
-              confidence: order.confidence,
-              pnl,
-              pnlPercent: pos.type === 'SPOT' ? (pnl / (pos.quantity * pos.avgPrice)) * 100 : (pnl / pos.marginUsd) * 100
-            });
-          }
-        }
-      }
+      const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice);
 
       const dueIds = new Set(due.map((o) => o.id));
       setPending((prev) => prev.filter((o) => !dueIds.has(o.id)));
 
-      if (newTrades.length) {
-        setCash(workingCash);
-        setPositions(workingPositions);
-        setTrades((prev) => [...newTrades.reverse(), ...prev].slice(0, 100));
-        setTotalFees((f) => f + feesAdded);
-        setTotalSlippageCost((s) => s + slipAdded);
+      if (result.newTrades.length) {
+        setCash(result.cash);
+        setPositions(result.positions);
+        setTrades((prev) => [...result.newTrades.reverse(), ...prev].slice(0, 100));
+        setTotalFees((f) => f + result.feesAdded);
+        setTotalSlippageCost((s) => s + result.slipAdded);
+        Object.assign(exitCooldownRef.current, result.newCooldowns);
+        // Unlike the server engine, the browser sim has no Telegram wiring —
+        // `result.events` (the same notification text the server sends) is
+        // intentionally unused here.
       }
     };
 

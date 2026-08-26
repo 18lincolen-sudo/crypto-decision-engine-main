@@ -69,11 +69,6 @@ const RATE_LIMIT_MAX = Math.floor(boundedNumber('BOT_RATE_LIMIT_MAX', 120, 1, 10
 const RATE_LIMIT_WINDOW_MS = boundedNumber('BOT_RATE_LIMIT_WINDOW_MS', 60000, 1000, 3600000);
 const REQUEST_TIMEOUT_MS = boundedNumber('BOT_REQUEST_TIMEOUT_MS', 15000, 1000, 120000);
 
-// FIX #4: not found in git history. If this refers to a specific fix (e.g. additional
-// rate-limit validation, request signature validation, or order size rounding),
-// please provide the context so it can be implemented. The gap between FIX #3
-// (rate-bucket pruning) and FIX #5 (public candles from Mainnet) is currently
-// unfilled in the commit log.
 
 // ── HTTP helpers: CORS, rate limiting, timeouts ────────────────────────────
 function clientIp(req: { headers: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } }): string {
@@ -193,16 +188,27 @@ const rawSymbols = (isExplicitSymbolOverride
 const unsupportedSymbols = rawSymbols.filter(s => !s.endsWith('USDT')).map(s => ({ symbol: s, reason: 'לא מסתיים ב-USDT (לא נתמך)' }));
 // Mutable: refreshUniverseIfStale() swaps this to a fresh liquidity-based list
 // (see below). Read at call time everywhere it's used, never captured once.
-let symbols = rawSymbols.filter(s => s.endsWith('USDT'));
+// Deduplicated — an explicit BOT_SYMBOLS list with a repeated entry (typo,
+// copy-paste) would otherwise scan and evaluate the same symbol twice per
+// cycle for no reason (harmless, but wasted API calls and log noise).
+let symbols = [...new Set(rawSymbols.filter(s => s.endsWith('USDT')))];
 
 // ── Liquidity-based universe refresh ────────────────────────────────────────
-// TARGET_SYMBOLS (the static list) can drift: a coin's Bybit liquidity shifts
-// week to week. computeLiquidUniverse() re-derives the tradeable list live from
-// Bybit turnover and is persisted to Firestore (via configStore) so the SAME
-// refreshed universe survives restarts/redeploys without waiting on a fresh
-// full recompute every boot. Skipped entirely when the operator pinned an
-// explicit BOT_SYMBOLS list.
-const UNIVERSE_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// TARGET_SYMBOLS (the static list) can drift: a coin's Bybit liquidity shifts,
+// or a symbol gets delisted outright, day to day. computeLiquidUniverse() re-
+// derives the tradeable list live from Bybit turnover and is persisted to
+// Firestore (via configStore) so the SAME refreshed universe survives
+// restarts/redeploys without waiting on a fresh full recompute every boot.
+// Skipped entirely when the operator pinned an explicit BOT_SYMBOLS list.
+//
+// Refreshed daily (was 7 days): the recompute is just 3 lightweight public
+// Bybit ticker calls (spot/linear/inverse, no auth, no per-symbol overhead —
+// nothing like the per-symbol candle fetching that needs rate-limit care
+// elsewhere), so daily cost is negligible. A 7-day staleness window meant a
+// symbol that got delisted from Bybit Spot could sit dead in the trading
+// universe for up to a week before self-healing, silently wasting that slot's
+// worth of scan budget the whole time.
+const UNIVERSE_STALE_MS = 24 * 60 * 60 * 1000; // 1 day
 const UNIVERSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // re-check staleness daily
 
 // Exposed read-only via GET /api/public/universe so the simulation frontend
@@ -570,6 +576,51 @@ async function fetchFearGreed(): Promise<number> {
 // How long a Limit Order is kept alive before auto-cancellation.
 const LIMIT_ORDER_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
+// ── Spot lot-size rounding ───────────────────────────────────────────────────
+// Bybit rejects a Spot order whose qty doesn't match the symbol's own step
+// size (basePrecision) or falls below its minOrderQty — both vary per symbol
+// (e.g. BTC allows 6 decimals, some low-price alts allow none at all). This
+// used to be unhandled entirely, so Spot SELL (closing a long) was hard-
+// blocked rather than risk a rejected order — eliminating an entire class of
+// trades. Cached per symbol (lot sizes change rarely) with a 6h TTL.
+interface LotSizeInfo { basePrecision: number; minOrderQty: number }
+const lotSizeCache = new Map<string, { info: LotSizeInfo; at: number }>();
+const LOT_SIZE_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function getSpotLotSize(symbol: string): Promise<LotSizeInfo | null> {
+  const cached = lotSizeCache.get(symbol);
+  if (cached && Date.now() - cached.at < LOT_SIZE_TTL_MS) return cached.info;
+  try {
+    const res = await fetchWithTimeout(`${PUBLIC_BASE}/v5/market/instruments-info?category=spot&symbol=${symbol}`);
+    health.publicRequests++;
+    if (!res.ok) throw new Error(`instruments-info HTTP ${res.status}`);
+    const data = await res.json() as {
+      retCode: number;
+      result?: { list?: { lotSizeFilter?: { basePrecision?: string; minOrderQty?: string } }[] };
+    };
+    const filter = data.result?.list?.[0]?.lotSizeFilter;
+    if (data.retCode !== 0 || !filter?.basePrecision) throw new Error('no lotSizeFilter');
+    const info: LotSizeInfo = {
+      basePrecision: Number(filter.basePrecision),
+      minOrderQty: Number(filter.minOrderQty ?? filter.basePrecision)
+    };
+    lotSizeCache.set(symbol, { info, at: Date.now() });
+    return info;
+  } catch (e) {
+    health.publicFailures++;
+    console.warn(`[lot-size] ${symbol} fetch failed:`, e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
+/** Rounds DOWN to the symbol's step size so the order never exceeds the intended budget, and returns null if that rounds below the exchange minimum. */
+function roundToLotSize(qty: number, lot: LotSizeInfo): number | null {
+  const stepDecimals = Math.max(0, -Math.floor(Math.log10(lot.basePrecision)));
+  const stepped = Math.floor(qty / lot.basePrecision) * lot.basePrecision;
+  const rounded = Number(stepped.toFixed(stepDecimals));
+  return rounded >= lot.minOrderQty ? rounded : null;
+}
+
 async function executeOrder(d: IntradayDecision, ctx: { available: number } | null, runningTotals: { totalOpen: number; futuresOpen: number }): Promise<{ opened: boolean; skipped?: string }> {
   const { symbol, direction, tradeType, risk } = d;
 
@@ -577,12 +628,18 @@ async function executeOrder(d: IntradayDecision, ctx: { available: number } | nu
     return { opened: false, skipped: 'נפסל על ידי מנוע הסיכון' };
   }
 
+  // Lot-size rounding (getSpotLotSize/roundToLotSize above) is now implemented
+  // and ready to use, but the block below is intentionally NOT removed yet —
+  // see the reasoning left for the user in chat. Spot has no margin/borrow, so
+  // a "sell" only makes sense against a position this bot already holds, and
+  // nothing here currently verifies the held balance before attempting one;
+  // lot-size rounding alone doesn't make that safe.
   if (tradeType === 'SPOT' && direction === 'SHORT') {
     if (dryRun) {
-      state.orders.unshift({ at: new Date().toISOString(), dryRun: true, symbol, side: 'SELL', reason: 'Spot SELL מושבת (lot-size) — dry-run only' });
+      state.orders.unshift({ at: new Date().toISOString(), dryRun: true, symbol, side: 'SELL', reason: 'Spot SELL מושבת (אין אימות יתרה מוחזקת) — dry-run only' });
       return { opened: false };
     }
-    return { opened: false, skipped: 'live spot SELL disabled until lot-size rounding' };
+    return { opened: false, skipped: 'live spot SELL disabled — no held-balance verification yet' };
   }
 
   const side = direction === 'LONG' ? 'LONG' : 'SHORT';
