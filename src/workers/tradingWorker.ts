@@ -287,7 +287,10 @@ const state = {
   realizedPnlTotal: 0,
   // Pending Limit Orders: symbol → { orderId, placedAt, expiresAt }
   // Auto-cancelled after LIMIT_ORDER_TTL_MS if not filled.
-  pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>()
+  pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>(),
+  // Confirmed-held SPOT positions (Buy fill verified against the real wallet
+  // balance) — see confirmSpotEntries/checkClosedSpotPositions.
+  spotHoldings: new Map<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>()
 };
 
 function json(res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }, status: number, body: unknown): void {
@@ -405,27 +408,129 @@ async function fetchPublicCandles(symbol: string, attempt = 0): Promise<{ timest
 }
 
 // Account context (Testnet/Live only). Simulation never reaches here.
-async function getAccountContext(): Promise<{ available: number; total: number; openFutures: { symbol: string; size: string; leverage: string; entryPrice: string; side?: string }[]; openFuturesCount: number } | null> {
+async function getAccountContext(): Promise<{ available: number; total: number; openFutures: { symbol: string; size: string; leverage: string; entryPrice: string; side?: string }[]; openFuturesCount: number; spotBalances: Record<string, number> } | null> {
   if (!apiKey || !secretKey) return null;
-  const wallet = await bybitExec('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }) as { list?: { totalEquity?: string; totalWalletBalance?: string; coin?: { coin: string; availableBalance: string }[] }[] };
+  const wallet = await bybitExec('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }) as { list?: { totalEquity?: string; totalWalletBalance?: string; coin?: { coin: string; availableBalance: string; walletBalance: string }[] }[] };
   const account = wallet?.list?.[0] || {};
   const total = Number(account.totalEquity || account.totalWalletBalance || 0);
   const usdt = account.coin?.find((c: { coin: string }) => c.coin === 'USDT');
   const available = Number(usdt?.availableBalance || 0);
+  // Every non-USDT coin balance in the same wallet response — used to detect
+  // a SPOT position closing (held balance drops back to ~0) without a second
+  // API call. walletBalance (not availableBalance) so a balance locked in an
+  // open Sell order still counts as "held".
+  const spotBalances: Record<string, number> = {};
+  for (const c of account.coin || []) {
+    if (c.coin === 'USDT') continue;
+    spotBalances[c.coin] = Number(c.walletBalance || 0);
+  }
   const positions = await bybitExec('/v5/position/list', 'GET', { category: 'linear', settleCoin: 'USDT' }) as { list?: { symbol: string; size: string; leverage: string; entryPrice: string; side?: string }[] };
   const openFutures = (positions?.list || []).filter((p: { size: string }) => parseFloat(p.size) > 0);
-  return { available, total, openFutures, openFuturesCount: openFutures.length };
+  return { available, total, openFutures, openFuturesCount: openFutures.length, spotBalances };
+}
+
+// Base coin for a Bybit USDT spot pair, e.g. "BTCUSDT" -> "BTC". Every symbol
+// this bot trades is a USDT pair (see fetchPublicCandles/executeOrder).
+function baseCoin(symbol: string): string {
+  return symbol.replace(/USDT$/, '');
+}
+
+// Sum of execPrice*execQty / totalQty (weighted avg fill price) plus totals,
+// for one side (Buy or Sell) of a symbol's spot execution history since `since`.
+async function getSpotFillSummary(symbol: string, side: 'Buy' | 'Sell', since: number): Promise<{ avgPrice: number; totalQty: number; totalFee: number } | null> {
+  try {
+    const res = await bybitExec('/v5/execution/list', 'GET', {
+      category: 'spot', symbol, startTime: since, limit: 50
+    }) as { result?: { list?: { execPrice: string; execQty: string; execFee: string; side: string }[] } };
+    const fills = (res?.result?.list ?? []).filter((e) => e.side === side);
+    if (!fills.length) return null;
+    const totalQty = fills.reduce((sum, f) => sum + Number(f.execQty || 0), 0);
+    const totalFee = fills.reduce((sum, f) => sum + Number(f.execFee || 0), 0);
+    if (totalQty <= 0) return null;
+    const avgPrice = fills.reduce((sum, f) => sum + Number(f.execPrice || 0) * Number(f.execQty || 0), 0) / totalQty;
+    return { avgPrice, totalQty, totalFee };
+  } catch (e) {
+    console.warn(`[spot-fills] ${symbol} ${side} lookup failed:`, e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
+// ── SPOT position tracking (two-stage: confirm the Buy filled, then detect the
+// held balance dropping back to ~0 as a close) ──────────────────────────────
+// A SPOT entry is a real order (executeOrder places a live Limit Buy), but
+// unlike Futures there is no "position list" API for spot — the only signal
+// that a position exists (or closed) is the held coin balance itself. This
+// pairs with checkClosedFuturesPositions below to give every real position,
+// SPOT or FUTURES, the same close-detected + Telegram-notified treatment.
+
+// Stage 1: once a SPOT order's Buy actually fills (held balance appears),
+// move it from "just placed" (state.openedSymbols) into state.spotHoldings
+// with its real fill price/qty — needed to compute P&L when it later closes.
+async function confirmSpotEntries(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
+  if (dryRun || !ctx) return;
+  for (const [sym, meta] of [...state.openedSymbols]) {
+    if (meta.type !== 'SPOT' || state.spotHoldings.has(sym)) continue;
+    const lot = await getSpotLotSize(sym);
+    const balance = ctx.spotBalances[baseCoin(sym)] || 0;
+    if (!lot || balance < lot.minOrderQty) continue; // Buy limit order hasn't filled yet
+
+    const fill = await getSpotFillSummary(sym, 'Buy', meta.at - 60_000);
+    state.spotHoldings.set(sym, {
+      entryPrice: fill?.avgPrice || 0,
+      qty: balance,
+      at: Date.now(),
+      reason: meta.reason,
+      confidence: meta.confidence
+    });
+  }
+}
+
+// Stage 2: a previously-confirmed SPOT holding whose balance has dropped back
+// to ~0 has been sold (by the bot, once live SPOT SELL is enabled, or
+// manually) — pull the actual sell fills and send the same close notification
+// FUTURES gets.
+async function checkClosedSpotPositions(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
+  if (dryRun || !ctx) return;
+  for (const [sym, holding] of [...state.spotHoldings]) {
+    const lot = await getSpotLotSize(sym);
+    const balance = ctx.spotBalances[baseCoin(sym)] || 0;
+    if (lot && balance >= lot.minOrderQty) continue; // still held
+    state.spotHoldings.delete(sym);
+    state.openedSymbols.delete(sym);
+
+    const fill = await getSpotFillSummary(sym, 'Sell', holding.at - 60_000);
+    if (!fill) continue; // balance vanished with no matching Sell fill on record — nothing honest to report
+    const totalPnl = (fill.avgPrice - holding.entryPrice) * fill.totalQty - fill.totalFee;
+    const pnlPercent = holding.entryPrice > 0 ? ((fill.avgPrice - holding.entryPrice) / holding.entryPrice) * 100 : 0;
+    state.realizedPnlTotal += totalPnl;
+
+    const msg = `🤖 בוט מסחר אמיתי${dryRun ? ' (dry-run)' : ''}\n\n` +
+      `${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה (SPOT)\n\n` +
+      `סמל: ${sym}\n` +
+      `כיוון: LONG\n` +
+      `מחיר כניסה: ${holding.entryPrice.toFixed(4)}\n` +
+      `מחיר יציאה: ${fill.avgPrice.toFixed(4)}\n` +
+      `רווח/הפסד: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
+      (holding.reason ? `סיבת כניסה: ${holding.reason}\n` : '') +
+      `\n📊 מצב כולל של הבוט\n` +
+      `רווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\n` +
+      `יתרת חשבון כוללת: $${ctx.total.toFixed(2)}\n` +
+      `זמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
+    await sendTelegramOrder(msg);
+  }
 }
 
 // Detects FUTURES positions that closed since the last scan (TP/SL hit on
 // Bybit's side, or a manual close) by diffing state.openedSymbols against the
 // exchange's current open-position list, then pulls the realized P&L from
 // Bybit's own closed-pnl ledger (accurate fill prices/fees, not an estimate)
-// and sends a Telegram exit notification. SPOT is intentionally NOT covered
-// here: the bot currently has no mechanism that actually closes a SPOT
-// position (native SL/TP isn't set on spot orders, and SELL execution is
-// separately disabled pending held-balance verification — see executeOrder),
-// so there is no real "SPOT closed" event to detect yet.
+// and sends a Telegram exit notification. SPOT has its own equivalent below
+// (confirmSpotEntries/checkClosedSpotPositions) since Bybit has no "open spot
+// positions" list — it tracks the held coin balance instead. Note SPOT SELL
+// execution by the bot itself is still disabled live (see executeOrder), so
+// today a SPOT close only happens via a manual sell — but this now detects
+// and notifies on it either way, and will need no changes once live SPOT
+// SELL is enabled.
 async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
   if (dryRun) return; // dry-run never opens a real position, so nothing ever really "closes"
   if (!ctx) return; // couldn't verify the exchange's position list this cycle — don't guess
@@ -650,6 +755,7 @@ function serializeState(): string {
     openedSymbols: Object.fromEntries(state.openedSymbols),
     skippedSymbols: state.skippedSymbols,
     pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
+    spotHoldings: Object.fromEntries(state.spotHoldings),
     realizedPnlTotal: state.realizedPnlTotal,
     health
   });
@@ -684,6 +790,14 @@ async function hydrate(): Promise<void> {
     );
   } else {
     state.pendingLimitOrders = new Map();
+  }
+  const savedSpotHoldings = s.spotHoldings;
+  if (savedSpotHoldings && typeof savedSpotHoldings === 'object') {
+    state.spotHoldings = new Map(
+      Object.entries(savedSpotHoldings as Record<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>)
+    );
+  } else {
+    state.spotHoldings = new Map();
   }
   health.lastScanAt = typeof (s.health as Record<string, unknown> | undefined)?.lastScanAt === 'string' ? (s.health as Record<string, unknown> | undefined)?.lastScanAt as string : null;
 }
@@ -962,14 +1076,19 @@ async function scan(): Promise<void> {
     // FIX #1: expire re-entry blocks instead of holding them forever.
     // - FUTURES: closure is detected (and Telegram-notified) below in
     //   checkClosedFuturesPositions(), which also removes the re-entry block.
-    // - SPOT: no equivalent "position list" here, so we release the block
-    //   after REENTRY_COOLDOWN_MS as a best-effort cooldown.
+    // - SPOT: closure is now also detected (checkClosedSpotPositions, via the
+    //   held wallet balance dropping to ~0) and removes the block the same
+    //   way. This cooldown fallback only matters if a Buy order never fills
+    //   (so it never reaches state.spotHoldings) or the balance check ever
+    //   misses a close — without it that symbol would stay blocked forever.
     for (const [sym, meta] of state.openedSymbols) {
       if (meta.type === 'SPOT' && now - meta.at > REENTRY_COOLDOWN_MS) {
         state.openedSymbols.delete(sym);
       }
     }
     await checkClosedFuturesPositions(ctx);
+    await confirmSpotEntries(ctx);
+    await checkClosedSpotPositions(ctx);
 
     for (let i = 0; i < symbols.length; i += scanConcurrency) {
       const batch = symbols.slice(i, i + scanConcurrency);
