@@ -27,11 +27,11 @@ export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from
 // A snapshot the engine can hydrate from (server-shared state may omit hourlyHistory).
 interface HydratableSnapshot {
   cash: number;
-  positions: any[];
-  trades: any[];
-  history: any[];
-  hourlyHistory?: any[];
-  pending: any[];
+  positions: SimPosition[];
+  trades: SimTrade[];
+  history: SimPoint[];
+  hourlyHistory?: SimPoint[];
+  pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
 }

@@ -157,7 +157,17 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   costSafetyMultiplier: 2.0,
   maxSpreadShareOfMove: 0.2,
   maxSpreadPercent: 0.12,
-  minQuoteVolume24h: 20_000_000,
+  // Gates a SINGLE Bybit venue's (spot or linear) own 24h turnover for the
+  // symbol about to trade (intradayEngine.ts §26). This was 20_000_000 —
+  // copied from symbolUniverse.ts's LIQUID_THRESHOLD, which sums turnover
+  // ACROSS spot+linear+usdc+inverse to curate the universe. Checked against
+  // one venue's volume alone, 20M blocked nearly every symbol (observed live:
+  // real Bybit spot volumes of $0.9M-$7M on coins the universe already
+  // curated as liquid, all rejected). Lowered to a per-venue execution-safety
+  // floor — well above the universe's own MIN_SPOT_VOLUME_FOR_INCLUSION
+  // (200k) sanity check, low enough that curated-liquid coins can actually
+  // trade.
+  minQuoteVolume24h: 1_000_000,
   baseSlippagePercent: 0.02,
   minRewardRisk: 1.2,
 

@@ -182,53 +182,78 @@ export async function fetchBybitKlines(
 ): Promise<Candle[]> {
   const spec = TIMEFRAME_SPECS[tf];
   const bybitSymbol = toBybitSymbol(symbol);
-  // The bot trades USDT perpetuals (futures), so LINEAR is the correct primary
-  // market. SPOT is wrong here: many perpetuals are not listed on Bybit SPOT
-  // (rc10001 "Not supported symbols"), which forced a 100% Binance fallback.
-  const category = opts.category || 'linear';
-  const collected: Candle[] = [];
-  let end = opts.endTime;
-  let guard = 0;
+  // The universe holds a mix: most coins have a LINEAR (perpetual) market, but
+  // every coin is guaranteed to have a SPOT listing (that's a hard requirement
+  // of universe inclusion — see symbolUniverse.ts). Neither category alone
+  // covers every symbol, so a fixed default always strands some subset of
+  // coins on Bybit rc10001 ("Symbol Is Invalid") and forces a 100% Binance
+  // fallback that then ALSO fails for any coin Binance doesn't list at all
+  // (e.g. KIIUSDT — Bybit-only, no futures market). Try the requested/default
+  // category first, and on rc10001 specifically, retry once with the other
+  // category before giving up — this covers spot-only and linear-only coins
+  // without picking a single global default that strands the other group.
+  const primaryCategory = opts.category || 'linear';
+  const altCategory: 'spot' | 'linear' = primaryCategory === 'linear' ? 'spot' : 'linear';
 
-  while (collected.length < limit && guard < 40) {
-    guard++;
-    const page = Math.min(BYBIT_PAGE_LIMIT, limit - collected.length);
-    const params = new URLSearchParams({
-      category,
-      symbol: bybitSymbol,
-      interval: spec.bybit,
-      limit: String(page)
-    });
-    if (end !== undefined) params.set('end', String(end));
-    if (opts.startTime !== undefined) params.set('start', String(opts.startTime));
+  const fetchWithCategory = async (category: 'spot' | 'linear'): Promise<Candle[]> => {
+    const collected: Candle[] = [];
+    let end = opts.endTime;
+    let guard = 0;
 
-    const res = await timedFetch(`${BYBIT_PUBLIC_BASE}/v5/market/kline?${params.toString()}`);
-    if (!res.ok) throw new Error(`Bybit kline HTTP ${res.status}`);
-    const data = (await res.json()) as BybitKlineResponse;
-    if (data.retCode !== 0) throw new Error(`Bybit retCode ${data.retCode} ${data.retMsg || ''}`);
-    const list = data.result?.list;
-    if (!list || !list.length) break;
+    while (collected.length < limit && guard < 40) {
+      guard++;
+      const page = Math.min(BYBIT_PAGE_LIMIT, limit - collected.length);
+      const params = new URLSearchParams({
+        category,
+        symbol: bybitSymbol,
+        interval: spec.bybit,
+        limit: String(page)
+      });
+      if (end !== undefined) params.set('end', String(end));
+      if (opts.startTime !== undefined) params.set('start', String(opts.startTime));
 
-    // Bybit returns newest → oldest
-    const chunk: Candle[] = list.map((row) => ({
-      timestamp: Number(row[0]),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-      volume: Number(row[5])
-    }));
+      const res = await timedFetch(`${BYBIT_PUBLIC_BASE}/v5/market/kline?${params.toString()}`);
+      if (!res.ok) throw new Error(`Bybit kline HTTP ${res.status}`);
+      const data = (await res.json()) as BybitKlineResponse;
+      if (data.retCode !== 0) {
+        const err = new Error(`Bybit retCode ${data.retCode} ${data.retMsg || ''}`);
+        (err as Error & { retCode?: number }).retCode = data.retCode;
+        throw err;
+      }
+      const list = data.result?.list;
+      if (!list || !list.length) break;
 
-    collected.push(...chunk);
+      // Bybit returns newest → oldest
+      const chunk: Candle[] = list.map((row) => ({
+        timestamp: Number(row[0]),
+        open: Number(row[1]),
+        high: Number(row[2]),
+        low: Number(row[3]),
+        close: Number(row[4]),
+        volume: Number(row[5])
+      }));
 
-    const oldest = Math.min(...chunk.map((c) => c.timestamp));
-    if (!Number.isFinite(oldest)) break;
-    end = oldest - 1;
-    if (chunk.length < page) break; // no more history available
+      collected.push(...chunk);
+
+      const oldest = Math.min(...chunk.map((c) => c.timestamp));
+      if (!Number.isFinite(oldest)) break;
+      end = oldest - 1;
+      if (chunk.length < page) break; // no more history available
+    }
+
+    collected.sort((a, b) => a.timestamp - b.timestamp);
+    return collected;
+  };
+
+  try {
+    return await fetchWithCategory(primaryCategory);
+  } catch (e) {
+    const retCode = (e as Error & { retCode?: number }).retCode;
+    if (retCode === 10001) {
+      return fetchWithCategory(altCategory);
+    }
+    throw e;
   }
-
-  collected.sort((a, b) => a.timestamp - b.timestamp);
-  return collected;
 }
 
 // ── Binance klines (fallback) ────────────────────────────────────────────────
