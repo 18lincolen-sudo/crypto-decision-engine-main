@@ -81,16 +81,20 @@ const SimulationBot = () => {
         {/* Cross-device sync status — the shared server state (so a second device
             sees the SAME running bot) needs a Worker URL configured on THIS
             device too; localStorage is per-device and never syncs on its own. */}
-        {intraday.syncStatus === 'local-only' && (
+        {(intraday.syncStatus === 'local-only' || legacy.syncStatus === 'local-only') && (
           <Card className="border-yellow-500/40 bg-yellow-500/5">
             <CardContent className="p-4 space-y-2 font-mono">
               <div className="flex items-center gap-2 text-yellow-400 text-sm font-bold">
                 <AlertTriangle className="w-4 h-4" />
-                מנוע חדש לא מסונכרן עם שרת — מציג סימולציה מקומית בלבד במכשיר הזה
+                {intraday.syncStatus === 'local-only' && legacy.syncStatus === 'local-only'
+                  ? 'שני המנועים לא מסונכרנים עם שרת — מציגים סימולציה מקומית בלבד במכשיר הזה'
+                  : intraday.syncStatus === 'local-only'
+                  ? 'מנוע חדש לא מסונכרן עם שרת — מציג סימולציה מקומית בלבד במכשיר הזה'
+                  : 'מנוע מקורי לא מסונכרן עם שרת — מציג סימולציה מקומית בלבד במכשיר הזה'}
               </div>
               <p className="text-xs text-muted-foreground">
                 אם הפעלת את הבוט במכשיר אחר, לא תראה כאן את אותה פעילות עד שתחבר את המכשיר הזה לאותה כתובת Worker.
-                {intraday.syncError ? ` (${intraday.syncError})` : ''}
+                {intraday.syncError ? ` (${intraday.syncError})` : legacy.syncError ? ` (${legacy.syncError})` : ''}
               </p>
               <div className="flex gap-2 flex-wrap items-center">
                 <Input

@@ -17,6 +17,9 @@ import { dirname, join } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 // Server-side simulation engine (runs the bot 24/7 without a browser).
 import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
+// Server-side legacy simulation engine (original alg.md algorithm) — same
+// server, same infra, only the decision logic differs (see legacySimEngine.ts).
+import { createLegacySimEngine, LegacySimSnapshot } from '../../server/legacySimEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../services/intradayEngine';
 import { buildPortfolioRiskStats } from '../services/intradayBridge';
@@ -252,8 +255,15 @@ const state = {
   startedAt: new Date().toISOString(),
   decisions: [] as ScanResult[],
   orders: [] as { at: string; dryRun: boolean; symbol: string; side: string; reason?: string; error?: string; result?: unknown }[],
-  openedSymbols: new Map<string, { at: number; type: 'SPOT' | 'FUTURES' }>(),
+  openedSymbols: new Map<string, { at: number; type: 'SPOT' | 'FUTURES'; reason?: string; confidence?: number }>(),
   skippedSymbols: [...unsupportedSymbols] as { symbol: string; reason: string }[],
+  // Cumulative realized P&L from FUTURES positions the bot has closed since
+  // this process last had an empty state (i.e. since first boot with no
+  // saved state, or since a manual reset) — not a full account P&L (the
+  // account may carry balance/positions from before the bot existed or from
+  // manual trades), but an honest "what has the bot itself made" figure for
+  // the exit-notification footer.
+  realizedPnlTotal: 0,
   // Pending Limit Orders: symbol → { orderId, placedAt, expiresAt }
   // Auto-cancelled after LIMIT_ORDER_TTL_MS if not filled.
   pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>()
@@ -386,12 +396,70 @@ async function getAccountContext(): Promise<{ available: number; total: number; 
   return { available, total, openFutures, openFuturesCount: openFutures.length };
 }
 
+// Detects FUTURES positions that closed since the last scan (TP/SL hit on
+// Bybit's side, or a manual close) by diffing state.openedSymbols against the
+// exchange's current open-position list, then pulls the realized P&L from
+// Bybit's own closed-pnl ledger (accurate fill prices/fees, not an estimate)
+// and sends a Telegram exit notification. SPOT is intentionally NOT covered
+// here: the bot currently has no mechanism that actually closes a SPOT
+// position (native SL/TP isn't set on spot orders, and SELL execution is
+// separately disabled pending held-balance verification — see executeOrder),
+// so there is no real "SPOT closed" event to detect yet.
+async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
+  if (dryRun) return; // dry-run never opens a real position, so nothing ever really "closes"
+  if (!ctx) return; // couldn't verify the exchange's position list this cycle — don't guess
+  const stillOpenSymbols = new Set(ctx.openFutures.map((p) => p.symbol));
+
+  for (const [sym, meta] of [...state.openedSymbols]) {
+    if (meta.type !== 'FUTURES' || stillOpenSymbols.has(sym)) continue;
+    state.openedSymbols.delete(sym);
+
+    try {
+      const res = await bybitExec('/v5/position/closed-pnl', 'GET', {
+        category: 'linear', symbol: sym, startTime: meta.at, limit: 50
+      }) as { result?: { list?: { closedPnl: string; avgEntryPrice: string; avgExitPrice: string; qty: string; side: string; leverage: string }[] } };
+      const records = res?.result?.list ?? [];
+      if (!records.length) continue; // e.g. cancelled before ever filling — nothing to report
+
+      // Bybit returns newest → oldest. Sum every record since entry (covers a
+      // partial TP1 reduction plus the final close as separate ledger rows).
+      const totalPnl = records.reduce((sum, r) => sum + Number(r.closedPnl || 0), 0);
+      const entryPrice = Number(records[records.length - 1]?.avgEntryPrice || 0);
+      const exitPrice = Number(records[0]?.avgExitPrice || 0);
+      const totalQty = records.reduce((sum, r) => sum + Number(r.qty || 0), 0);
+      const side = records[0]?.side === 'Buy' ? 'LONG' : 'SHORT';
+      const leverage = Number(records[0]?.leverage || 1);
+      const marginUsed = leverage > 0 ? (totalQty * entryPrice) / leverage : 0;
+      const pnlPercent = marginUsed > 0 ? (totalPnl / marginUsed) * 100 : 0;
+
+      state.realizedPnlTotal += totalPnl;
+
+      const msg = `${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה\n\n` +
+        `סמל: ${sym}\n` +
+        `כיוון: ${side} (${leverage}x)\n` +
+        `מחיר כניסה: ${entryPrice.toFixed(4)}\n` +
+        `מחיר יציאה: ${exitPrice.toFixed(4)}\n` +
+        `רווח/הפסד: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
+        (meta.reason ? `סיבת כניסה: ${meta.reason}\n` : '') +
+        `\n📊 מצב כולל של הבוט\n` +
+        `רווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\n` +
+        `יתרת חשבון כוללת: $${ctx.total.toFixed(2)}\n` +
+        `פוזיציות פתוחות: ${ctx.openFuturesCount}\n` +
+        `זמן: ${new Date().toLocaleTimeString()}`;
+      await sendTelegramOrder(msg);
+    } catch (e) {
+      console.warn(`[exit-notify] closed-pnl lookup failed for ${sym}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PERSISTENCE — KV Store (Firestore in production, local file in dev)
 // ═══════════════════════════════════════════════════════════════════════════
 
 const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
+const legacySimStore = createKVStore('legacy-sim-state', join(DATA_DIR, 'legacy-sim-state.json'));
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
 // ── Shared Simulation Bot state ───────────────────────────────────────────────
@@ -455,6 +523,52 @@ async function persistSim() {
   }));
 }
 
+// ── Shared LEGACY Simulation Bot state — same server, same shared-viewer
+// model as the new engine above; only the decision algorithm differs (see
+// legacySimEngine.ts). No leader election needed: both engines are fully
+// server-driven, clients are pure viewers.
+const DEFAULT_LEGACY_SIM_CONFIG = {
+  riskLevel: 'medium' as const,
+  initialAmount: 10000,
+  stopLoss: 4.2,
+  takeProfit: 3,
+  maxPositions: 7,
+  maxFuturesPositions: 2,
+  feePercent: 0.1,
+  slippagePercent: 0.05,
+  executionDelaySec: 3,
+  minConfidenceOverride: 0
+};
+const legacySimState = {
+  running: false,
+  config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG,
+  snapshot: null as unknown | null,
+  updatedAt: 0
+};
+
+// Same pattern as simEngine above: pass a getter so the legacy engine always
+// reads the CURRENT `symbols` binding (refreshUniverseIfStale() reassigns it).
+const legacySimEngine = createLegacySimEngine(() => symbols);
+
+async function hydrateLegacySim() {
+  const saved = await legacySimStore.get('state');
+  if (!saved) return;
+  const s = JSON.parse(saved) as Record<string, unknown>;
+  legacySimState.running = typeof s.running === 'boolean' ? s.running : false;
+  legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...(typeof s.config === 'object' && s.config !== null ? s.config as Record<string, unknown> : {}) };
+  legacySimState.snapshot = s.snapshot ?? null;
+  legacySimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
+}
+
+async function persistLegacySim() {
+  await legacySimStore.set('state', JSON.stringify({
+    running: legacySimState.running,
+    config: legacySimState.config,
+    snapshot: legacySimState.snapshot,
+    updatedAt: legacySimState.updatedAt
+  }));
+}
+
 function serializeState(): string {
   return JSON.stringify({
     running: state.running,
@@ -467,6 +581,7 @@ function serializeState(): string {
     openedSymbols: Object.fromEntries(state.openedSymbols),
     skippedSymbols: state.skippedSymbols,
     pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
+    realizedPnlTotal: state.realizedPnlTotal,
     health
   });
 }
@@ -486,10 +601,11 @@ async function hydrate(): Promise<void> {
   if (Array.isArray(savedOpened)) {
     state.openedSymbols = new Map(savedOpened.map((symbol) => [symbol, { at: Date.now(), type: 'SPOT' }]));
   } else if (savedOpened && typeof savedOpened === 'object') {
-    state.openedSymbols = new Map(Object.entries(savedOpened as Record<string, { at: number; type: 'SPOT' | 'FUTURES' }>));
+    state.openedSymbols = new Map(Object.entries(savedOpened as Record<string, { at: number; type: 'SPOT' | 'FUTURES'; reason?: string; confidence?: number }>));
   } else {
     state.openedSymbols = new Map();
   }
+  state.realizedPnlTotal = typeof s.realizedPnlTotal === 'number' ? s.realizedPnlTotal : 0;
   state.skippedSymbols = Array.isArray(s.skippedSymbols) ? s.skippedSymbols as { symbol: string; reason: string }[] : [];
   // Restore pending limit orders (if any survived a restart)
   const savedPending = s.pendingLimitOrders;
@@ -775,17 +891,16 @@ async function scan(): Promise<void> {
     }
 
     // FIX #1: expire re-entry blocks instead of holding them forever.
-    // - FUTURES: verified directly against the exchange's open positions.
+    // - FUTURES: closure is detected (and Telegram-notified) below in
+    //   checkClosedFuturesPositions(), which also removes the re-entry block.
     // - SPOT: no equivalent "position list" here, so we release the block
     //   after REENTRY_COOLDOWN_MS as a best-effort cooldown.
     for (const [sym, meta] of state.openedSymbols) {
-      if (meta.type === 'FUTURES') {
-        const stillOpen = ctx ? ctx.openFutures.some(p => p.symbol === sym) : true;
-        if (!stillOpen) state.openedSymbols.delete(sym);
-      } else if (now - meta.at > REENTRY_COOLDOWN_MS) {
+      if (meta.type === 'SPOT' && now - meta.at > REENTRY_COOLDOWN_MS) {
         state.openedSymbols.delete(sym);
       }
     }
+    await checkClosedFuturesPositions(ctx);
 
     for (let i = 0; i < symbols.length; i += scanConcurrency) {
       const batch = symbols.slice(i, i + scanConcurrency);
@@ -846,7 +961,7 @@ async function scan(): Promise<void> {
         if (res.opened) {
           runningTotals.totalOpen++;
           if (d.action === 'FUTURES') runningTotals.futuresOpen++;
-          state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action as 'SPOT' | 'FUTURES' });
+          state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action as 'SPOT' | 'FUTURES', reason: d.decision.summary, confidence: d.confidence });
           scannedThisRun.add(d.symbol);
           // Send Telegram order notification
           const risk = d.decision.risk;
@@ -956,7 +1071,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, { symbols, generatedAt: universeGeneratedAt });
   }
 
-  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
+  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/legacy-sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
     return json(res, 401, { error: 'Unauthorized' });
   }
 
@@ -1064,6 +1179,47 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, simState);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SHARED LEGACY SIMULATION BOT — same shared-viewer model as above, running
+  // the original alg.md algorithm (server/legacySimEngine.ts). No leader
+  // election: fully server-driven, clients are pure viewers, so there's no
+  // claim/push step to mirror from the block above.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  if (req.method === 'GET' && url.pathname === '/api/legacy-sim/state') {
+    return json(res, 200, legacySimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/legacy-sim/start') {
+    legacySimState.running = true;
+    await persistLegacySim();
+    return json(res, 200, legacySimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/legacy-sim/stop') {
+    legacySimState.running = false;
+    await persistLegacySim();
+    return json(res, 200, legacySimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/legacy-sim/reset') {
+    legacySimState.running = false;
+    legacySimEngine.reset(legacySimState.config);
+    legacySimState.snapshot = legacySimEngine.getSnapshot();
+    legacySimState.updatedAt = Date.now();
+    await persistLegacySim();
+    return json(res, 200, legacySimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/legacy-sim/config') {
+    const body = await readJsonBody(req);
+    if (body && typeof body.config === 'object' && body.config !== null) {
+      legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...legacySimState.config, ...(body.config as Record<string, unknown>) };
+    }
+    await persistLegacySim();
+    return json(res, 200, legacySimState);
+  }
+
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
   await refreshUniverseIfStale();
@@ -1071,6 +1227,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   await hydrateMarketCache();
   await hydrateSim();
   if (simState.snapshot) simEngine.hydrate(simState.snapshot as SimSnapshot);
+  await hydrateLegacySim();
+  if (legacySimState.snapshot) legacySimEngine.hydrate(legacySimState.snapshot as LegacySimSnapshot);
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
   if (state.running) void scan();
   setInterval(() => void scan(), intervalMs);
@@ -1116,6 +1274,30 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       console.warn('[sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
     } finally {
       simTickInProgress = false;
+    }
+  }, 4000);
+
+  // Server-side LEGACY simulation loop — same cadence/shape as the engine
+  // above, own in-progress guard so a slow tick on one engine never blocks
+  // the other. Shares the same cached Fear & Greed value (same data source).
+  let legacySimTickInProgress = false;
+  setInterval(async () => {
+    if (!legacySimState.running || legacySimTickInProgress) return;
+    legacySimTickInProgress = true;
+    try {
+      const now = Date.now();
+      if (now - lastFgFetchAt > 15 * 60 * 1000) {
+        cachedSimFearGreed = await fetchFearGreed();
+        lastFgFetchAt = now;
+      }
+      const snap = await legacySimEngine.tick(legacySimState.config, cachedSimFearGreed);
+      legacySimState.snapshot = snap;
+      legacySimState.updatedAt = Date.now();
+      await persistLegacySim();
+    } catch (e: unknown) {
+      console.warn('[legacy-sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
+    } finally {
+      legacySimTickInProgress = false;
     }
   }, 4000);
 });

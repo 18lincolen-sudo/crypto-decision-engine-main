@@ -1,31 +1,24 @@
-// Server-side simulation engine — runs the SAME trade logic as the browser
-// (useSimulationBot) but inside Node, so the shared bot advances 24/7 without
-// any browser tab open. Reuses the real tradeEngine + market-data clients.
-//
-// The evaluation/order-generation/fill logic itself lives in
-// src/services/simExecution.ts, shared with useSimulationBot.ts — this file
-// only owns the server's own state (plain closure variables instead of React
-// state) and market-data refresh loop.
-import { formatDynamicPrice } from '../src/services/tradeEngine';
+// Server-side simulation engine for the LEGACY (original alg.md) algorithm —
+// runs 24/7 in Node, same as server/simEngine.ts for the new intraday engine,
+// same market data sources (getAggregatedPrices / getUniverseMarketData),
+// same execution mechanics (fillDueOrders from simExecution.ts). The ONLY
+// deliberate difference from simEngine.ts is the decision algorithm: this one
+// drives buildLegacyEvaluations/generateLegacyOrders (legacySimExecution.ts —
+// single-timeframe H1 regime + weighted-confidence scoring) instead of the
+// multi-timeframe intraday engine.
+import { formatDynamicPrice, Candle } from '../src/services/tradeEngine';
 import { getAggregatedPrices } from '../src/services/cryptoPriceAggregator';
 import { CryptoData } from '../src/types/crypto';
-import { computeAtr5, MultiTimeframeSnapshot, SignalEvaluation } from '../src/services/intradayBridge';
+import { MultiTimeframeSnapshot } from '../src/services/intradayBridge';
 import { getUniverseMarketData } from '../src/services/marketDataService';
 import { toBaseAsset } from '../src/services/assetUniverse';
-import {
-  buildEvaluations,
-  generateNewOrders,
-  fillDueOrders,
-  SimPosition,
-  SimTrade,
-  SimPoint,
-  PendingOrder,
-  SimBotConfig
-} from '../src/services/simExecution';
+import { fillDueOrders, SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../src/services/simExecution';
+import { buildLegacyEvaluations, generateLegacyOrders, MIN_LEGACY_CANDLES } from '../src/services/legacySimExecution';
+import type { SignalEvaluation } from '../src/services/intradayBridge';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig };
 
-interface SimSnapshot {
+interface LegacySimSnapshot {
   cash: number;
   positions: SimPosition[];
   trades: SimTrade[];
@@ -34,18 +27,17 @@ interface SimSnapshot {
   pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
-  lastEvaluation: string;
 }
 
 const TICK_MS = 4000;
-const CRYPTO_REFRESH_MS = 60_000;  // 60s — Bybit/Binance are fast, no need to hammer CoinGecko
+const CRYPTO_REFRESH_MS = 60_000;
 const CANDLE_REFRESH_MS = 5 * 60_000;
 
-// Telegram notifications for the simulation bot (paper trades) — same
-// TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars as the real bot's alerts.
+// Same Telegram wiring as the new engine's simEngine.ts — same env vars, own
+// message stream (both bots' entries/exits are worth seeing separately).
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
-async function sendSimTelegramMessage(message: string): Promise<void> {
+async function sendLegacySimTelegramMessage(message: string): Promise<void> {
   if (!telegramBotToken || !telegramChatId) return;
   try {
     await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
@@ -58,7 +50,7 @@ async function sendSimTelegramMessage(message: string): Promise<void> {
   }
 }
 
-export function createSimEngine(getSymbols?: () => string[]) {
+export function createLegacySimEngine(getSymbols?: () => string[]) {
   let cash = 10000;
   let positions: SimPosition[] = [];
   let trades: SimTrade[] = [];
@@ -69,8 +61,6 @@ export function createSimEngine(getSymbols?: () => string[]) {
   let totalSlippageCost = 0;
   let lastEvaluation = '';
   let lastEvaluations: SignalEvaluation[] = [];
-  // Safety net against rapid re-entry churn: after a LOSING full exit, skip new
-  // entries on that symbol for a cooldown window even if the signal still fires.
   const exitCooldown: Record<string, number> = {};
 
   let liveCandles: Record<string, MultiTimeframeSnapshot> = {};
@@ -81,12 +71,6 @@ export function createSimEngine(getSymbols?: () => string[]) {
   let candleRefreshing = false;
   let initialAmount = 10000;
 
-  // Positions/orders always carry the SUFFIXED symbol ("LITUSDT", from the MTF
-  // snapshot), but cryptoData/lastPrices are keyed by the BARE ticker symbol
-  // ("lit", from the price aggregator) — comparing them directly never matched,
-  // so priceFor() silently returned undefined for every open position and mark-
-  // to-market prices (and therefore chart currentPrice) froze at the entry fill
-  // price forever. Normalize both sides to the base asset before comparing.
   function priceFor(symbol: string): number | undefined {
     const base = toBaseAsset(symbol);
     if (typeof lastPrices[base] === 'number') return lastPrices[base];
@@ -94,9 +78,18 @@ export function createSimEngine(getSymbols?: () => string[]) {
     return c?.current_price;
   }
 
-  function buildCandlesForSymbol(symbol: string) {
+  // Legacy is single-timeframe (H1) by design — reuses the SAME multi-
+  // timeframe fetch as the new engine (identical data source/cache), just
+  // reads the h1 series out of it instead of m5.
+  function candlesBySymbolView(): Record<string, Candle[]> {
+    const view: Record<string, Candle[]> = {};
+    for (const key of Object.keys(liveCandles)) view[key] = buildCandlesForSymbol(key);
+    return view;
+  }
+
+  function buildCandlesForSymbol(symbol: string): Candle[] {
     const snap = liveCandles[toBaseAsset(symbol)];
-    return snap && snap.m5 && snap.m5.length ? snap.m5 : [];
+    return snap && snap.h1 && snap.h1.length >= MIN_LEGACY_CANDLES ? snap.h1 : [];
   }
 
   function positionsValue(): number {
@@ -144,13 +137,6 @@ export function createSimEngine(getSymbols?: () => string[]) {
     const now = Date.now();
     if (now - cryptoRefreshAt > CRYPTO_REFRESH_MS || cryptoData.length === 0) {
       try {
-        // Use multi-source aggregator: Bybit → Binance → CoinGecko (rate-gated).
-        // Restrict to the SAME curated liquid universe the real bot trades —
-        // without this filter, getAggregatedPrices() returns EVERY Bybit USDT
-        // pair (400+), and refreshCandles() below then has to fetch 1H/15M/5M
-        // klines for all of them every cycle. That starves the pipeline under
-        // rate limits so only a handful of symbols ever reach READY status,
-        // meaning most SIGNAL evaluations never get a chance to actually fill.
         const data = await getAggregatedPrices(getSymbols?.());
         if (data && data.length) {
           cryptoData = data;
@@ -161,9 +147,6 @@ export function createSimEngine(getSymbols?: () => string[]) {
         /* keep last-known-good prices */
       }
     }
-    // Candle refresh is NON-BLOCKING: the tick must return a snapshot immediately
-    // (so the bot shows as running and history grows) even before candles load.
-    // Candles fill in the background; trading begins once they are available.
     if ((now - candleRefreshAt > CANDLE_REFRESH_MS || Object.keys(liveCandles).length === 0) && !candleRefreshing) {
       candleRefreshing = true;
       refreshCandles()
@@ -179,12 +162,8 @@ export function createSimEngine(getSymbols?: () => string[]) {
     if (!cryptoData.length) return;
     const symbols = cryptoData.map((c) => c.symbol.toUpperCase());
     try {
-      const { snapshots } = await getUniverseMarketData(symbols, { log: true });
+      const { snapshots } = await getUniverseMarketData(symbols, { log: false });
       const next: Record<string, MultiTimeframeSnapshot> = {};
-      // getUniverseMarketData keys its Map by the SUFFIXED symbol (snap.symbol,
-      // e.g. "LITUSDT"); liveCandles is looked up elsewhere with the bare ticker
-      // symbol from cryptoData ("LIT"). Normalize to base-asset form here so
-      // every reader/writer of liveCandles agrees on one key format.
       for (const [sym, snap] of snapshots) next[toBaseAsset(sym)] = snap;
       liveCandles = next;
     } catch {
@@ -200,7 +179,6 @@ export function createSimEngine(getSymbols?: () => string[]) {
     await refreshMarketData();
     for (const c of cryptoData) lastPrices[toBaseAsset(c.symbol)] = c.current_price;
 
-    // Mark-to-market live price updates on each tick for open positions
     positions = positions.map((p) => {
       const live = priceFor(p.symbol) ?? p.currentPrice;
       return {
@@ -216,25 +194,29 @@ export function createSimEngine(getSymbols?: () => string[]) {
     const eq = equity();
     const { dailyDrawdownPercent, weeklyDrawdownPercent } = drawdowns(eq);
     const totalLeveragedExposureUsd = leveragedExposure();
+    const closedTradeMetrics = trades
+      .filter((t) => typeof t.pnl === 'number')
+      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0 }));
+    const candlesBySymbol = candlesBySymbolView();
 
-    const evaluations = buildEvaluations({
+    const evaluations = buildLegacyEvaluations({
       cryptoData,
-      mtfData: liveCandles,
+      candlesBySymbol,
       positions,
       pending,
       config,
       equity: eq,
-      initialAmount,
+      totalLeveragedExposureUsd,
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
-      totalLeveragedExposureUsd,
-      toBase: (s) => toBaseAsset(s)
+      fearGreedIndex: fearGreed,
+      closedTradeMetrics
     });
     lastEvaluations = evaluations;
     const we = evaluations.filter((r) => r.willExecute).length;
-    console.log(`[sim-engine] evals=${evaluations.length} willExecute=${we} pending=${pending.length} pos=${positions.length} cash=${cash.toFixed(2)}`);
+    console.log(`[legacy-sim-engine] evals=${evaluations.length} willExecute=${we} pending=${pending.length} pos=${positions.length} cash=${cash.toFixed(2)}`);
 
-    const newOrders = generateNewOrders({
+    const newOrders = generateLegacyOrders({
       positions,
       pending,
       evaluations,
@@ -244,8 +226,7 @@ export function createSimEngine(getSymbols?: () => string[]) {
       cash,
       exitCooldown,
       priceFor,
-      buildCandlesForSymbol,
-      computeAtr5
+      candlesBySymbol
     });
     if (newOrders.length) pending = [...pending, ...newOrders];
 
@@ -261,21 +242,17 @@ export function createSimEngine(getSymbols?: () => string[]) {
         totalFees += result.feesAdded;
         totalSlippageCost += result.slipAdded;
         Object.assign(exitCooldown, result.newCooldowns);
-        // Overall bot status, computed AFTER applying this fill — appended
-        // only to exit/partial-exit messages (not entries), per the ask that
-        // a "position finished" notification show where the bot stands
-        // overall, not just the one trade.
         const totalEq = equity();
         const totalPnl = totalEq - initialAmount;
         const totalPnlPercent = initialAmount > 0 ? (totalPnl / initialAmount) * 100 : 0;
         const statusFooter =
-          `\n\n📊 מצב כולל של הבוט\n` +
+          `\n\n📊 מצב כולל של הבוט (לגאסי)\n` +
           `שווי נוכחי: $${totalEq.toFixed(2)}\n` +
           `רווח/הפסד כולל: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${totalPnlPercent >= 0 ? '+' : ''}${totalPnlPercent.toFixed(2)}%)\n` +
           `פוזיציות פתוחות: ${positions.length}`;
         for (const ev of result.events) {
           const text = ev.kind === 'entry' ? ev.text : ev.text + statusFooter;
-          void sendSimTelegramMessage(text);
+          void sendLegacySimTelegramMessage(text);
         }
       }
     }
@@ -315,7 +292,7 @@ export function createSimEngine(getSymbols?: () => string[]) {
       closedTrades: closedTrades.length,
       lastEvaluation,
       evaluations: lastEvaluations,
-      minConfidence: 40,
+      minConfidence: 58,
       hasSavedSession: trades.length > 0 || positions.length > 0,
       nextTickAt: Date.now() + TICK_MS,
       totalLeveragedExposureUsd: leveragedExposure(),
@@ -325,7 +302,7 @@ export function createSimEngine(getSymbols?: () => string[]) {
     };
   }
 
-  function hydrate(snapshot: SimSnapshot) {
+  function hydrate(snapshot: LegacySimSnapshot) {
     if (!snapshot || typeof snapshot.cash !== 'number') return;
     cash = snapshot.cash;
     positions = snapshot.positions ?? [];
@@ -335,7 +312,6 @@ export function createSimEngine(getSymbols?: () => string[]) {
     pending = snapshot.pending ?? [];
     totalFees = snapshot.totalFees ?? 0;
     totalSlippageCost = snapshot.totalSlippageCost ?? 0;
-    lastEvaluation = snapshot.lastEvaluation ?? '';
     initialAmount = snapshot.cash || 10000;
   }
 
@@ -356,4 +332,4 @@ export function createSimEngine(getSymbols?: () => string[]) {
   return { tick, getSnapshot, hydrate, reset };
 }
 
-export type { SimSnapshot };
+export type { LegacySimSnapshot };
