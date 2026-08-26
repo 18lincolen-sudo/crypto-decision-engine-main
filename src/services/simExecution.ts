@@ -219,7 +219,13 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
       {
         ...DEFAULT_INTRADAY_PARAMS,
         maxOpenPositions: config.maxPositions || DEFAULT_INTRADAY_PARAMS.maxOpenPositions,
-        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures
+        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures,
+        // Simulation-only for now (real bot uses DEFAULT_INTRADAY_PARAMS
+        // unmodified — see tradingWorker.ts's scan()): lets a SHORT setup
+        // still trade FUTURES during HIGH volatility instead of being forced
+        // to SPOT-only (which can't short), so results can be evaluated
+        // before deciding whether to enable this on real money.
+        allowShortDuringHighVolatility: true
       }
     );
 
@@ -402,7 +408,11 @@ export interface FillResult {
 }
 
 export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimPosition[], priceFor: (symbol: string) => number | undefined, formatPrice: (n: number) => string): FillResult {
-  const now = new Date().toLocaleTimeString('he-IL');
+  // Explicit timeZone: this runs both in the browser (whatever local TZ) and
+  // on the server (Render defaults to UTC) — without it, a trade's displayed
+  // "last: HH:MM:SS" silently used the server's UTC clock instead of Israel
+  // time, making a trade from moments ago look ~3 hours stale in the UI.
+  const now = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
   let workingCash = cash;
   let workingPositions = [...positions];
   const newTrades: SimTrade[] = [];

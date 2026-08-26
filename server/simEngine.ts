@@ -48,13 +48,21 @@ const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 async function sendSimTelegramMessage(message: string): Promise<void> {
   if (!telegramBotToken || !telegramChatId) return;
   try {
-    await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: telegramChatId, text: message })
     });
-  } catch {
-    // ignore — notification failures must not affect the simulation
+    // fetch() only rejects on network failure — a bad token/chat-id comes
+    // back as a normal (non-2xx) response, which was previously never
+    // inspected, so a misconfigured bot failed 100% silently.
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn(`[telegram] sim sendMessage failed: HTTP ${res.status} ${body.slice(0, 300)}`);
+    }
+  } catch (e) {
+    // Never throw — a Telegram failure must not affect the simulation.
+    console.warn('[telegram] sim sendMessage threw:', e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -281,7 +289,9 @@ export function createSimEngine(getSymbols?: () => string[]) {
     }
 
     const now = Date.now();
-    const timeStr = new Date(now).toLocaleTimeString('he-IL');
+    // Explicit timeZone: this runs on the server (Render defaults to UTC),
+    // not in the user's browser — see the same fix in simExecution.ts.
+    const timeStr = new Date(now).toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
     history = [...history, { timestamp: timeStr, at: now, portfolio: equity() }].slice(-720);
     const lastHourPt = hourlyHistory[hourlyHistory.length - 1];
     const lastHour = lastHourPt ? Math.floor(lastHourPt.at / (60 * 60 * 1000)) : -1;

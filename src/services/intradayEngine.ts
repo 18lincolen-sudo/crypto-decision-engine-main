@@ -207,10 +207,24 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     tradeType = 'SPOT';
   } else if (regime.futuresAllowed) {
     tradeType = 'FUTURES';
+  } else if (
+    params.allowShortDuringHighVolatility &&
+    regime.trending &&
+    regime.volatility === 'HIGH' &&
+    setup.direction === 'SHORT'
+  ) {
+    // Deliberate carve-out (off by default — see allowShortDuringHighVolatility
+    // in intradayParams.ts): regime.futuresAllowed is direction-agnostic and
+    // blocks FUTURES outright in HIGH volatility, which normally disables the
+    // bot's only tool for profiting from a sharp down-move exactly when the
+    // down-move is sharpest. LONG still gets no such carve-out here.
+    tradeType = 'FUTURES';
   } else {
     tradeType = 'SPOT';
   }
-  // EXTREME volatility forces spot even for trends (§10).
+  // EXTREME volatility forces spot even for trends (§10) — applies regardless
+  // of direction or allowShortDuringHighVolatility: liquidation risk at
+  // EXTREME + leverage is judged too high either way.
   if (regime.volatility === 'EXTREME') tradeType = 'SPOT';
 
   // ── TRANSITIONAL quality gate (§8/§34) ──────────────────────────────────────

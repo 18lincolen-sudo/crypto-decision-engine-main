@@ -102,6 +102,17 @@ export interface IntradayParams {
   maxOpenPositions: number;
   maxOpenFutures: number;
   minOrderUsd: number;
+  /** Real-money default is false: FUTURES (and therefore SHORT) is normally
+   *  blocked outright whenever ATR volatility is HIGH or EXTREME (§10/§34),
+   *  which means the bot's only tool for profiting from a sharp down-move is
+   *  switched off exactly when the down-move is sharpest. When true, a SHORT
+   *  setup gets a carve-out to still trade FUTURES during HIGH volatility
+   *  (not EXTREME — that stays blocked for both directions regardless of this
+   *  flag). LONG stays blocked in HIGH volatility either way. Simulation-only
+   *  for now (see buildEvaluations in simExecution.ts) while this is being
+   *  evaluated against real results before enabling it on the live bot.
+   */
+  allowShortDuringHighVolatility: boolean;
 
   // ── Duration / time stops (§28/§29) ───────────────────────────────────────
   maxHoldMinutes: Record<Exclude<SetupType, 'NONE'>, number>;
@@ -191,6 +202,7 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   maxOpenPositions: 5,
   maxOpenFutures: 2,
   minOrderUsd: 5,
+  allowShortDuringHighVolatility: false,
 
   maxHoldMinutes: { TREND_PULLBACK: 90, BREAKOUT_RETEST: 60, MEAN_REVERSION: 45 },
   timeStopFraction: 0.45,

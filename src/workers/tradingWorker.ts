@@ -134,19 +134,32 @@ let lastAlertedError: string | null = null;
 // Send order execution notification to Telegram. Requires TELEGRAM_BOT_TOKEN and
 // TELEGRAM_CHAT_ID environment variables. No-op if not configured.
 async function sendTelegramOrder(message: string): Promise<void> {
-  if (!telegramBotToken || !telegramChatId) return;
+  if (!telegramBotToken || !telegramChatId) {
+    console.warn('[telegram] not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID) — order notification dropped');
+    return;
+  }
   try {
-    await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+    const res = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: telegramChatId,
-        text: message,
-        parse_mode: 'HTML'
+        text: message
+        // No parse_mode: none of these messages use actual HTML markup, and
+        // 'HTML' mode makes Telegram reject the WHOLE message if the text
+        // ever contains a raw '<'/'>'/'&' (e.g. a reasoning string like
+        // "RSI < 30") — a failure that, before the check below, was 100%
+        // silent (fetch() only rejects on network failure, not on a non-2xx
+        // response).
       })
     });
-  } catch {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn(`[telegram] sendMessage failed (order): HTTP ${res.status} ${body.slice(0, 300)}`);
+    }
+  } catch (e) {
     // Never throw from notification — a Telegram failure must not crash the worker.
+    console.warn('[telegram] sendMessage threw (order):', e instanceof Error ? e.message : String(e));
   }
 }
 async function sendTelegramAlert(message: string): Promise<void> {
@@ -154,17 +167,21 @@ async function sendTelegramAlert(message: string): Promise<void> {
   if (lastAlertedError === message) return;
   lastAlertedError = message;
   try {
-    await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+    const res = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: telegramChatId,
-        text: `🚨 Crypto Bot Error\n\n${message}`,
-        parse_mode: 'HTML'
+        text: `🚨 Crypto Bot Error\n\n${message}`
       })
     });
-  } catch {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn(`[telegram] sendMessage failed (alert): HTTP ${res.status} ${body.slice(0, 300)}`);
+    }
+  } catch (e) {
     // Never throw from alerting — a Telegram failure must not crash the worker.
+    console.warn('[telegram] sendMessage threw (alert):', e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -445,7 +462,9 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
         `רווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\n` +
         `יתרת חשבון כוללת: $${ctx.total.toFixed(2)}\n` +
         `פוזיציות פתוחות: ${ctx.openFuturesCount}\n` +
-        `זמן: ${new Date().toLocaleTimeString()}`;
+        // Explicit timeZone: the server runs in UTC (Render), not Israel time —
+        // without it this showed a timestamp 3 hours behind the real time.
+        `זמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
       await sendTelegramOrder(msg);
     } catch (e) {
       console.warn(`[exit-notify] closed-pnl lookup failed for ${sym}:`, e instanceof Error ? e.message : String(e));
@@ -971,7 +990,9 @@ async function scan(): Promise<void> {
           const sl = risk?.stopLoss;
           const leverage = risk?.leverage;
           const qty = risk?.quantity;
-          const msg = `📈 אות מסחר\n\nסמל: ${d.decision.symbol}\nכיוון: ${sideLabel}\nמהלך: ${d.decision.summary}\nמחיר כניסה: ${entryPrice.toFixed(4)}\nTP1: ${tp1?.toFixed(4) ?? 'N/A'}\nSL: ${sl?.toFixed(4) ?? 'N/A'}\nמינוף: ${leverage ?? '1x'}\nכמות: ${qty ?? 0}\nזמן: ${new Date().toLocaleTimeString()}`;
+          // Explicit timeZone: the server runs in UTC (Render), not Israel
+          // time — without it this showed a timestamp 3 hours behind real time.
+          const msg = `📈 אות מסחר\n\nסמל: ${d.decision.symbol}\nכיוון: ${sideLabel}\nמהלך: ${d.decision.summary}\nמחיר כניסה: ${entryPrice.toFixed(4)}\nTP1: ${tp1?.toFixed(4) ?? 'N/A'}\nSL: ${sl?.toFixed(4) ?? 'N/A'}\nמינוף: ${leverage ?? '1x'}\nכמות: ${qty ?? 0}\nזמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
           await sendTelegramOrder(msg);
         } else if (res.skipped) {
           d.skipped = res.skipped;
