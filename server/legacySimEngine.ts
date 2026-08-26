@@ -262,9 +262,10 @@ export function createLegacySimEngine(getSymbols?: () => string[]) {
           `שווי נוכחי: $${totalEq.toFixed(2)}\n` +
           `רווח/הפסד כולל: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${totalPnlPercent >= 0 ? '+' : ''}${totalPnlPercent.toFixed(2)}%)\n` +
           `פוזיציות פתוחות: ${positions.length}`;
+        // Only notify on close — see the same change in simEngine.ts.
         for (const ev of result.events) {
-          const text = ev.kind === 'entry' ? ev.text : ev.text + statusFooter;
-          void sendLegacySimTelegramMessage(text);
+          if (ev.kind === 'entry') continue;
+          void sendLegacySimTelegramMessage(`🤖 מנוע מקורי · Confidence Score\n\n${ev.text}${statusFooter}`);
         }
       }
     }

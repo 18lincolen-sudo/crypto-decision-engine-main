@@ -455,7 +455,8 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
 
       state.realizedPnlTotal += totalPnl;
 
-      const msg = `${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה\n\n` +
+      const msg = `🤖 בוט מסחר אמיתי${dryRun ? ' (dry-run)' : ''}\n\n` +
+        `${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה\n\n` +
         `סמל: ${sym}\n` +
         `כיוון: ${side} (${leverage}x)\n` +
         `מחיר כניסה: ${entryPrice.toFixed(4)}\n` +
@@ -1031,18 +1032,8 @@ async function scan(): Promise<void> {
           if (d.action === 'FUTURES') runningTotals.futuresOpen++;
           state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action as 'SPOT' | 'FUTURES', reason: d.decision.summary, confidence: d.confidence });
           scannedThisRun.add(d.symbol);
-          // Send Telegram order notification
-          const risk = d.decision.risk;
-          const sideLabel = d.decision.direction === 'LONG' ? 'LONG' : 'SHORT';
-          const entryPrice = d.decision.entry?.entryPrice ?? risk?.stopLoss;
-          const tp1 = risk?.takeProfit1;
-          const sl = risk?.stopLoss;
-          const leverage = risk?.leverage;
-          const qty = risk?.quantity;
-          // Explicit timeZone: the server runs in UTC (Render), not Israel
-          // time — without it this showed a timestamp 3 hours behind real time.
-          const msg = `📈 אות מסחר\n\nסמל: ${d.decision.symbol}\nכיוון: ${sideLabel}\nמהלך: ${d.decision.summary}\nמחיר כניסה: ${entryPrice.toFixed(4)}\nTP1: ${tp1?.toFixed(4) ?? 'N/A'}\nSL: ${sl?.toFixed(4) ?? 'N/A'}\nמינוף: ${leverage ?? '1x'}\nכמות: ${qty ?? 0}\nזמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
-          await sendTelegramOrder(msg);
+          // No Telegram notification on entry — only on close, with the full
+          // entry+exit+P&L picture in one message (see checkClosedFuturesPositions).
         } else if (res.skipped) {
           d.skipped = res.skipped;
         }

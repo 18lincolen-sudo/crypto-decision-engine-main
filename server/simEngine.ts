@@ -289,9 +289,13 @@ export function createSimEngine(getSymbols?: () => string[]) {
           `שווי נוכחי: $${totalEq.toFixed(2)}\n` +
           `רווח/הפסד כולל: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${totalPnlPercent >= 0 ? '+' : ''}${totalPnlPercent.toFixed(2)}%)\n` +
           `פוזיציות פתוחות: ${positions.length}`;
+        // Only notify on close — the exit text already carries entry price,
+        // exit price and P&L (see fillDueOrders in simExecution.ts), so a
+        // single message on close already has the full picture. An entry-
+        // time message is deliberately no longer sent.
         for (const ev of result.events) {
-          const text = ev.kind === 'entry' ? ev.text : ev.text + statusFooter;
-          void sendSimTelegramMessage(text);
+          if (ev.kind === 'entry') continue;
+          void sendSimTelegramMessage(`🤖 מנוע חדש · Multi-Timeframe\n\n${ev.text}${statusFooter}`);
         }
       }
     }

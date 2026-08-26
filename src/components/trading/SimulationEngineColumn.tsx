@@ -88,6 +88,24 @@ export default function SimulationEngineColumn({
     return sorted;
   })();
 
+  // Visibility into WHY short-side setups are rare: SHORT only ever routes
+  // through FUTURES, which only opens on a TRENDING+BEAR regime — this
+  // count makes that market-condition reality checkable at a glance instead
+  // of having to take it on faith or page through each symbol's own
+  // decision-layer breakdown one at a time.
+  const regimeCounts = evaluations.reduce(
+    (acc, ev) => {
+      const r = ev.regime;
+      if (!r) { acc.noData++; return acc; }
+      if (r.regime === 'TRENDING' && r.direction === 'BULL') acc.bullTrend++;
+      else if (r.regime === 'TRENDING' && r.direction === 'BEAR') acc.bearTrend++;
+      else if (r.regime === 'RANGING') acc.ranging++;
+      else acc.transitional++;
+      return acc;
+    },
+    { bullTrend: 0, bearTrend: 0, ranging: 0, transitional: 0, noData: 0 }
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -128,6 +146,20 @@ export default function SimulationEngineColumn({
               </DialogTitle>
               <DialogDescription className="sr-only">רשימת הערכות מנוע ההחלטות לכל מטבע</DialogDescription>
             </DialogHeader>
+            {!!evaluations?.length && (
+              <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono text-muted-foreground border border-border/30 rounded-md px-2.5 py-1.5 bg-card/20">
+                <span className="shrink-0">התפלגות משטר שוק כרגע:</span>
+                <Badge variant="outline" className="text-green-400 border-green-400/30">↑ עולה {regimeCounts.bullTrend}</Badge>
+                <Badge variant="outline" className="text-red-400 border-red-400/30">↓ יורד (SHORT זמין) {regimeCounts.bearTrend}</Badge>
+                <Badge variant="outline" className="text-muted-foreground">דשדוש {regimeCounts.ranging}</Badge>
+                <Badge variant="outline" className="text-muted-foreground">מעבר {regimeCounts.transitional}</Badge>
+                {regimeCounts.bearTrend === 0 && (
+                  <span className="text-[10px] w-full">
+                    0 מגמות יורדות כרגע — SHORT דורש מגמה יורדת מובהקת (BEAR_TREND); ב-RANGING/דשדוש הבוט יכול רק Spot LONG (MEAN_REVERSION).
+                  </span>
+                )}
+              </div>
+            )}
             {!evaluations?.length ? (
               <div className="text-muted-foreground text-sm text-center py-4 font-mono">אין נתוני מטבעות זמינים</div>
             ) : (
