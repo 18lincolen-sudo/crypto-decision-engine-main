@@ -24,6 +24,7 @@ import type { WorkerAccountSummary, WorkerBotState } from '@/services/tradingApi
 import { useSimulationBotContextSafe } from '@/contexts/SimulationBotContext';
 import { useLegacySimulationBotContextSafe } from '@/contexts/LegacySimulationBotContext';
 import { useProSimulationBotContextSafe } from '@/contexts/ProSimulationBotContext';
+import type { SimPosition, SimTrade } from '@/hooks/useSimulationBot';
 import { useWorkerAuth } from '@/contexts/WorkerAuthContext';
 
 export const ExecutiveDashboard: React.FC = () => {
@@ -43,9 +44,9 @@ export const ExecutiveDashboard: React.FC = () => {
   const pro = useProSimulationBotContextSafe();
 
   const deriveSimState = (source: any, fallbackKey: string, fallbackStatusKey: string) => {
-    const derive = (cash: number, positions: any[], trades: any[], initial: number, isRunning: boolean) => {
+    const derive = (cash: number, positions: SimPosition[], trades: SimTrade[], initial: number, isRunning: boolean) => {
       let currentVal = cash;
-      const activeMapped = positions.map((p: any) => {
+      const activeMapped = positions.map((p) => {
         const notional = p.notionalUsd || p.quantity * p.currentPrice || 0;
         const pnl = p.side === 'LONG' || p.side === 'BUY'
           ? ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100 * (p.leverage || 1)
@@ -62,7 +63,7 @@ export const ExecutiveDashboard: React.FC = () => {
           stopLoss: p.stopLoss
         };
       });
-      const winningTrades = trades.filter((t: any) => (t.pnl || 0) > 0).length;
+      const winningTrades = trades.filter((t) => (t.pnl || 0) > 0).length;
       const winRate = trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
       const totalProfit = currentVal - initial;
       return { cash, initialAmount: initial, positionsCount: positions.length, totalTrades: trades.length, winRate, totalProfit, isRunning, activePositions: activeMapped };

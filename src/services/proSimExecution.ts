@@ -132,7 +132,7 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
     const risk = router.type !== 'HOLD'
       ? calculateProRisk(
         entryPrice, router.type, router.side, regime.atr, regime.volatility,
-        signal.confidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
+        signal.rawConfidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
         dailyDrawdownPercent, sizingMultiplier
       )
       : null;

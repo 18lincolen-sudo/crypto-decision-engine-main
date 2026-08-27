@@ -262,10 +262,11 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       if (p.type === 'SPOT') {
         return sum + p.quantity * livePrice;
       } else {
-        // Futures position equity = Margin + Unrealized PnL
+        // Futures PnL: quantity already includes leverage (quantity = budget * leverage / fillPrice),
+        // so we must NOT multiply by leverage again — doing so overstates PnL by leverage times.
         const pnl = p.side === 'LONG'
-          ? (livePrice - p.entryPrice) * p.quantity * p.leverage
-          : (p.entryPrice - livePrice) * p.quantity * p.leverage;
+          ? (livePrice - p.entryPrice) * p.quantity
+          : (p.entryPrice - livePrice) * p.quantity;
         return sum + Math.max(0, p.marginUsd + pnl);
       }
     }, 0);
@@ -277,7 +278,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     return positions.reduce((sum, p) => {
       const livePrice = priceFor(p.symbol) ?? p.currentPrice;
       if (p.type === 'FUTURES') {
-        return sum + p.quantity * livePrice * p.leverage;
+        return sum + p.quantity * livePrice;
       }
       return sum;
     }, 0);
@@ -410,9 +411,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       const equityNow = cashRef.current + positionsRef.current.reduce((sum, p) => {
         const live = priceForRef.current(p.symbol) ?? p.currentPrice;
         if (p.type === 'SPOT') return sum + p.quantity * live;
+        // quantity already includes leverage, so do NOT multiply by leverage again.
         const pnl = p.side === 'LONG'
-          ? (live - p.entryPrice) * p.quantity * p.leverage
-          : (p.entryPrice - live) * p.quantity * p.leverage;
+          ? (live - p.entryPrice) * p.quantity
+          : (p.entryPrice - live) * p.quantity;
         return sum + Math.max(0, p.marginUsd + pnl);
       }, 0);
 

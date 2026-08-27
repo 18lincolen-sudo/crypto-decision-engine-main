@@ -709,9 +709,11 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       const leverage = order.leverage || 1;
       const notional = budget * leverage;
       const fee = calculateTradingFee(notional, order.type, true);
+      const totalCost = budget + fee;
+      if (totalCost > workingCash) continue;
       const quantity = notional / fillPrice;
 
-      workingCash -= budget;
+      workingCash -= totalCost;
       feesAdded += fee;
       slipAdded += Math.abs(fillPrice - market) * quantity;
 
@@ -775,8 +777,8 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
         const notional = closeQty * fillPrice;
         const fee = calculateTradingFee(notional, 'FUTURES', true);
         const pnl = pos.side === 'LONG'
-          ? (fillPrice - pos.entryPrice) * closeQty * pos.leverage
-          : (pos.entryPrice - fillPrice) * closeQty * pos.leverage;
+          ? (fillPrice - pos.entryPrice) * closeQty
+          : (pos.entryPrice - fillPrice) * closeQty;
 
         workingCash += pos.marginUsd * 0.5 + pnl - fee;
         feesAdded += fee;
@@ -786,7 +788,7 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
           ...pos,
           quantity: pos.quantity - closeQty,
           marginUsd: pos.marginUsd * 0.5,
-          notionalUsd: (pos.quantity - closeQty) * fillPrice * pos.leverage,
+          notionalUsd: (pos.quantity - closeQty) * fillPrice,
           tp1Hit: true,
           highestPriceSinceTP1: fillPrice,
           lowestPriceSinceTP1: fillPrice
@@ -825,8 +827,8 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
           workingCash += netProceeds;
         } else {
           pnl = pos.side === 'LONG'
-            ? (fillPrice - pos.entryPrice) * pos.quantity * pos.leverage
-            : (pos.entryPrice - fillPrice) * pos.quantity * pos.leverage;
+            ? (fillPrice - pos.entryPrice) * pos.quantity
+            : (pos.entryPrice - fillPrice) * pos.quantity;
           workingCash += pos.marginUsd + pnl - fee;
         }
 

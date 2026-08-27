@@ -200,9 +200,10 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     return positions.reduce((sum, p) => {
       const livePrice = priceFor(p.symbol) ?? p.currentPrice;
       if (p.type === 'SPOT') return sum + p.quantity * livePrice;
+      // quantity already includes leverage, so do NOT multiply by leverage again.
       const pnl = p.side === 'LONG'
-        ? (livePrice - p.entryPrice) * p.quantity * p.leverage
-        : (p.entryPrice - livePrice) * p.quantity * p.leverage;
+        ? (livePrice - p.entryPrice) * p.quantity
+        : (p.entryPrice - livePrice) * p.quantity;
       return sum + Math.max(0, p.marginUsd + pnl);
     }, 0);
   }, [positions, priceFor]);
@@ -212,7 +213,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   const totalLeveragedExposureUsd = useMemo(() => {
     return positions.reduce((sum, p) => {
       const livePrice = priceFor(p.symbol) ?? p.currentPrice;
-      return p.type === 'FUTURES' ? sum + p.quantity * livePrice * p.leverage : sum;
+      return p.type === 'FUTURES' ? sum + p.quantity * livePrice : sum;
     }, 0);
   }, [positions, priceFor]);
 
@@ -238,10 +239,8 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   // depends on closedTradeMetrics, and an unstable reference here fed a
   // setState-in-useEffect loop (activeMarketRegimes) into an infinite render.
   const closedTrades = useMemo(() => trades.filter((t) => typeof t.pnl === 'number'), [trades]);
-  const closedTradeMetrics: ClosedTradeMetric[] = useMemo(
-    // `at` travels with each record: the trade array is newest-first, and
-    // adaptiveRisk.ts uses the timestamp to order the history itself.
-    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at })),
+  const closedTradeMetrics = useMemo(
+    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at })),
     [closedTrades]
   );
 
@@ -318,9 +317,10 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
       const equityNow = cashRef.current + positionsRef.current.reduce((sum, p) => {
         const live = priceForRef.current(p.symbol) ?? p.currentPrice;
         if (p.type === 'SPOT') return sum + p.quantity * live;
+        // quantity already includes leverage, so do NOT multiply by leverage again.
         const pnl = p.side === 'LONG'
-          ? (live - p.entryPrice) * p.quantity * p.leverage
-          : (p.entryPrice - live) * p.quantity * p.leverage;
+          ? (live - p.entryPrice) * p.quantity
+          : (p.entryPrice - live) * p.quantity;
         return sum + Math.max(0, p.marginUsd + pnl);
       }, 0);
 

@@ -98,9 +98,11 @@ export interface ProSignalResult {
   action: 'BUY' | 'SELL' | 'HOLD';
   buyScore: number;
   sellScore: number;
-  /** Pre-penalty score of the winning side */
+  /** Pre-penalty score of the winning side — this is what Layer 2 routes on
+   *  (penalties are UI/context only per alg.md §Layer1). */
   rawConfidence: number;
-  /** Post-penalty score — this is what Layer 2 routes on */
+  /** Post-penalty score — shown in the UI alongside the raw score so the
+   *  operator can see exactly how much context is discounting the signal. */
   confidence: number;
   signals: ProIndicatorSignal[];
   penalties: string[];
@@ -424,7 +426,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   const isTrending = regime.regime === 'TRENDING' && regime.adx > 25;
   const isFuturesVolOk = regime.volatility === 'LOW' || regime.volatility === 'NORMAL';
   const futuresThreshold = dynamicConfidenceThreshold(72, regime.atrPercent);
-  const isFuturesScoreOk = signal.confidence >= futuresThreshold;
+  const isFuturesScoreOk = signal.rawConfidence >= futuresThreshold;
   if (isTrending && isFuturesVolOk && isFuturesScoreOk && !options.hasExistingFutures) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'LONG' : 'SHORT';
     return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${signal.confidence} >= ${futuresThreshold.toFixed(1)}, תנודתיות ${regime.volatility}` };
@@ -435,7 +437,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   const softTrendSpot = regime.regime === 'TRANSITIONAL' && regime.adx > 22;
   const spotThreshold = dynamicConfidenceThreshold(60, regime.atrPercent);
   const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(65, regime.atrPercent) : spotThreshold;
-  if (isSpotRegimeOk && signal.confidence >= requiredSpotScore) {
+  if (isSpotRegimeOk && signal.rawConfidence >= requiredSpotScore) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'BUY' : 'SELL';
     const reason = softTrendSpot
       ? `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} ב-SOFT_TREND (ADX ${regime.adx.toFixed(1)})`

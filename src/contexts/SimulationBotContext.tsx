@@ -180,8 +180,8 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
 
   // If server has an active snapshot with data, use server data; otherwise use local client simulation engine
   const useServer = serverSnapshot !== null && (
-    (serverSnapshot.positions && (serverSnapshot.positions as any[]).length > 0) ||
-    (serverSnapshot.trades && (serverSnapshot.trades as any[]).length > 0)
+    (serverSnapshot.positions && (serverSnapshot.positions as unknown[]).length > 0) ||
+    (serverSnapshot.trades && (serverSnapshot.trades as unknown[]).length > 0)
   );
 
   const activeSource: any = useServer ? serverSnapshot : localSim;
