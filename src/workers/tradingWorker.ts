@@ -855,17 +855,53 @@ async function persistMarketCache(): Promise<void> {
 }
 
 // Live Fear & Greed index (0-100). Falls back to neutral 50 on any failure so
-// the scan never blocks on an external sentiment source.
-async function fetchFearGreed(): Promise<number> {
-  try {
-    const res = await fetchWithTimeout('https://api.alternative.me/fng/?limit=1', { method: 'GET' });
-    if (!res.ok) return 50;
-    const data = await res.json() as { data?: { value?: string }[] };
-    const v = Number(data?.data?.[0]?.value);
-    return isFinite(v) ? v : 50;
-  } catch {
-    return 50;
+// the scan never blocks on an external sentiment source. The full reading is
+// cached 15 minutes and ALSO served to the frontend via GET /api/fear-greed,
+// so browsers no longer hit api.alternative.me directly (under the combined
+// browser+worker load the API rate-limited them with 429s and the hanging
+// requests died on the browser's 8s AbortController timeout).
+interface FearGreedReading {
+  value: number;
+  value_classification: string;
+  timestamp: string;
+  at: number;
+}
+const FEAR_GREED_TTL_MS = 15 * 60 * 1000;
+let fearGreedCache: FearGreedReading | null = null;
+let fearGreedInFlight: Promise<FearGreedReading | null> | null = null;
+
+async function fetchFearGreedFull(): Promise<FearGreedReading | null> {
+  if (fearGreedCache && Date.now() - fearGreedCache.at < FEAR_GREED_TTL_MS) {
+    return fearGreedCache;
   }
+  if (fearGreedInFlight) return fearGreedInFlight;
+  fearGreedInFlight = (async () => {
+    try {
+      const res = await fetchWithTimeout('https://api.alternative.me/fng/?limit=1', { method: 'GET' });
+      if (!res.ok) throw new Error(`fng HTTP ${res.status}`);
+      const data = await res.json() as { data?: { value?: string; value_classification?: string; timestamp?: string }[] };
+      const latest = data?.data?.[0];
+      const v = Number(latest?.value);
+      if (!latest || !isFinite(v)) throw new Error('invalid fng payload');
+      fearGreedCache = {
+        value: v,
+        value_classification: latest.value_classification || 'Neutral',
+        timestamp: String(latest.timestamp || Math.floor(Date.now() / 1000)),
+        at: Date.now()
+      };
+    } catch {
+      // Keep any stale reading; null only if we never got a good one.
+    } finally {
+      fearGreedInFlight = null;
+    }
+    return fearGreedCache;
+  })();
+  return fearGreedInFlight;
+}
+
+async function fetchFearGreed(): Promise<number> {
+  const fg = await fetchFearGreedFull();
+  return fg ? fg.value : 50;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1250,6 +1286,15 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   // that can drift out of date.
   if (req.method === 'GET' && url.pathname === '/api/public/universe') {
     return json(res, 200, { symbols, generatedAt: universeGeneratedAt });
+  }
+
+  // Public Fear & Greed reading for the frontend (15-min cached upstream).
+  // Lets every browser tab share ONE worker-side Alternative.me request
+  // instead of each tab polling the sentiment API directly (429 storms).
+  if (req.method === 'GET' && url.pathname === '/api/fear-greed') {
+    const fg = await fetchFearGreedFull();
+    if (!fg) return json(res, 503, { error: 'Fear & Greed unavailable' });
+    return json(res, 200, { value: fg.value, value_classification: fg.value_classification, timestamp: fg.timestamp, cachedAt: fg.at });
   }
 
   if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/legacy-sim/') && !url.pathname.startsWith('/api/pro-sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
