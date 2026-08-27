@@ -32,12 +32,12 @@ export const logger = {
 // Performance monitoring for production
 export const performanceMonitor = {
   mark: (name: string) => {
-    if (isProduction && 'performance' in window) {
+    if (isProduction && typeof window !== 'undefined' && 'performance' in window) {
       performance.mark(name);
     }
   },
   measure: (name: string, startMark: string, endMark?: string) => {
-    if (isProduction && 'performance' in window) {
+    if (isProduction && typeof window !== 'undefined' && 'performance' in window) {
       performance.measure(name, startMark, endMark);
     }
   }
@@ -67,7 +67,7 @@ export const featureFlags = {
   enableRealTimeData: true,
   enableOfflineMode: true,
   enablePushNotifications: isProduction,
-  enableAnalytics: isProduction
+  enableAnalytics: import.meta.env.VITE_ENABLE_ANALYTICS === 'true'
 };
 
 // App metadata

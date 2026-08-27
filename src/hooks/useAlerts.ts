@@ -18,6 +18,7 @@ export function useAlerts() {
 
   const playAlertSound = useCallback((priority: Alert['priority']) => {
     if (!soundEnabled) return;
+    if (typeof window === 'undefined') return;
 
     // Create audio context for different alert sounds
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();

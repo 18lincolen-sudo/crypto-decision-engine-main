@@ -84,9 +84,9 @@ export const ExecutiveDashboard: React.FC = () => {
     }
   };
 
-  const simState = deriveSimState(sim, 'simulation-bot-state-v2', 'simulation-bot-status-v2');
-  const legacyState = deriveSimState(legacy, 'legacy-sim-bot-state-v2', 'legacy-sim-bot-status-v2');
-  const proState = deriveSimState(pro, 'pro-sim-bot-state-v2', 'pro-sim-bot-status-v2');
+  const simState = deriveSimState(sim, 'simulation-bot-state-v2', 'sim-bot-last-known-running');
+  const legacyState = deriveSimState(legacy, 'legacy-simulation-bot-state-v2', 'legacy-sim-bot-last-known-running');
+  const proState = deriveSimState(pro, 'pro-simulation-bot-state-v2', 'pro-sim-bot-last-known-running');
 
   // Shared with RealTradingBot.tsx via context (lives above the router, so it
   // survives in-app navigation) — BOT_ADMIN_TOKEN is memory-only, never in

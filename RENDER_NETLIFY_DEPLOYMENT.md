@@ -35,8 +35,8 @@ In Render:
 3. Use:
    - Runtime: `Node`
    - Root Directory: leave empty if the repository contains only the server files
-   - Build Command: `npm ci`
-   - Start Command: `npm start`
+    - Build Command: `npm install --include=dev && npm run build:worker`
+    - Start Command: `node dist/worker.js`
    - Plan: `Free` for Testnet validation
 4. Deploy once before adding frontend configuration.
 

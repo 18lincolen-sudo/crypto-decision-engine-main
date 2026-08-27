@@ -44,6 +44,7 @@ const AIChatbot = ({ isOpen, onClose }: AIChatbotProps) => {
 
   const playMessageSound = () => {
     if (!soundEnabled) return;
+    if (typeof window === 'undefined') return;
     
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     const oscillator = audioContext.createOscillator();

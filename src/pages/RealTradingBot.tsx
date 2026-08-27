@@ -185,7 +185,7 @@ const RealTradingBot = () => {
             <Alert className="border-orange-500 bg-orange-500/10">
               <AlertTriangle className="h-4 w-4 text-orange-500 flex-shrink-0" />
               <AlertDescription className="font-mono text-orange-300 text-sm leading-relaxed">
-                <strong>אזהרת אבטחה:</strong> BOT_ADMIN_TOKEN נשמר בזיכרון בלבד ולא נכתב ל-localStorage. יש להזין אותו מחדש בכל טעינת עמוד. אל תשתמשו במחשב משותף.
+                <strong>אזהרת אבטחה:</strong> BOT_ADMIN_TOKEN נשמר ב-localStorage של הדפדפן הזה בלבד (לא נשלח לשרת). אל תשתמשו במחשב משותף. ניתן למחוק אותו בכל עת דרך הגדרות הדפדפן.
               </AlertDescription>
             </Alert>
             <div className="border border-primary/30 bg-card/50 backdrop-blur rounded-lg p-5 space-y-3 font-mono">

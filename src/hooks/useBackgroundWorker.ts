@@ -55,10 +55,12 @@ export function useBackgroundWorker({
     }
 
     // Standard fallback
-    if (fallbackTimerRef.current !== null) clearInterval(fallbackTimerRef.current);
-    fallbackTimerRef.current = window.setInterval(() => {
-      onTickRef.current(Date.now());
-    }, intervalMs);
+    if (typeof window !== 'undefined') {
+      if (fallbackTimerRef.current !== null) clearInterval(fallbackTimerRef.current);
+      fallbackTimerRef.current = window.setInterval(() => {
+        onTickRef.current(Date.now());
+      }, intervalMs);
+    }
   }, [intervalMs]);
 
   const stop = useCallback(() => {

@@ -15,7 +15,7 @@ const SEOHead: React.FC<SEOHeadProps> = ({
   description = 'בוט מסחר חכם לקריפטו עם בינה מלאכותית, ניתוח טכני מתקדם ומסחר אוטומטי. השקעה חכמה ובטוחה בשוק הקריפטו.',
   keywords = ['קריפטו', 'בוט מסחר', 'בינה מלאכותית', 'ביטקוין', 'אתריום', 'מסחר אוטומטי'],
   image = '/placeholder.svg',
-  url = 'https://cryptobot-ai.netlify.app'
+  url = typeof window !== 'undefined' ? window.location.origin : 'https://crypto-d.netlify.app'
 }) => {
   const fullTitle = title.includes('בוט מסחר של מנחם') ? title : `${title} | בוט מסחר של מנחם`;
   

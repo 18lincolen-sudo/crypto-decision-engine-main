@@ -13,19 +13,7 @@ The current `.env` contains real-looking `BYBIT_API_KEY`, `BYBIT_SECRET_KEY`, `B
 
 ## 1. Fix `render.yaml`
 
-The worker repository has no lockfile, so Render must not use `npm ci`.
-
-Change:
-
-```yaml
-buildCommand: npm ci
-```
-
-to:
-
-```yaml
-buildCommand: npm install
-```
+The worker repository has a lockfile at `server/package-lock.json`, so Render can use `npm install` safely.
 
 Keep:
 
