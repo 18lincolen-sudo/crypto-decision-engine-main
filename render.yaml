@@ -3,8 +3,8 @@ services:
     name: crypto-trading-worker
     runtime: node
     plan: free
-    buildCommand: cd server && npm install && npm run build
-    startCommand: cd server && node dist/worker.js
+    buildCommand: npm install && npm run build
+    startCommand: node dist/worker.js
     healthCheckPath: /health
     autoDeploy: true
     envVars:
