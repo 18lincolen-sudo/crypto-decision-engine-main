@@ -434,15 +434,16 @@ const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_LEADER_TIMEOUT_MS = 8000;
 
-// Fixed max positions: 7 positions (up to 7 open, 2 waiting in queue)
-function calcMaxPositions(_initialAmount: number): number {
-  return 7;
+// Dynamic max positions: 7 positions per 1000$ of initial amount
+// 1000$ → 7 positions, 500$ → 14 positions, 2000$ → 3 positions (min 1)
+function calcMaxPositions(initialAmount: number): number {
+  return Math.max(1, Math.floor(7 * 1000 / initialAmount));
 }
 
 const DEFAULT_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
   maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
+  executionDelaySec: 3, minConfidenceOverride: 52, positionPercent: 10
 };
 const simState = {
   running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
@@ -502,7 +503,7 @@ async function persistLegacySim() {
 const DEFAULT_PRO_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
   maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
+  executionDelaySec: 3, minConfidenceOverride: 60, positionPercent: 10
 };
 const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
 
@@ -1207,6 +1208,21 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     }
   }, SELF_PING_INTERVAL_MS);
 
+  // Each sim engine still TICKS every 4s (evaluation + mark-to-market + order
+  // fills need that cadence to stay responsive), but the snapshot it produces
+  // was previously PERSISTED (Firestore PATCH + local-file read-modify-write)
+  // on every single one of those ticks regardless of whether anything
+  // meaningful changed — ~900 writes/hour per engine, x3 engines. Persistence
+  // is now throttled to once per SIM_PERSIST_INTERVAL_MS; the in-memory
+  // snapshot (served by /api/*/state) still updates every tick. A forced,
+  // unthrottled flush still happens on start/stop/reset/config (those already
+  // call persistX() directly at their own call sites) and on shutdown below,
+  // so at most SIM_PERSIST_INTERVAL_MS of history is at risk on a hard crash.
+  const SIM_PERSIST_INTERVAL_MS = 30_000;
+  let lastSimPersistAt = 0;
+  let lastLegacySimPersistAt = 0;
+  let lastProSimPersistAt = 0;
+
   let simTickInProgress = false;
   let cachedSimFearGreed = 50;
   let lastFgFetchAt = 0;
@@ -1222,7 +1238,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       const snap = await simEngine.tick(simState.config, cachedSimFearGreed);
       simState.snapshot = snap;
       simState.updatedAt = Date.now();
-      await persistSim();
+      if (now - lastSimPersistAt >= SIM_PERSIST_INTERVAL_MS) {
+        await persistSim();
+        lastSimPersistAt = now;
+      }
     } catch (e: unknown) {
       console.warn('[sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
     } finally {
@@ -1243,7 +1262,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       const snap = await legacySimEngine.tick(legacySimState.config, cachedSimFearGreed);
       legacySimState.snapshot = snap;
       legacySimState.updatedAt = Date.now();
-      await persistLegacySim();
+      if (now - lastLegacySimPersistAt >= SIM_PERSIST_INTERVAL_MS) {
+        await persistLegacySim();
+        lastLegacySimPersistAt = now;
+      }
     } catch (e: unknown) {
       console.warn('[legacy-sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
     } finally {
@@ -1264,7 +1286,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       const snap = await proSimEngine.tick(proSimState.config, cachedSimFearGreed);
       proSimState.snapshot = snap;
       proSimState.updatedAt = Date.now();
-      await persistProSim();
+      if (now - lastProSimPersistAt >= SIM_PERSIST_INTERVAL_MS) {
+        await persistProSim();
+        lastProSimPersistAt = now;
+      }
     } catch (e: unknown) {
       console.warn('[pro-sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
     } finally {
@@ -1278,6 +1303,11 @@ async function shutdown(signal: string): Promise<void> {
   try { await store.set('state', serializeState()); } catch { /* ignore */ }
   lastCachePersistAt = 0;
   try { await persistMarketCache(); } catch { /* ignore */ }
+  // Force-flush the throttled sim snapshots too — otherwise up to
+  // SIM_PERSIST_INTERVAL_MS of in-memory-only history is lost on restart.
+  try { await persistSim(); } catch { /* ignore */ }
+  try { await persistLegacySim(); } catch { /* ignore */ }
+  try { await persistProSim(); } catch { /* ignore */ }
   process.exit(0);
 }
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
