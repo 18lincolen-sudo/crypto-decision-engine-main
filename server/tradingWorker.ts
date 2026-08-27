@@ -433,9 +433,16 @@ const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_LEADER_TIMEOUT_MS = 8000;
+
+// Dynamic max positions: 7 positions per 1000$ of initial amount
+// 1000$ → 7 positions, 500$ → 14 positions, 2000$ → 3 positions (min 1)
+function calcMaxPositions(initialAmount: number): number {
+  return Math.max(1, Math.floor(7 * 1000 / initialAmount));
+}
+
 const DEFAULT_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
-  maxPositions: 5, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
   executionDelaySec: 3, minConfidenceOverride: 0, positionPercent: 10
 };
 const simState = {
@@ -469,8 +476,8 @@ async function persistSim() {
 
 const DEFAULT_LEGACY_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
-  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 0
+  maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: 0, positionPercent: 10
 };
 const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
 
@@ -495,8 +502,8 @@ async function persistLegacySim() {
 
 const DEFAULT_PRO_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
-  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 0
+  maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: 0, positionPercent: 10
 };
 const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
 
@@ -1087,6 +1094,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
       simState.config = { ...DEFAULT_SIM_CONFIG, ...simState.config, ...(body.config as Record<string, unknown>) };
+      // Recalculate maxPositions if initialAmount changed
+      if (typeof simState.config.initialAmount === 'number') {
+        simState.config.maxPositions = calcMaxPositions(simState.config.initialAmount);
+      }
     }
     await persistSim();
     return json(res, 200, simState);
@@ -1121,6 +1132,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
       legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...legacySimState.config, ...(body.config as Record<string, unknown>) };
+      // Recalculate maxPositions if initialAmount changed
+      if (typeof legacySimState.config.initialAmount === 'number') {
+        legacySimState.config.maxPositions = calcMaxPositions(legacySimState.config.initialAmount);
+      }
     }
     await persistLegacySim();
     return json(res, 200, legacySimState);
@@ -1155,6 +1170,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
       proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...proSimState.config, ...(body.config as Record<string, unknown>) };
+      // Recalculate maxPositions if initialAmount changed
+      if (typeof proSimState.config.initialAmount === 'number') {
+        proSimState.config.maxPositions = calcMaxPositions(proSimState.config.initialAmount);
+      }
     }
     await persistProSim();
     return json(res, 200, proSimState);
