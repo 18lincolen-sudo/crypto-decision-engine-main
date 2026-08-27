@@ -301,6 +301,18 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 - הפוגה פועלת רק על המטבע שהפסיד (לא על כל המטבעות)
 - הפוגה מבוטלת אם ההפסד היה גדול מ-5% מסך השווי התיק
 
+### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
+
+מקור: src/services/adaptiveRisk.ts
+
+streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
+drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
+winRateFactor:  ±10% לפי win-rate (רק מעל 10 עסקאות בחלון)
+
+multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2–1.0
+
+מוכפל ישירות ב-betFraction (Kelly) — יכול רק להקטין, לעולם לא להגדיל.
+
 ### Correlation Gate — מניעת קורלציה
 
 ```typescript

@@ -116,8 +116,8 @@ if (regime === 'RANGING') confidence *= 0.7;
 **שערול קשיחים (Hard Gates):**
 | # | שערול | תנאי |
 |---|-------|------|
-| 1 | Weekly Drawdown Lock | הפסד שבועי >= 15% |
-| 2 | Daily Drawdown Block | הפסד יומי >= 8% |
+| 1 | Weekly Drawdown Lock | הפסד שבועי >= 13% |
+| 2 | Daily Drawdown Block | הפסד יומי >= 6% |
 | 3 | Transitional Regime | 20 <= ADX <= 25 (ללא SOFT_TREND) |
 | 4 | Same-Asset Exposure | כבר פתוח Spot או Futures על נכס זה |
 | 5 | High Volatility Futures | ATR% > 5% |
@@ -171,10 +171,15 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 
 **חישוב גודל פוזיציה (Kelly Criterion):**
 ```typescript
-// חישוב בסיסי
-kellyFraction = winRate - (1 - winRate) / riskRewardRatio
-betSizeUsd = portfolioValue × kellyFraction × 0.5 (half-Kelly)
+// עם 30+ עסקאות סגורות
+kellyFraction = winRate - (1 - winRate) / R
+betFraction = clamp(kellyFraction × 0.5, 0, 0.10)
+
+// ללא 30 עסקאות — ברירת מחדל
+betFraction = 0.03 (3%)
 ```
+
+הערה: זהה לנוסחת Pro — Legacy התיישר איתה (§Layer3.3), לא נוסחת half-Kelly ישנה יותר.
 
 **מגבלות:**
 | פרמטר | מקסימום |
@@ -230,6 +235,18 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 **תנאים:**
 - הפוגה פועלת רק על המטבע שהפסיד (לא על כל המטבעות)
 - הפוגה מבוטלת אם ההפסד היה גדול מ-5% מסך השווי התיק
+
+### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
+
+מקור: src/services/adaptiveRisk.ts
+
+streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
+drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
+winRateFactor:  ±10% לפי win-rate (רק מעל 10 עסקאות בחלון)
+
+multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2–1.0
+
+מוכפל ישירות ב-betFraction (Kelly) — יכול רק להקטין, לעולם לא להגדיל.
 
 ### Correlation Gate — מניעת קורלציה
 
@@ -314,7 +331,7 @@ const fee = notional * feePercent / 100;
 | `initialAmount` | 10,000$ |
 | `stopLoss` | 4.2% |
 | `takeProfit` | 3% |
-| `maxPositions` | דינמי (7 × 1000 / initialAmount) |
+| `maxPositions` | 7 (קבוע: עד 7 פוזיציות פתוחות, 2 ממתינות בתור) |
 | `maxFuturesPositions` | 2 |
 | `feePercent` | 0.1% |
 | `slippagePercent` | 0.05% |

@@ -24,12 +24,12 @@ const DEFAULT_CONFIG: SimBotConfig = {
   initialAmount: 10000,
   stopLoss: 4.2,
   takeProfit: 3,
-  maxPositions: 5,
+  maxPositions: 7,
   maxFuturesPositions: 2,
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
-  minConfidenceOverride: 58,
+  minConfidenceOverride: 52,
   positionPercent: 10
 };
 

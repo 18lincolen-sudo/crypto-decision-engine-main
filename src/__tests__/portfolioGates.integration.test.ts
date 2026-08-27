@@ -40,7 +40,8 @@ const shared = pseudoRandomReturns(90, 11);
 const candlesBySymbol: Record<string, Candle[]> = {
   BTC: seriesFrom(shared, 60000),
   ETH: seriesFrom(shared, 3000),
-  SOL: seriesFrom(shared, 150)
+  SOL: seriesFrom(shared, 150),
+  DOGE: seriesFrom(shared, 0.1)  // 4th correlated asset
 };
 
 function evaluation(symbol: string, willExecute = true): SignalEvaluation {
@@ -88,33 +89,33 @@ const baseCtx = {
 };
 
 describe('correlation gate is wired into legacy order generation', () => {
-  it('refuses the third position in a correlated cluster', () => {
+  it('refuses the fourth position in a correlated cluster', () => {
     const orders = generateLegacyOrders({
       ...baseCtx,
-      positions: [position('BTC'), position('ETH')],
-      evaluations: [evaluation('SOL')]
+      positions: [position('BTC'), position('ETH'), position('SOL')],
+      evaluations: [evaluation('DOGE')]
     });
     expect(orders.filter((o) => o.side === 'buy')).toHaveLength(0);
   });
 
-  it('allows it when only one correlated position is held', () => {
+  it('allows it when only two correlated positions are held', () => {
     const orders = generateLegacyOrders({
       ...baseCtx,
-      positions: [position('BTC')],
+      positions: [position('BTC'), position('ETH')],
       evaluations: [evaluation('SOL')]
     });
     expect(orders.filter((o) => o.side === 'buy')).toHaveLength(1);
   });
 
   it('caps a whole cluster that fires within a single tick', () => {
-    // Nothing open: without a within-batch check all three would queue,
+    // Nothing open: without a within-batch check all four would queue,
     // because each evaluation was judged against the same empty book.
     const orders = generateLegacyOrders({
       ...baseCtx,
       positions: [],
-      evaluations: [evaluation('BTC'), evaluation('ETH'), evaluation('SOL')]
+      evaluations: [evaluation('BTC'), evaluation('ETH'), evaluation('SOL'), evaluation('DOGE')]
     });
-    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(2);
+    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(3);
   });
 });
 

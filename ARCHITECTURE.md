@@ -436,6 +436,13 @@ reason: `confidence ${signal.confidence} מתחת לסף המינימלי (${req
 
 הסף מחושב דינמית לפי ATR% (בסיס 60, רמפה עד 75 ב-EXTREME vol).
 
+### מעגלי הגנה (Circuit Breakers)
+
+| בוט | הפסד יומי (Daily) | הפסד שבועי (Weekly) |
+|-----|-------------------|---------------------|
+| Legacy | 6% | 13% |
+| Pro | 8% | 15% |
+
 ### הפרדת Frontend/Backend
 
 - `server/package.json` נפרד עם תלויות מינימליות (dotenv, esbuild, tsx, typescript)

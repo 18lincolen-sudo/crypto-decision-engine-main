@@ -94,8 +94,11 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
   const maxTotalPositions = config.maxPositions || 7;
   const maxFutures = config.maxFuturesPositions || 2;
   const futuresCount = openPos.filter((p) => p.type === 'FUTURES').length;
-  const isWeeklyLocked = weeklyDrawdownPercent >= 15;
-  const isDailyBlocked = dailyDrawdownPercent >= 8;
+  // Legacy-specific circuit breaker thresholds (NOT Pro's 8%/15%)
+  const LEGACY_WEEKLY_DRAWDOWN_LOCK_PERCENT = 13;
+  const LEGACY_DAILY_DRAWDOWN_BLOCK_PERCENT = 6;
+  const isWeeklyLocked = weeklyDrawdownPercent >= LEGACY_WEEKLY_DRAWDOWN_LOCK_PERCENT;
+  const isDailyBlocked = dailyDrawdownPercent >= LEGACY_DAILY_DRAWDOWN_BLOCK_PERCENT;
 
   const results: SignalEvaluation[] = [];
 

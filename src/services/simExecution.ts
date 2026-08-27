@@ -358,7 +358,7 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
 
     // Confidence floor — minimum signal quality threshold
     if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {
-      const minConf = config.minConfidenceOverride ?? 58;
+      const minConf = config.minConfidenceOverride ?? 52;
       if (ev.confidence < minConf) { status = `Confidence נמוך מדי (${ev.confidence} < ${minConf})`; willExecute = false; }
     }
 

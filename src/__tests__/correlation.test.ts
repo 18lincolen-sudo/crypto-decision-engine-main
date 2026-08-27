@@ -99,12 +99,13 @@ describe('evaluateCorrelationGate', () => {
     BTC: seriesFrom(shared, 60000),
     ETH: seriesFrom(shared, 3000),
     SOL: seriesFrom(shared, 150),
+    DOGE: seriesFrom(shared, 0.1),  // 4th correlated asset
     XMR: seriesFrom(independent, 160)
   };
 
-  it('allows the first two positions in a correlated cluster and refuses the third', () => {
+  it('allows the first three positions in a correlated cluster and refuses the fourth', () => {
     const twoHeld = evaluateCorrelationGate({
-      symbol: 'SOL',
+      symbol: 'DOGE',
       direction: 'LONG',
       held: [{ symbol: 'BTC', direction: 'LONG' }],
       candlesBySymbol
@@ -112,7 +113,7 @@ describe('evaluateCorrelationGate', () => {
     expect(twoHeld.allowed).toBe(true);
 
     const threeHeld = evaluateCorrelationGate({
-      symbol: 'SOL',
+      symbol: 'DOGE',
       direction: 'LONG',
       held: [
         { symbol: 'BTC', direction: 'LONG' },
@@ -120,9 +121,21 @@ describe('evaluateCorrelationGate', () => {
       ],
       candlesBySymbol
     });
-    expect(threeHeld.allowed).toBe(false);
-    expect(threeHeld.matches.length).toBe(2);
-    expect(threeHeld.reason).toContain('קורלציה');
+    expect(threeHeld.allowed).toBe(true);
+
+    const fourHeld = evaluateCorrelationGate({
+      symbol: 'DOGE',
+      direction: 'LONG',
+      held: [
+        { symbol: 'BTC', direction: 'LONG' },
+        { symbol: 'ETH', direction: 'LONG' },
+        { symbol: 'SOL', direction: 'LONG' }
+      ],
+      candlesBySymbol
+    });
+    expect(fourHeld.allowed).toBe(false);
+    expect(fourHeld.matches.length).toBe(3);
+    expect(fourHeld.reason).toContain('קורלציה');
   });
 
   it('treats an opposite-direction position as a hedge, not a concentration', () => {

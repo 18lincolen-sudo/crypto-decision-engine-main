@@ -772,7 +772,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'WEEKLY_DRAWDOWN_LOCK',
-      reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני'
+      reason: 'נעילת מערכת שבועית (הפסד >= 13%) — נדרש שחרור ידני'
     };
   }
 
@@ -783,7 +783,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'DAILY_DRAWDOWN_BLOCK',
-      reason: 'הגנת תיק יומית (הפסד >= 8%) — חסימת כניסות חדשות עד יום המסחר הבא'
+      reason: 'הגנת תיק יומית (הפסד >= 6%) — חסימת כניסות חדשות עד יום המסחר הבא'
     };
   }
 
@@ -852,7 +852,7 @@ export function routeTradeType(
   // All conditions required (alg.md §Layer2.1 — 5 conditions, NO Supertrend-match):
   // 1. Regime = TRENDING (ADX > 25)
   // 2. Volatility = LOW or NORMAL (ATR% <= 5%) [HIGH VOL -> FUTURES BLOCKED]
-  // 3. SignalScore >= dynamic threshold (base 72, ramps to 87 in EXTREME)
+  // 3. SignalScore >= dynamic threshold (base 70, ramps to 85 in EXTREME)
   // 4. No existing Futures position on this asset
   // 5. (Supertrend is NOT a routing condition per alg.md — it is a Layer 1
   //    signal component, already scored into SignalScore)
@@ -867,7 +867,7 @@ export function routeTradeType(
     return {
       type: 'FUTURES',
       side,
-      reason: `כל תנאי Futures התקיימו: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= 72, תנודתיות ${layer0.volatility}`
+      reason: `כל תנאי Futures התקיימו: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= ${futuresThreshold.toFixed(1)}, תנודתיות ${layer0.volatility}`
     };
   }
 
@@ -891,8 +891,8 @@ export function routeTradeType(
       reason += ' [HIGH VOL: Futures חסום, Spot מאושר]';
     } else if (!isTrending) {
       reason += ' [Ranging: רק Spot מותר]';
-    } else if (signalScore < 72) {
-      reason += ` [ציון ${signalScore} מתחת ל-72 של Futures — Spot מאושר]`;
+    } else if (signalScore < futuresThreshold) {
+      reason += ` [ציון ${signalScore} מתחת ל-${futuresThreshold.toFixed(1)} של Futures — Spot מאושר]`;
     }
     return {
       type: 'SPOT',
@@ -1349,11 +1349,12 @@ export function evaluateExit(
   const isShort = pos.side === 'SHORT';
 
   // 1. Drawdown Circuit Breakers (Weekly lock / Daily block)
-  if (portfolioStats.weeklyDrawdownPercent >= 15 || portfolioStats.systemLocked) {
+  // Legacy thresholds: 13% weekly (not Pro's 15%)
+  if (portfolioStats.weeklyDrawdownPercent >= 13 || portfolioStats.systemLocked) {
     return {
       shouldExit: true,
       exitType: 'FULL',
-      reason: `הגנת תיק שבועית הופעלה (Drawdown ${portfolioStats.weeklyDrawdownPercent.toFixed(1)}% >= 15%) — סגירת פוזיציה להגנת הון`
+      reason: `הגנת תיק שבועית הופעלה (Drawdown ${portfolioStats.weeklyDrawdownPercent.toFixed(1)}% >= 13%) — סגירת פוזיציה להגנת הון`
     };
   }
 
