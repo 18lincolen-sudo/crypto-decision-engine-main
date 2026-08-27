@@ -19,9 +19,12 @@
 
 /** A closed trade as the engines record it. `at` is the fill timestamp —
  *  supply it whenever available: it is what lets this module order the
- *  history itself instead of trusting the caller's array order. */
+ *  history itself instead of trusting the caller's array order.
+ *  `symbol` is the base asset (e.g. "BTC") — required for per-symbol cooldown. */
 export interface ClosedTradeRecord {
   pnl: number;
+  /** Base symbol (e.g. "BTC") — used for per-symbol cooldown tracking. */
+  symbol?: string;
   at?: number;
 }
 
@@ -36,6 +39,8 @@ export interface PerformanceWindow {
   winRate: number;
   /** Timestamp of the most recent losing trade, when known. */
   lastLossAt?: number;
+  /** PnL percentage of the most recent losing trade (vs portfolio value). */
+  lastLossPnlPercent?: number;
 }
 
 export const EMPTY_PERFORMANCE_WINDOW: PerformanceWindow = {
@@ -62,10 +67,14 @@ export const PERFORMANCE_WINDOW_SIZE = 20;
  * tail of its own array and walked it backwards was reading the OLDEST
  * trades and reporting a streak from ancient history. Records without `at`
  * are assumed to be in chronological (oldest-first) order.
+ *
+ * @param portfolioValue  If supplied, used to calculate lastLossPnlPercent
+ *                        (the most recent loss as % of portfolio).
  */
 export function summarizeRecentPerformance(
   closed: ClosedTradeRecord[],
-  windowSize: number = PERFORMANCE_WINDOW_SIZE
+  windowSize: number = PERFORMANCE_WINDOW_SIZE,
+  portfolioValue?: number
 ): PerformanceWindow {
   if (!closed?.length) return { ...EMPTY_PERFORMANCE_WINDOW };
 
@@ -91,8 +100,15 @@ export function summarizeRecentPerformance(
   const wins = window.filter((t) => t.pnl > 0).length;
 
   let lastLossAt: number | undefined;
+  let lastLossPnl: number | undefined;
   for (let i = ordered.length - 1; i >= 0; i--) {
-    if (ordered[i].pnl < 0) { lastLossAt = ordered[i].at; break; }
+    if (ordered[i].pnl < 0) { lastLossAt = ordered[i].at; lastLossPnl = ordered[i].pnl; break; }
+  }
+
+  // Calculate last loss as percentage of portfolio value
+  let lastLossPnlPercent: number | undefined;
+  if (typeof lastLossPnl === 'number' && portfolioValue && portfolioValue > 0) {
+    lastLossPnlPercent = (lastLossPnl / portfolioValue) * 100;
   }
 
   return {
@@ -100,7 +116,8 @@ export function summarizeRecentPerformance(
     lossStreak,
     winStreak,
     winRate: window.length ? wins / window.length : 0,
-    lastLossAt
+    lastLossAt,
+    lastLossPnlPercent
   };
 }
 
@@ -220,27 +237,44 @@ export function sizingMultiplierFromHistory(closed: ClosedTradeRecord[], dailyDr
 }
 
 // ── Streak cooldown ──────────────────────────────────────────────────────────
-// Sizing down is not the same as standing down. Two consecutive losses on a
-// book that trades several symbols usually means the market, not the symbol,
-// is the problem — so the cooldown is PORTFOLIO-level and applies to every
-// symbol, unlike simExecution.ts's per-symbol re-entry cooldown (which only
-// stops churning the one instrument that just stopped out).
+// Sizing down is not the same as standing down. A losing streak on a single
+// symbol usually means that symbol is the problem — so the cooldown is now
+// PER-SYMBOL, not portfolio-level.
+//
+// The cooldown is CANCELLED if the loss was greater than 5% of the total
+// portfolio value — large losses are a different regime and should not
+// trigger a cooldown (the position was already stopped out).
 
 export const STREAK_COOLDOWN_LOSSES = 2;
 export const STREAK_COOLDOWN_MS = 30 * 60 * 1000;
+/** Losses above this percentage of portfolio value cancel the cooldown. */
+export const STREAK_COOLDOWN_BIG_LOSS_THRESHOLD = 5;
 
 /**
- * Timestamp until which new entries are blocked, or undefined when the book
- * is clear. Anchored on the LAST LOSS, not on "now" — so the clock starts
- * when the damage happened and a cooldown is never restarted by merely
- * re-evaluating.
+ * Timestamp until which new entries are blocked for a specific symbol, or
+ * undefined when the book is clear for that symbol.
+ *
+ * @param perf  Performance window for the symbol
+ * @param portfolioValue  Total portfolio value — used to check if the loss
+ *                        was > 5% (which cancels the cooldown)
+ * @param lossesRequired  Consecutive losses before cooldown triggers
+ * @param cooldownMs  Duration of the cooldown
  */
-export function computeStreakCooldownUntil(
+export function computeSymbolStreakCooldownUntil(
   perf: PerformanceWindow,
+  portfolioValue: number,
   lossesRequired: number = STREAK_COOLDOWN_LOSSES,
   cooldownMs: number = STREAK_COOLDOWN_MS
 ): number | undefined {
   if (perf.lossStreak < lossesRequired || typeof perf.lastLossAt !== 'number') return undefined;
+
+  // Cancel cooldown if the loss was > 5% of portfolio — large losses are
+  // a different regime and should not trigger a cooldown.
+  if (portfolioValue > 0 && perf.lastLossPnlPercent !== undefined) {
+    const lossPercentOfPortfolio = Math.abs(perf.lastLossPnlPercent);
+    if (lossPercentOfPortfolio > STREAK_COOLDOWN_BIG_LOSS_THRESHOLD) return undefined;
+  }
+
   return perf.lastLossAt + cooldownMs;
 }
 
@@ -248,12 +282,27 @@ export function isInStreakCooldown(until: number | undefined, now: number = Date
   return typeof until === 'number' && now < until;
 }
 
-/** Convenience wrapper: closed-trade history in, cooldown deadline out. */
-export function streakCooldownFromHistory(closed: ClosedTradeRecord[]): number | undefined {
-  return computeStreakCooldownUntil(summarizeRecentPerformance(closed));
+/** Convenience wrapper: closed-trade history in, cooldown deadline out.
+ *  Filters trades by the given symbol. If no trades have symbols (legacy data),
+ *  falls back to portfolio-level behavior (all trades considered). */
+export function streakCooldownFromHistory(
+  closed: ClosedTradeRecord[],
+  portfolioValue: number,
+  symbol?: string
+): number | undefined {
+  // Check if any trades have symbols — if not, use portfolio-level behavior
+  const hasSymbolData = closed.some((t) => t.symbol !== undefined);
+  const filtered = (hasSymbolData && symbol)
+    ? closed.filter((t) => t.symbol === symbol)
+    : closed;
+  return computeSymbolStreakCooldownUntil(
+    summarizeRecentPerformance(filtered, PERFORMANCE_WINDOW_SIZE, portfolioValue),
+    portfolioValue
+  );
 }
 
-export function streakCooldownReason(until: number): string {
+export function streakCooldownReason(until: number, symbol?: string): string {
   const minutesLeft = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
-  return `הפוגה אחרי רצף הפסדים — כניסות חדשות חסומות עוד ${minutesLeft} דק'`;
+  const symbolText = symbol ? ` על ${symbol}` : '';
+  return `הפוגה אחרי רצף הפסדים${symbolText} — כניסות חדשות חסומות עוד ${minutesLeft} דק'`;
 }

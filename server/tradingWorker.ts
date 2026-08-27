@@ -443,7 +443,7 @@ function calcMaxPositions(initialAmount: number): number {
 const DEFAULT_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
   maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 52, positionPercent: 10
+  executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
 };
 const simState = {
   running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
@@ -503,7 +503,7 @@ async function persistLegacySim() {
 const DEFAULT_PRO_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
   maxPositions: calcMaxPositions(10000), maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 60, positionPercent: 10
+  executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
 };
 const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
 

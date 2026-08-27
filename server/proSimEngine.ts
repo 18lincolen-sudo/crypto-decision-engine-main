@@ -21,7 +21,7 @@ const proStrategy: SimEngineStrategy = {
   telegramTag: 'pro-sim',
   telegramTitle: '🤖 בוט פרו · alg.md',
   statusFooterLabel: 'מצב כולל של הבוט (פרו)',
-  minConfidence: 60,
+  minConfidence: 58,
   minCandlesForH1View: MIN_PRO_CANDLES,
   logCandleFetch: false,
 

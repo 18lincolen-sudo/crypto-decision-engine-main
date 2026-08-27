@@ -25,7 +25,7 @@ import { computeEntryBudget, isInEntryCooldown } from './simExecution';
 import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
-  computeStreakCooldownUntil,
+  streakCooldownFromHistory,
   isInStreakCooldown,
   streakCooldownReason,
   ClosedTradeRecord
@@ -83,8 +83,6 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
   // fraction (see computeSizingMultiplier for why it only ever de-risks).
   const performance = summarizeRecentPerformance(closedTradeMetrics as ClosedTradeRecord[]);
   const sizingMultiplier = computeSizingMultiplier(performance, dailyDrawdownPercent);
-  const streakCooldownUntil = computeStreakCooldownUntil(performance);
-  const streakCooldownActive = isInStreakCooldown(streakCooldownUntil);
 
   const heldForCorrelation: CorrelatedHolding[] = [
     ...openPos.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
@@ -107,6 +105,15 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     const priceChange24h = crypto.price_change_percentage_24h || 0;
     const candles = candlesBySymbol[symbol];
     if (!candles || candles.length < MIN_LEGACY_CANDLES) continue;
+
+    // Per-symbol streak cooldown: only block entries on symbols that have
+    // had consecutive losses, and only if the loss was <= 5% of portfolio.
+    const symbolStreakCooldownUntil = streakCooldownFromHistory(
+      (closedTradeMetrics || []) as ClosedTradeRecord[],
+      equity,
+      symbol
+    );
+    const symbolStreakCooldownActive = isInStreakCooldown(symbolStreakCooldownUntil);
 
     const layer0 = detectMarketRegime(candles, currentPrice);
     const layer1 = evaluateSignals(candles, currentPrice, priceChange24h, layer0, fearGreedIndex);
@@ -152,8 +159,8 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false;
     } else if (layer2.type === 'SPOT' && layer2.side === 'BUY' && isHeld) {
       status = 'כבר מוחזק בתיק (Spot)'; willExecute = false;
-    } else if (streakCooldownActive) {
-      status = streakCooldownReason(streakCooldownUntil as number); willExecute = false;
+    } else if (symbolStreakCooldownActive) {
+      status = streakCooldownReason(symbolStreakCooldownUntil as number, symbol); willExecute = false;
     }
 
     // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
@@ -245,6 +252,8 @@ export interface LegacyOrderGenContext {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   cash: number;
+  /** Portfolio equity value — used for streak cooldown threshold calculation. */
+  equity: number;
   /** Symbol (as stored on the position/order) → last-loss timestamp. Read-only here. */
   exitCooldown: Record<string, number>;
   priceFor: (symbol: string) => number | undefined;
@@ -326,10 +335,9 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     }
   }
 
-  // A losing streak stops new entries entirely; exits above still run.
-  if (isInStreakCooldown(computeStreakCooldownUntil(summarizeRecentPerformance(closedTradeMetrics as ClosedTradeRecord[])))) {
-    return newOrders;
-  }
+  // Per-symbol streak cooldown is handled in the evaluation loop above,
+  // not here. This is intentional — a losing streak on one symbol should not
+  // block entries on other symbols.
 
   const correlationBook: CorrelatedHolding[] = [
     ...positions.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),

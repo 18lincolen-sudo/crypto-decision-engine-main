@@ -43,7 +43,7 @@ const candlesBySymbol: Record<string, Candle[]> = {
   SOL: seriesFrom(shared, 150)
 };
 
-function evaluation(symbol: string): SignalEvaluation {
+function evaluation(symbol: string, willExecute = true): SignalEvaluation {
   return {
     symbol,
     action: 'buy',
@@ -53,8 +53,8 @@ function evaluation(symbol: string): SignalEvaluation {
     price: 100,
     priceChange24h: 1,
     reasoning: 'test',
-    status: 'מוכן לביצוע',
-    willExecute: true,
+    status: willExecute ? 'מוכן לביצוע' : 'הפוגה אחרי רצף הפסדים',
+    willExecute,
     factors: [],
     confidenceGap: 0,
     leverage: 1,
@@ -79,6 +79,7 @@ const baseCtx = {
   dailyDrawdownPercent: 0,
   weeklyDrawdownPercent: 0,
   cash: 100_000,
+  equity: 100_000,
   exitCooldown: {} as Record<string, number>,
   priceFor: () => 100,
   candlesBySymbol,
@@ -124,11 +125,13 @@ describe('streak cooldown is wired into legacy order generation', () => {
     { pnl: -5, at: Date.now() - 60_000 }
   ];
 
-  it('blocks every new entry for 30 minutes after two consecutive losses', () => {
+  it('blocks entries when evaluation has willExecute=false due to cooldown', () => {
+    // The per-symbol cooldown is now handled in buildEvaluations.
+    // When an evaluation has willExecute=false, generateLegacyOrders respects that.
     const orders = generateLegacyOrders({
       ...baseCtx,
       positions: [],
-      evaluations: [evaluation('BTC')],
+      evaluations: [evaluation('BTC', false)],  // willExecute: false (cooldown)
       closedTradeMetrics: twoRecentLosses
     });
     expect(orders).toHaveLength(0);
@@ -138,9 +141,25 @@ describe('streak cooldown is wired into legacy order generation', () => {
     const orders = generateLegacyOrders({
       ...baseCtx,
       positions: [],
-      evaluations: [evaluation('BTC')],
+      evaluations: [evaluation('BTC', true)],  // willExecute: true (no cooldown)
       closedTradeMetrics: twoRecentLosses.map((t) => ({ ...t, at: t.at - 45 * 60_000 }))
     });
+    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(1);
+  });
+
+  it('only blocks the symbol that had losses, not others (per-symbol cooldown)', () => {
+    const lossesOnBtcOnly = [
+      { pnl: 5, at: Date.now() - 10 * 60_000, symbol: 'ETH' },
+      { pnl: -5, at: Date.now() - 5 * 60_000, symbol: 'BTC' },
+      { pnl: -5, at: Date.now() - 60_000, symbol: 'BTC' }
+    ];
+    const orders = generateLegacyOrders({
+      ...baseCtx,
+      positions: [],
+      evaluations: [evaluation('ETH', true)],  // ETH evaluation, willExecute: true
+      closedTradeMetrics: lossesOnBtcOnly
+    });
+    // ETH should NOT be blocked — only BTC had losses
     expect(orders.filter((o) => o.side === 'buy')).toHaveLength(1);
   });
 });

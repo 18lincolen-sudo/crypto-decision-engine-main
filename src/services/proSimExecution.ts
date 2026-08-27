@@ -24,7 +24,7 @@ import { computeEntryBudget, isInEntryCooldown } from './simExecution';
 import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
-  computeStreakCooldownUntil,
+  streakCooldownFromHistory,
   isInStreakCooldown,
   streakCooldownReason,
   ClosedTradeRecord
@@ -82,8 +82,6 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
   // adapts by a multiplier that can only de-risk (see computeSizingMultiplier).
   const performance = summarizeRecentPerformance(closedTradeMetrics);
   const sizingMultiplier = computeSizingMultiplier(performance, dailyDrawdownPercent);
-  const streakCooldownUntil = computeStreakCooldownUntil(performance);
-  const streakCooldownActive = isInStreakCooldown(streakCooldownUntil);
 
   const heldForCorrelation: CorrelatedHolding[] = [
     ...openPos.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
@@ -112,6 +110,15 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
     const priceChange24h = crypto.price_change_percentage_24h || 0;
     const candles = candlesBySymbol[symbol];
     if (!candles || candles.length < MIN_PRO_CANDLES) continue;
+
+    // Per-symbol streak cooldown: only block entries on symbols that have
+    // had consecutive losses, and only if the loss was <= 5% of portfolio.
+    const symbolStreakCooldownUntil = streakCooldownFromHistory(
+      closedTradeMetrics,
+      equity,
+      symbol
+    );
+    const symbolStreakCooldownActive = isInStreakCooldown(symbolStreakCooldownUntil);
 
     const regime = detectProRegime(candles, currentPrice);
     const signal = evaluateProSignals(candles, currentPrice, priceChange24h, regime, fearGreedIndex);
@@ -161,8 +168,8 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false;
     } else if (router.type === 'SPOT' && router.side === 'BUY' && isHeld) {
       status = 'כבר מוחזק בתיק (Spot)'; willExecute = false;
-    } else if (streakCooldownActive) {
-      status = streakCooldownReason(streakCooldownUntil as number); willExecute = false;
+    } else if (symbolStreakCooldownActive) {
+      status = streakCooldownReason(symbolStreakCooldownUntil as number, symbol); willExecute = false;
     }
 
     // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
@@ -329,10 +336,9 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     }
   }
 
-  // A losing streak stops new entries entirely; exits above still run.
-  if (isInStreakCooldown(computeStreakCooldownUntil(summarizeRecentPerformance(closedTradeMetrics)))) {
-    return newOrders;
-  }
+  // Per-symbol streak cooldown is handled in the evaluation loop above,
+  // not here. This is intentional — a losing streak on one symbol should not
+  // block entries on other symbols.
 
   const correlationBook: CorrelatedHolding[] = [
     ...positions.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),

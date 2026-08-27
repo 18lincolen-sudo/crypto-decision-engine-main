@@ -257,9 +257,9 @@ crypto-decision-engine-main/
 
 | מנוע | קובץ | אלגוריתם | שימוש | minConfidence |
 |------|------|-----------|--------|---------------|
-| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 52 |
+| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 58 |
 | **מקורי** | `legacySimEngine.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | סימולציה | 58 |
-| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 60 |
+| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 58 |
 
 **מקורות מידע לכל המנועים:**
 - **Bybit** — נתוני שוק (candles, ticker, instruments-info)
@@ -378,21 +378,13 @@ server/
 
 ## 9. שינויים אחרונים
 
-### מקסימום פוזיציות דינמי
+### מקסימום פוזיציות
 
-המקסימום פוזיציות מחושב כעת בהתאם להשקעה ההתחלתית:
+המקסימום פוזיציות קבוע על **7 פוזיציות פתוחות** (עד 2 ממתינות בתור):
 
 ```
-maxPositions = Math.max(1, Math.floor(7 * 1000 / initialAmount))
+maxPositions = 7
 ```
-
-| השקעה | מקסימום פוזיציות |
-|-------|-----------------|
-| 100$ | 70 |
-| 500$ | 14 |
-| 1000$ | 7 |
-| 2000$ | 3 |
-| 10000$ | 1 |
 
 ### סינון Confidence
 
@@ -400,9 +392,9 @@ maxPositions = Math.max(1, Math.floor(7 * 1000 / initialAmount))
 
 | בוט | סף מינימלי | מקור בקוד |
 |-----|-----------|-----------|
-| חדש | 52 | `simExecution.ts` |
+| חדש | 58 | `simExecution.ts` |
 | Legacy | 58 | `legacySimExecution.ts` |
-| Pro | 60 | `proSimExecution.ts` |
+| Pro | 58 | `proSimExecution.ts` |
 
 ### סף Futures דינמי
 
@@ -410,6 +402,39 @@ maxPositions = Math.max(1, Math.floor(7 * 1000 / initialAmount))
 ```typescript
 const futuresThreshold = dynamicConfidenceThreshold(70, atrPercent);
 ```
+
+### פוגה אחרי רצף הפסדים (Streak Cooldown)
+
+הפוגה פועלת כעת **לפי מטבע** (לא על כל התיק):
+
+```typescript
+// אחרי 2 הפסדים רצופים על אותו מטבע — השהיה של 30 דקות
+// הפוגה מבוטלת אם ההפסד היה > 5% מסך השווי התיק
+const symbolStreakCooldownUntil = streakCooldownFromHistory(closedTrades, equity, symbol);
+if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
+```
+
+**תנאים:**
+| תנאי | ערך |
+|------|-----|
+| מספר הפסדים רצופים להפעלה | 2 |
+| משך הפוגה | 30 דקות |
+| ביטול הפוגה | הפסד > 5% מסך השווי התיק |
+| טווח | לפי מטבע (לא פורטפוליו) |
+
+### הצגת סף דינמי בהודעות HOLD
+
+הודעות HOLD מציגות כעת את הסף הדינמי המחושב (לא ליטרל קשיח):
+
+```typescript
+// tradeEngine.ts — routeTradeType
+reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (${requiredSpotScore.toFixed(1)})`
+
+// proAlgEngine.ts — routeProTradeType
+reason: `confidence ${signal.confidence} מתחת לסף המינימלי (${requiredSpotScore.toFixed(1)})`
+```
+
+הסף מחושב דינמית לפי ATR% (בסיס 60, רמפה עד 75 ב-EXTREME vol).
 
 ### הפרדת Frontend/Backend
 

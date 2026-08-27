@@ -194,7 +194,8 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('HOLD');
-    expect(result.reason).toContain('60');
+    // Dynamic threshold with ATR% = 3: base 60 + ramp * 15 = 60 + (1/6)*15 = 62.5
+    expect(result.reason).toContain('62.5');
   });
 
   // ─────────────────────────────────────────────────────────────

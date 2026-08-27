@@ -218,12 +218,18 @@ if (layer1.signalScore < minConf) → BLOCK
 
 ## 5. שערול נוספים בסימולציה
 
-### Streak Cooldown — השהיה אחרי הפסדים
+### Streak Cooldown — השהיה אחרי הפסדים (לפי מטבע)
 
 ```typescript
-// אחרי 3 הפסדים רצופים — השהיה של 24 שעות
-if (streakCooldownActive) → BLOCK
+// אחרי 2 הפסדים רצופים על אותו מטבע — השהיה של 30 דקות
+// הפוגה מבוטלת אם ההפסד היה > 5% מסך השווי התיק
+const symbolStreakCooldownUntil = streakCooldownFromHistory(closedTradeMetrics, equity, symbol);
+if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 ```
+
+**תנאים:**
+- הפוגה פועלת רק על המטבע שהפסיד (לא על כל המטבעות)
+- הפוגה מבוטלת אם ההפסד היה גדול מ-5% מסך השווי התיק
 
 ### Correlation Gate — מניעת קורלציה
 

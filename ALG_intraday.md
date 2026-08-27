@@ -80,18 +80,10 @@ if (p.openPositionsCount >= params.maxOpenPositions) → BLOCK
 if (sameAsset) → BLOCK
 ```
 
-**מקסימום פוזיציות דינמי:**
+**מקסימום פוזיציות:**
 ```typescript
-maxPositions = Math.max(1, Math.floor(7 * 1000 / initialAmount))
+maxPositions = 7  // קבוע: עד 7 פוזיציות פתוחות, 2 ממתינות בתור
 ```
-
-| השקעה | מקסימום פוזיציות |
-|-------|-----------------|
-| 100$ | 70 |
-| 500$ | 14 |
-| 1000$ | 7 |
-| 2000$ | 3 |
-| 10000$ | 1 |
 
 ---
 
@@ -257,22 +249,28 @@ const confidence = d.entry
 **סינון בסימולציה:**
 ```typescript
 // simExecution.ts — Confidence floor
-const minConf = config.minConfidenceOverride ?? 52;
+const minConf = config.minConfidenceOverride ?? 58;
 if (ev.confidence < minConf) → BLOCK
 ```
 
-**סף מינימלי:** 52 (ניתן לשינוי דרך ה-UI)
+**סף מינימלי:** 58 (ניתן לשינוי דרך ה-UI)
 
 ---
 
 ## 5. שערול נוספים בסימולציה
 
-### Streak Cooldown — השהיה אחרי הפסדים
+### Streak Cooldown — השהיה אחרי הפסדים (לפי מטבע)
 
 ```typescript
-// אחרי 3 הפסדים רצופים — השהיה של 24 שעות
-if (streakCooldownActive) → BLOCK
+// אחרי 2 הפסדים רצופים על אותו מטבע — השהיה של 30 דקות
+// הפוגה מבוטלת אם ההפסד היה > 5% מסך השווי התיק
+const symbolStreakCooldownUntil = streakCooldownFromHistory(closedTrades, equity, symbol);
+if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 ```
+
+**תנאים:**
+- הפוגה פועלת רק על המטבע שהפסיד (לא על כל המטבעות)
+- הפוגה מבוטלת אם ההפסד היה גדול מ-5% מסך השווי התיק
 
 ### Correlation Gate — מניעת קורלציה
 

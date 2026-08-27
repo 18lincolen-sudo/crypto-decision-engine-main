@@ -250,9 +250,6 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
     correlationLookback = DEFAULT_CORRELATION_LOOKBACK
   } = ctx;
 
-  const streakCooldownUntil = streakCooldownFromHistory(closedTrades || []);
-  const streakCooldownActive = isInStreakCooldown(streakCooldownUntil);
-
   // Adaptive risk-per-trade. Computed here rather than at the call site so
   // every runtime gets it — it previously lived in the browser hook alone,
   // which left the 24/7 server engine sizing every trade off the constant.
@@ -341,6 +338,11 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
     const isHeld = openPos.some((p) => toBase(p.symbol) === symbol);
     const hasExistingFutures = openPos.some((p) => toBase(p.symbol) === symbol && p.type === 'FUTURES');
 
+    // Per-symbol streak cooldown: only block entries on symbols that have
+    // had consecutive losses, and only if the loss was <= 5% of portfolio.
+    const symbolStreakCooldownUntil = streakCooldownFromHistory(closedTrades || [], equity, symbol);
+    const symbolStreakCooldownActive = isInStreakCooldown(symbolStreakCooldownUntil);
+
     let status = ev.status;
     let willExecute = ev.willExecute;
 
@@ -352,7 +354,7 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
     else if (ev.tradeType === 'FUTURES' && futuresCount >= maxFutures) { status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false; }
     else if (ev.tradeType === 'FUTURES' && hasExistingFutures) { status = 'קיימת כבר פוזיציית Futures פתוחה'; willExecute = false; }
     else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) { status = 'כבר מוחזק בתיק (Spot)'; willExecute = false; }
-    else if (streakCooldownActive) { status = streakCooldownReason(streakCooldownUntil as number); willExecute = false; }
+    else if (symbolStreakCooldownActive) { status = streakCooldownReason(symbolStreakCooldownUntil as number, symbol); willExecute = false; }
 
     // Confidence floor — minimum signal quality threshold
     if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {
@@ -525,9 +527,9 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
   // the START of this tick, so a batch cap here is the only thing standing
   // between "N symbols qualified simultaneously" and "N new positions
   // regardless of maxPositions".
-  // A losing streak stops the book entirely — sizing down is not the same as
-  // standing down. Exits above are deliberately NOT affected.
-  if (isInStreakCooldown(streakCooldownFromHistory(closedTrades || []))) return newOrders;
+  // Note: Per-symbol streak cooldown is handled in the evaluation loop above,
+  // not here. This is intentional — a losing streak on one symbol should not
+  // block entries on other symbols.
 
   let totalPositionCount = positions.length + pending.filter((o) => ENTRY_ORDER_SIDES.has(o.side)).length;
   let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +

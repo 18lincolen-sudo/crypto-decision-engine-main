@@ -5,9 +5,11 @@ import {
   computeDrawdownFactor,
   computeAdaptiveRiskPercent,
   computeSizingMultiplier,
-  computeStreakCooldownUntil,
+  computeSymbolStreakCooldownUntil,
+  streakCooldownFromHistory,
   isInStreakCooldown,
-  STREAK_COOLDOWN_MS
+  STREAK_COOLDOWN_MS,
+  STREAK_COOLDOWN_BIG_LOSS_THRESHOLD
 } from '../services/adaptiveRisk';
 
 const T0 = 1_700_000_000_000;
@@ -122,11 +124,13 @@ describe('computeSizingMultiplier (Kelly-sized engines)', () => {
 });
 
 describe('streak cooldown', () => {
-  it('opens a 30-minute portfolio-wide block after two consecutive losses', () => {
+  const PORTFOLIO_VALUE = 10000;
+
+  it('opens a 30-minute per-symbol block after two consecutive losses', () => {
     const perf = summarizeRecentPerformance([
       { pnl: 5, at: t(1) }, { pnl: -5, at: t(2) }, { pnl: -5, at: t(3) }
-    ]);
-    const until = computeStreakCooldownUntil(perf);
+    ], 20, PORTFOLIO_VALUE);
+    const until = computeSymbolStreakCooldownUntil(perf, PORTFOLIO_VALUE);
     expect(until).toBe(t(3) + STREAK_COOLDOWN_MS);
     expect(isInStreakCooldown(until, t(3) + 60_000)).toBe(true);
     expect(isInStreakCooldown(until, t(3) + STREAK_COOLDOWN_MS + 1)).toBe(false);
@@ -135,12 +139,40 @@ describe('streak cooldown', () => {
   it('is anchored on the loss, not on evaluation time — re-checking cannot restart it', () => {
     const perf = summarizeRecentPerformance([
       { pnl: -5, at: t(1) }, { pnl: -5, at: t(2) }
-    ]);
-    expect(computeStreakCooldownUntil(perf)).toBe(computeStreakCooldownUntil(perf));
+    ], 20, PORTFOLIO_VALUE);
+    expect(computeSymbolStreakCooldownUntil(perf, PORTFOLIO_VALUE)).toBe(computeSymbolStreakCooldownUntil(perf, PORTFOLIO_VALUE));
   });
 
   it('does not fire on a single loss', () => {
-    const perf = summarizeRecentPerformance([{ pnl: 5, at: t(1) }, { pnl: -5, at: t(2) }]);
-    expect(computeStreakCooldownUntil(perf)).toBeUndefined();
+    const perf = summarizeRecentPerformance([{ pnl: 5, at: t(1) }, { pnl: -5, at: t(2) }], 20, PORTFOLIO_VALUE);
+    expect(computeSymbolStreakCooldownUntil(perf, PORTFOLIO_VALUE)).toBeUndefined();
+  });
+
+  it('CANCELS cooldown when loss is > 5% of portfolio', () => {
+    // Loss of 600 on 10000 portfolio = 6% > 5% threshold
+    const perf = summarizeRecentPerformance([
+      { pnl: 5, at: t(1) }, { pnl: -600, at: t(2) }, { pnl: -600, at: t(3) }
+    ], 20, PORTFOLIO_VALUE);
+    expect(computeSymbolStreakCooldownUntil(perf, PORTFOLIO_VALUE)).toBeUndefined();
+  });
+
+  it('APPLIES cooldown when loss is <= 5% of portfolio', () => {
+    // Loss of 400 on 10000 portfolio = 4% <= 5% threshold
+    const perf = summarizeRecentPerformance([
+      { pnl: 5, at: t(1) }, { pnl: -400, at: t(2) }, { pnl: -400, at: t(3) }
+    ], 20, PORTFOLIO_VALUE);
+    expect(computeSymbolStreakCooldownUntil(perf, PORTFOLIO_VALUE)).toBe(t(3) + STREAK_COOLDOWN_MS);
+  });
+
+  it('filters by symbol when computing cooldown', () => {
+    const closedTrades = [
+      { pnl: -5, at: t(1), symbol: 'BTC' },
+      { pnl: -5, at: t(2), symbol: 'BTC' },
+      { pnl: -5, at: t(3), symbol: 'ETH' }
+    ];
+    // BTC has 2 losses → cooldown
+    expect(streakCooldownFromHistory(closedTrades, PORTFOLIO_VALUE, 'BTC')).toBe(t(2) + STREAK_COOLDOWN_MS);
+    // ETH has only 1 loss → no cooldown
+    expect(streakCooldownFromHistory(closedTrades, PORTFOLIO_VALUE, 'ETH')).toBeUndefined();
   });
 });

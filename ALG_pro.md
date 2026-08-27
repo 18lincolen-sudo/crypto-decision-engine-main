@@ -278,22 +278,28 @@ if (regime === 'RANGING') confidence *= 0.7;
 **סינון בסימולציה:**
 ```typescript
 // proSimExecution.ts — Confidence floor
-const minConf = config.minConfidenceOverride ?? 60;
+const minConf = config.minConfidenceOverride ?? 58;
 if (signal.rawConfidence < minConf) → BLOCK
 ```
 
-**סף מינימלי:** 60 (ניתן לשינוי דרך ה-UI)
+**סף מינימלי:** 58 (ניתן לשינוי דרך ה-UI)
 
 ---
 
 ## 5. שערול נוספים בסימולציה
 
-### Streak Cooldown — השהיה אחרי הפסדים
+### Streak Cooldown — השהיה אחרי הפסדים (לפי מטבע)
 
 ```typescript
-// אחרי 3 הפסדים רצופים — השהיה של 24 שעות
-if (streakCooldownActive) → BLOCK
+// אחרי 2 הפסדים רצופים על אותו מטבע — השהיה של 30 דקות
+// הפוגה מבוטלת אם ההפסד היה > 5% מסך השווי התיק
+const symbolStreakCooldownUntil = streakCooldownFromHistory(closedTradeMetrics, equity, symbol);
+if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 ```
+
+**תנאים:**
+- הפוגה פועלת רק על המטבע שהפסיד (לא על כל המטבעות)
+- הפוגה מבוטלת אם ההפסד היה גדול מ-5% מסך השווי התיק
 
 ### Correlation Gate — מניעת קורלציה
 
@@ -363,12 +369,12 @@ const fee = notional * feePercent / 100;
 | `initialAmount` | 10,000$ |
 | `stopLoss` | 4.2% |
 | `takeProfit` | 3% |
-| `maxPositions` | דינמי (7 × 1000 / initialAmount) |
+| `maxPositions` | 7 (קבוע: עד 7 פוזיציות פתוחות, 2 ממתינות בתור) |
 | `maxFuturesPositions` | 2 |
 | `feePercent` | 0.1% |
 | `slippagePercent` | 0.05% |
 | `executionDelaySec` | 3 |
-| `minConfidenceOverride` | 60 |
+| `minConfidenceOverride` | 58 |
 | `positionPercent` | 10% |
 
 ---
@@ -378,7 +384,7 @@ const fee = notional * feePercent / 100;
 | תכונה | Legacy | Pro |
 |-------|--------|-----|
 | מקור אלגוריתם | tradeEngine.ts (סטה) | proAlgEngine.ts (מדויק ל-alg.md) |
-| SPOT threshold | 58 (62 ב-HIGH vol) | 60 (דינמי) |
+| SPOT threshold | 58 (62 ב-HIGH vol) | 58 (דינמי) |
 | FUTURES threshold | 70 | 70 (דינמי) |
 | Daily circuit breaker | 6% | 8% |
 | Weekly circuit breaker | 13% | 15% |

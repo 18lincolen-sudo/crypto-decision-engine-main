@@ -81,10 +81,10 @@ export interface StrategyTickInput {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   totalLeveragedExposureUsd: number;
-  /** {pnl, at} — what the intraday strategy's evaluation/order-gen consume. */
-  closedTrades: { pnl: number; at: number }[];
-  /** {pnl, pnlPercent, at} — what the legacy/pro strategies consume. */
-  closedTradeMetrics: { pnl: number; pnlPercent: number; at: number }[];
+  /** {pnl, at, symbol} — what the intraday strategy's evaluation/order-gen consume. */
+  closedTrades: { pnl: number; at: number; symbol?: string }[];
+  /** {pnl, pnlPercent, at, symbol} — what the legacy/pro strategies consume. */
+  closedTradeMetrics: { pnl: number; pnlPercent: number; at: number; symbol?: string }[];
   fearGreedIndex: number;
   cash: number;
   exitCooldown: Record<string, number>;
@@ -308,12 +308,13 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
 
     // Closed-trade history drives adaptive sizing and the losing-streak
     // cooldown; `at` is what orders it (trades are kept newest-first).
+    // `symbol` is the base asset — used for per-symbol cooldown tracking.
     const closedTrades = trades
       .filter((t) => typeof t.pnl === 'number')
-      .map((t) => ({ pnl: t.pnl ?? 0, at: t.at }));
+      .map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: t.symbol }));
     const closedTradeMetrics = trades
       .filter((t) => typeof t.pnl === 'number')
-      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at }));
+      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at, symbol: t.symbol }));
 
     const candlesBySymbol: Record<string, Candle[]> = {};
     for (const key of Object.keys(liveCandles)) candlesBySymbol[key] = buildH1CandlesForSymbol(key);
