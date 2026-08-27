@@ -445,7 +445,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
     return { type: 'SPOT', side, reason };
   }
 
-  return { type: 'HOLD', side: 'NONE', reason: signal.confidence < 60 ? `confidence ${signal.confidence} מתחת לסף המינימלי (60)` : 'לא עומד בתנאי הבטיחות של Spot או Futures' };
+  return { type: 'HOLD', side: 'NONE', reason: signal.confidence < requiredSpotScore ? `confidence ${signal.confidence} מתחת לסף המינימלי (${requiredSpotScore.toFixed(1)})` : 'לא עומד בתנאי הבטיחות של Spot או Futures' };
 }
 
 // ── LAYER 3 — RISK MANAGEMENT ────────────────────────────────────────────────

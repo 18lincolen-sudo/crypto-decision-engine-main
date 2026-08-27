@@ -914,11 +914,11 @@ export function routeTradeType(
     };
   }
 
-  if (signalScore < 60) {
+  if (signalScore < requiredSpotScore) {
     return {
       type: 'HOLD',
       side: 'NONE',
-      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (60)`
+      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (${requiredSpotScore.toFixed(1)})`
     };
   }
 
