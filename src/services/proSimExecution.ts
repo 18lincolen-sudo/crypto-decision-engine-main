@@ -15,11 +15,28 @@ import {
   routeProTradeType,
   calculateProRisk,
   evaluateProExit,
+  calculateProOptimalEntry,
   ProActivePosition
 } from './proAlgEngine';
-import { Candle } from './tradeEngine';
+import { Candle, formatDynamicPrice } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import { computeEntryBudget, isInEntryCooldown } from './simExecution';
+import {
+  summarizeRecentPerformance,
+  computeSizingMultiplier,
+  computeStreakCooldownUntil,
+  isInStreakCooldown,
+  streakCooldownReason,
+  ClosedTradeRecord
+} from './adaptiveRisk';
+import {
+  evaluateCorrelationGate,
+  toPositionDirection,
+  CorrelatedHolding,
+  DEFAULT_CORRELATION_LOOKBACK,
+  DEFAULT_CORRELATION_THRESHOLD,
+  DEFAULT_MAX_CORRELATED
+} from './correlation';
 import type { SimPosition, PendingOrder, SimBotConfig } from './simExecution';
 
 export const uid = (p: string) => `pro-${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -43,16 +60,37 @@ export interface ProEvaluationContext {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   fearGreedIndex: number;
-  closedTradeMetrics: { pnl: number }[];
+  closedTradeMetrics: ClosedTradeRecord[];
   isRunning?: boolean;
+  /** Correlation gate tuning — see correlation.ts for the defaults' rationale. */
+  correlationThreshold?: number;
+  maxCorrelatedPositions?: number;
+  correlationLookback?: number;
 }
 
 export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation[] {
   const {
     cryptoData, candlesBySymbol, positions: openPos, pending: queued, config,
     equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent,
-    fearGreedIndex, closedTradeMetrics, isRunning = true
+    fearGreedIndex, closedTradeMetrics, isRunning = true,
+    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
+    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
+    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
   } = ctx;
+
+  // Performance feedback into sizing — alg.md's §Layer3.3 Kelly bet fraction
+  // adapts by a multiplier that can only de-risk (see computeSizingMultiplier).
+  const performance = summarizeRecentPerformance(closedTradeMetrics);
+  const sizingMultiplier = computeSizingMultiplier(performance, dailyDrawdownPercent);
+  const streakCooldownUntil = computeStreakCooldownUntil(performance);
+  const streakCooldownActive = isInStreakCooldown(streakCooldownUntil);
+
+  const heldForCorrelation: CorrelatedHolding[] = [
+    ...openPos.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
+    ...queued
+      .filter((o) => PRO_ENTRY_ORDER_SIDES.has(o.side))
+      .map((o) => ({ symbol: o.symbol, direction: toPositionDirection(o.side) }))
+  ];
 
   const maxTotalPositions = config.maxPositions || 7;
   const maxFutures = config.maxFuturesPositions || 2;
@@ -80,29 +118,38 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
     const hasExistingFutures = openPos.some((p) => p.symbol === symbol && p.type === 'FUTURES');
     const router = routeProTradeType(signal, regime, { hasExistingFutures, isDailyBlocked, isWeeklyLocked });
 
-    // alg.md has no entry-timing layer (unlike the legacy engine's
-    // calculateOptimalEntry) — entries are taken at the live market price,
-    // matching the document literally.
-    const entryPrice = currentPrice;
+    // Entry timing layer: if the signal passed routing, check whether entering
+    // now is wise or whether we should wait for a pullback. This prevents
+    // chasing extended price and improves R:R by entering at a better level.
+    let entryPrice = currentPrice;
+    let entryTiming: { shouldEnter: boolean; reason: string } | null = null;
+    if (router.type !== 'HOLD' && !router.hardGateBlocked && signal.action !== 'HOLD') {
+      const timing = calculateProOptimalEntry(currentPrice, regime.atr, signal.action, candles);
+      entryPrice = timing.entryPrice;
+      entryTiming = { shouldEnter: timing.shouldEnter, reason: timing.reason };
+    }
 
     const risk = router.type !== 'HOLD'
       ? calculateProRisk(
         entryPrice, router.type, router.side, regime.atr, regime.volatility,
-        signal.confidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd
+        signal.confidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
+        dailyDrawdownPercent, sizingMultiplier
       )
       : null;
 
     const isQueued = queued.some((o) => o.symbol === symbol);
     const isHeld = openPos.some((p) => p.symbol === symbol);
 
-    let willExecute = router.type !== 'HOLD' && !router.hardGateBlocked && !!risk;
+    let willExecute = router.type !== 'HOLD' && !router.hardGateBlocked && !!risk && (!entryTiming || entryTiming.shouldEnter);
     let status = router.hardGateBlocked
       ? (router.blockReason ?? 'חסום')
       : router.type === 'HOLD'
       ? 'אין סיגנל (Layer 1/2)'
-      : risk
-      ? 'מוכן לביצוע'
-      : 'נפסל בניהול סיכונים (Layer 3)';
+      : !entryTiming || entryTiming.shouldEnter
+      ? risk
+        ? 'מוכן לביצוע'
+        : 'נפסל בניהול סיכונים (Layer 3)'
+      : `נחסם בכניסה (Entry Timing): ${entryTiming.reason}`;
 
     if (!isRunning) {
       status = 'הבוט מושבת'; willExecute = false;
@@ -114,6 +161,21 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false;
     } else if (router.type === 'SPOT' && router.side === 'BUY' && isHeld) {
       status = 'כבר מוחזק בתיק (Spot)'; willExecute = false;
+    } else if (streakCooldownActive) {
+      status = streakCooldownReason(streakCooldownUntil as number); willExecute = false;
+    }
+
+    if (willExecute && router.type !== 'HOLD' && router.side !== 'NONE') {
+      const gate = evaluateCorrelationGate({
+        symbol,
+        direction: toPositionDirection(router.side),
+        held: heldForCorrelation,
+        candlesBySymbol,
+        threshold: correlationThreshold,
+        maxCorrelated: maxCorrelatedPositions,
+        lookback: correlationLookback
+      });
+      if (!gate.allowed) { status = gate.reason as string; willExecute = false; }
     }
 
     const factors: DecisionFactor[] = [
@@ -135,6 +197,12 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
         impact: router.type === 'HOLD' ? 'neutral' : 'positive',
         note: router.reason
       },
+      ...(entryTiming ? [{
+        label: 'כניסה (Entry Timing)',
+        value: entryTiming.shouldEnter ? `Limit @ ${formatDynamicPrice(entryPrice)}` : 'נמנע מרידפינג',
+        impact: (entryTiming.shouldEnter ? 'positive' : 'negative') as DecisionFactor['impact'],
+        note: entryTiming.reason
+      }] : []),
       ...(risk ? [{
         label: 'ניהול סיכונים (Layer 3)',
         value: `SL ${risk.stopLoss.toFixed(4)} | R:R ${risk.riskRewardRatio.toFixed(2)} | ${risk.leverage}x`,
@@ -193,12 +261,25 @@ export interface ProOrderGenContext {
    *  (not just the per-symbol evaluations) is required. */
   maxPositions: number;
   maxFuturesPositions: number;
+  /** Closed-trade history driving the post-losing-streak entry cooldown — see
+   *  the identical field on simExecution.ts's OrderGenContext. */
+  closedTradeMetrics?: ClosedTradeRecord[];
+  correlationThreshold?: number;
+  maxCorrelatedPositions?: number;
+  correlationLookback?: number;
 }
 
 const PRO_ENTRY_ORDER_SIDES = new Set(['buy', 'sell', 'long', 'short']);
 
 export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
-  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, candlesBySymbol, maxPositions, maxFuturesPositions } = ctx;
+  const {
+    positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent,
+    exitCooldown, priceFor, candlesBySymbol, maxPositions, maxFuturesPositions,
+    closedTradeMetrics = [],
+    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
+    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
+    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
+  } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -242,6 +323,18 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     }
   }
 
+  // A losing streak stops new entries entirely; exits above still run.
+  if (isInStreakCooldown(computeStreakCooldownUntil(summarizeRecentPerformance(closedTradeMetrics)))) {
+    return newOrders;
+  }
+
+  const correlationBook: CorrelatedHolding[] = [
+    ...positions.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
+    ...pending
+      .filter((o) => PRO_ENTRY_ORDER_SIDES.has(o.side))
+      .map((o) => ({ symbol: o.symbol, direction: toPositionDirection(o.side) }))
+  ];
+
   let totalPositionCount = positions.length + pending.filter((o) => PRO_ENTRY_ORDER_SIDES.has(o.side)).length;
   let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
     pending.filter((o) => o.type === 'FUTURES' && PRO_ENTRY_ORDER_SIDES.has(o.side)).length;
@@ -260,8 +353,23 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
     if (budget < 5) continue;
 
+    // Within-batch correlation check — see the identical comment in
+    // legacySimExecution.ts for why the evaluation-time gate is not enough.
+    const evDirection = toPositionDirection(ev.tradeSide as string);
+    const gate = evaluateCorrelationGate({
+      symbol: ev.symbol,
+      direction: evDirection,
+      held: correlationBook,
+      candlesBySymbol,
+      threshold: correlationThreshold,
+      maxCorrelated: maxCorrelatedPositions,
+      lookback: correlationLookback
+    });
+    if (!gate.allowed) continue;
+
     totalPositionCount++;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
+    correlationBook.push({ symbol: ev.symbol, direction: evDirection });
 
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`), symbol: ev.symbol, type: ev.tradeType as 'SPOT' | 'FUTURES',

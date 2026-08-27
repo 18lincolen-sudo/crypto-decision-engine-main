@@ -26,6 +26,34 @@ import {
   SignalEvaluation
 } from './intradayBridge';
 import { DEFAULT_INTRADAY_PARAMS, IntradayParams, SetupType } from './intradayParams';
+import {
+  evaluateCorrelationGate,
+  toPositionDirection,
+  CorrelatedHolding,
+  DEFAULT_CORRELATION_LOOKBACK,
+  DEFAULT_CORRELATION_THRESHOLD,
+  DEFAULT_MAX_CORRELATED
+} from './correlation';
+import {
+  isInStreakCooldown,
+  streakCooldownReason,
+  streakCooldownFromHistory,
+  adaptiveRiskPercentFromHistory,
+  ClosedTradeRecord
+} from './adaptiveRisk';
+
+// Re-exported so the existing call sites (hooks, server engines) keep a
+// single import surface; the implementation now lives in adaptiveRisk.ts
+// where all three engines can reach it.
+export {
+  computeAdaptiveRiskPercent,
+  adaptiveRiskPercentFromHistory,
+  sizingMultiplierFromHistory,
+  streakCooldownFromHistory,
+  summarizeRecentPerformance,
+  isInStreakCooldown
+} from './adaptiveRisk';
+export type { AdaptiveRiskInput, ClosedTradeRecord, PerformanceWindow } from './adaptiveRisk';
 
 // Simulation-only tuning — NOT applied to the real bot: tradingWorker.ts's
 // scan() calls evaluateIntradayDecision directly with no params override, so
@@ -191,6 +219,20 @@ export interface EvaluationContext {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   totalLeveragedExposureUsd: number;
+  /** Current notional exposure per asset for per-asset cap checks. Optional:
+   *  open positions are folded in below regardless, this is only for exposure
+   *  the caller tracks outside `positions`. */
+  existingExposureByAsset?: Record<string, number>;
+  /** Adaptive risk-per-trade override (computed outside, passed in) */
+  riskPerTradePercent?: number;
+  /** Closed-trade history (newest- or oldest-first, `at` is what orders it)
+   *  driving adaptive sizing and the post-losing-streak entry cooldown. Omit
+   *  to run with base sizing and no cooldown. */
+  closedTrades?: ClosedTradeRecord[];
+  /** Correlation gate tuning — see correlation.ts for the defaults' rationale. */
+  correlationThreshold?: number;
+  maxCorrelatedPositions?: number;
+  correlationLookback?: number;
   /** false only while the client engine is paused; the server engine is only ticked while running, so it never needs this. */
   isRunning?: boolean;
   /** Normalizes a symbol (bare or suffixed) to the base asset — differs slightly by caller (toBaseAsset vs a local equivalent) but must match how mtfData/positions/pending are keyed. */
@@ -201,8 +243,24 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
   const {
     cryptoData, mtfData, positions: openPos, pending: queued, config,
     equity, initialAmount, dailyDrawdownPercent, weeklyDrawdownPercent,
-    totalLeveragedExposureUsd, isRunning = true, toBase
+    totalLeveragedExposureUsd, existingExposureByAsset, isRunning = true, toBase,
+    closedTrades,
+    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
+    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
+    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
   } = ctx;
+
+  const streakCooldownUntil = streakCooldownFromHistory(closedTrades || []);
+  const streakCooldownActive = isInStreakCooldown(streakCooldownUntil);
+
+  // Adaptive risk-per-trade. Computed here rather than at the call site so
+  // every runtime gets it — it previously lived in the browser hook alone,
+  // which left the 24/7 server engine sizing every trade off the constant.
+  const baseRiskPercent = DEFAULT_INTRADAY_PARAMS.riskPerTradePercent;
+  const riskPerTradePercent =
+    ctx.riskPerTradePercent ??
+    adaptiveRiskPercentFromHistory(baseRiskPercent, closedTrades || [], dailyDrawdownPercent) ??
+    baseRiskPercent;
 
   const maxTotalPositions = config.maxPositions || 7;
   const maxFutures = config.maxFuturesPositions || 2;
@@ -211,6 +269,13 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
   const isCircuitBreakerDaily = dailyDrawdownPercent >= 8;
   const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 15;
 
+  // Compute per-asset exposure from open positions (notional USD)
+  const exposureByAsset: Record<string, number> = { ...(existingExposureByAsset || {}) };
+  for (const p of openPos) {
+    const base = toBase(p.symbol);
+    exposureByAsset[base] = (exposureByAsset[base] || 0) + (p.notionalUsd || 0);
+  }
+
   const portfolio = buildPortfolioRiskStats({
     portfolioValue: equity,
     initialAmount,
@@ -218,10 +283,28 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
     weeklyDrawdownPercent,
     openPositionsCount: openPos.length,
     openFuturesPositionsCount: futuresCount,
-    totalLeveragedExposureUsd
+    totalLeveragedExposureUsd,
+    existingExposureByAsset: exposureByAsset
   });
 
   const openPositionsForEngine = openPos.map((p) => ({ symbol: p.symbol, type: p.type as 'SPOT' | 'FUTURES' }));
+
+  // Correlation gate inputs. The H1 series from the multi-timeframe snapshot
+  // is the right timeframe here: 72 H1 bars is the 3-day window the gate is
+  // tuned for, and every symbol in mtfData carries the same bar grid, which
+  // is what makes the pairwise numbers comparable.
+  const correlationCandles: Record<string, Candle[] | undefined> = {};
+  for (const key of Object.keys(mtfData)) correlationCandles[key] = mtfData[key]?.h1;
+  // Queued entries count as held: they are already committed risk, and
+  // without them a single tick can queue an entire correlated cluster before
+  // any of it becomes a position.
+  const heldForCorrelation: CorrelatedHolding[] = [
+    ...openPos.map((p) => ({ symbol: toBase(p.symbol), direction: toPositionDirection(p.side) })),
+    ...queued
+      .filter((o) => ENTRY_ORDER_SIDES.has(o.side))
+      .map((o) => ({ symbol: toBase(o.symbol), direction: toPositionDirection(o.side) }))
+  ];
+
   const results: SignalEvaluation[] = [];
 
   for (const crypto of cryptoData) {
@@ -245,7 +328,8 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
         ...DEFAULT_INTRADAY_PARAMS,
         ...SIM_INTRADAY_PARAMS_OVERRIDE,
         maxOpenPositions: config.maxPositions || DEFAULT_INTRADAY_PARAMS.maxOpenPositions,
-        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures
+        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures,
+        riskPerTradePercent
       }
     );
 
@@ -268,6 +352,22 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
     else if (ev.tradeType === 'FUTURES' && futuresCount >= maxFutures) { status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false; }
     else if (ev.tradeType === 'FUTURES' && hasExistingFutures) { status = 'קיימת כבר פוזיציית Futures פתוחה'; willExecute = false; }
     else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) { status = 'כבר מוחזק בתיק (Spot)'; willExecute = false; }
+    else if (streakCooldownActive) { status = streakCooldownReason(streakCooldownUntil as number); willExecute = false; }
+
+    // Correlation gate — last, because it is the most expensive check and
+    // only meaningful for a candidate that survived every other gate.
+    if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {
+      const gate = evaluateCorrelationGate({
+        symbol,
+        direction: toPositionDirection(ev.tradeSide),
+        held: heldForCorrelation,
+        candlesBySymbol: correlationCandles,
+        threshold: correlationThreshold,
+        maxCorrelated: maxCorrelatedPositions,
+        lookback: correlationLookback
+      });
+      if (!gate.allowed) { status = gate.reason as string; willExecute = false; }
+    }
 
     results.push({ ...ev, status, willExecute });
   }
@@ -302,12 +402,35 @@ export interface OrderGenContext {
    *  positions against a configured max of 5. */
   maxPositions: number;
   maxFuturesPositions: number;
+  /** Closed-trade history driving the post-losing-streak entry cooldown.
+   *  buildEvaluations already reflects it in each evaluation's status, but
+   *  this is the authoritative stop: evaluations are memoized per tick while
+   *  order generation runs on every heartbeat. */
+  closedTrades?: ClosedTradeRecord[];
+  /** H1 candles per BASE asset for the WITHIN-BATCH correlation check.
+   *  buildEvaluations gates each candidate against what is already open or
+   *  queued, but every evaluation in a tick is judged against the same
+   *  starting book — so a tick in which a whole correlated cluster fires at
+   *  once passes that gate N times over. Omit to skip the batch check. */
+  correlationCandles?: Record<string, Candle[] | undefined>;
+  /** Must match how correlationCandles is keyed. Defaults to identity. */
+  toBase?: (symbol: string) => string;
+  correlationThreshold?: number;
+  maxCorrelatedPositions?: number;
+  correlationLookback?: number;
 }
 
 const ENTRY_ORDER_SIDES = new Set(['buy', 'sell', 'long', 'short']);
 
 export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
-  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, buildCandlesForSymbol, computeAtr5, maxPositions, maxFuturesPositions } = ctx;
+  const {
+    positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent,
+    exitCooldown, priceFor, buildCandlesForSymbol, computeAtr5, maxPositions, maxFuturesPositions,
+    closedTrades, correlationCandles, toBase = (x: string) => x,
+    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
+    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
+    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
+  } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -396,9 +519,24 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
   // the START of this tick, so a batch cap here is the only thing standing
   // between "N symbols qualified simultaneously" and "N new positions
   // regardless of maxPositions".
+  // A losing streak stops the book entirely — sizing down is not the same as
+  // standing down. Exits above are deliberately NOT affected.
+  if (isInStreakCooldown(streakCooldownFromHistory(closedTrades || []))) return newOrders;
+
   let totalPositionCount = positions.length + pending.filter((o) => ENTRY_ORDER_SIDES.has(o.side)).length;
   let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
     pending.filter((o) => o.type === 'FUTURES' && ENTRY_ORDER_SIDES.has(o.side)).length;
+
+  // Running correlation book: open positions + already-pending entries, grown
+  // as this batch accepts more.
+  const correlationBook: CorrelatedHolding[] = correlationCandles
+    ? [
+        ...positions.map((p) => ({ symbol: toBase(p.symbol), direction: toPositionDirection(p.side) })),
+        ...pending
+          .filter((o) => ENTRY_ORDER_SIDES.has(o.side))
+          .map((o) => ({ symbol: toBase(o.symbol), direction: toPositionDirection(o.side) }))
+      ]
+    : [];
 
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
@@ -414,8 +552,23 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
     if (budget < 5) continue;
 
+    const evDirection = toPositionDirection(ev.tradeSide as string);
+    if (correlationCandles) {
+      const gate = evaluateCorrelationGate({
+        symbol: toBase(ev.symbol),
+        direction: evDirection,
+        held: correlationBook,
+        candlesBySymbol: correlationCandles,
+        threshold: correlationThreshold,
+        maxCorrelated: maxCorrelatedPositions,
+        lookback: correlationLookback
+      });
+      if (!gate.allowed) continue;
+    }
+
     totalPositionCount++;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
+    if (correlationCandles) correlationBook.push({ symbol: toBase(ev.symbol), direction: evDirection });
 
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`),

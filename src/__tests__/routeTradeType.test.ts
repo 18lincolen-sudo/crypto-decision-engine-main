@@ -77,9 +77,9 @@ describe('routeTradeType', () => {
     expect(result.hardGateBlocked).toBe(true);
   });
 
-  it('routes to SPOT in HIGH VOL when Score >= 60', () => {
+  it('routes to SPOT in HIGH VOL when Score >= dynamic threshold', () => {
     const highVolRegime = makeRegime({ regime: 'TRENDING', volatility: 'HIGH', atrPercent: 6.5, adx: 30 });
-    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 70 }), highVolRegime);
+    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 72 }), highVolRegime);
     expect(result.type).toBe('SPOT');
     expect(result.side).toBe('BUY');
   });

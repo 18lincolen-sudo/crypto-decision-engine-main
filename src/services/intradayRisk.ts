@@ -127,6 +127,7 @@ export function evaluateCostEdge(input: CostInput): CostAnalysis {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface RiskPlanInput {
+  symbol?: string;
   direction: Exclude<Direction, 'NONE'>;
   tradeType: 'SPOT' | 'FUTURES';
   setupType: Exclude<SetupType, 'NONE'>;
@@ -141,6 +142,8 @@ export interface RiskPlanInput {
   openPositions: number;
   openFutures: number;
   currentLeveragedExposureUsd: number;
+  /** Current notional exposure per asset for per-asset cap */
+  existingExposureByAsset?: Record<string, number>;
   riskPercent?: number;
   params?: IntradayParams;
 }
@@ -273,6 +276,26 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
       notionalUsd = notionalCap;
       quantity = notionalUsd / entry;
     }
+
+    // ── Per-asset exposure cap (§35b) ──────────────────────────────────────────
+    // No single asset should dominate the portfolio — cap at 8% of equity.
+    // Soft cap: reduce position size to fit, rather than rejecting outright
+    // (consistent with the futures notional cap above).
+    if (input.symbol && input.existingExposureByAsset) {
+      const maxPerAssetExposure = input.equity * 0.08;
+      const currentAssetExposure = input.existingExposureByAsset[input.symbol] ?? 0;
+      const perAssetCap = maxPerAssetExposure - currentAssetExposure;
+      if (perAssetCap <= 0) {
+        return rejected(
+          `אקספוזר על נכס זה כבר חורג ממגבלת נכס בודד (${maxPerAssetExposure.toFixed(0)}$ = 8% מהתיק)`
+        );
+      }
+      if (notionalUsd > perAssetCap) {
+        notionalUsd = perAssetCap;
+        quantity = notionalUsd / entry;
+      }
+    }
+
     // Minimum leverage that supports the required exposure (§35) — never "max".
     leverage = clamp(Math.ceil(notionalUsd / marginBudget), 1, params.maxLeverage);
 

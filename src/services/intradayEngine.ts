@@ -44,6 +44,8 @@ export interface IntradayDecisionInput {
   openPositions: { symbol: string; type: TradeType }[];
   params?: IntradayParams;
   now?: number;
+  /** Current notional exposure per asset for per-asset cap checks */
+  existingExposureByAsset?: Record<string, number>;
 }
 
 export interface IntradayDecision {
@@ -156,13 +158,19 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   logs.push(`[${symbol}] 1H=${regime.regime} bias=${regime.bias} ADX=${regime.adx.toFixed(1)} ATR%=${regime.atrPercent.toFixed(2)} vol=${regime.volatility} futuresAllowed=${regime.futuresAllowed}`);
 
   const transitional = regime.regime === 'TRANSITIONAL';
+  const softTrend = regime.regime === 'SOFT_TREND';
   // TRANSITIONAL no longer hard-blocks: new FUTURES are blocked, but an especially
   // quality SPOT setup is still allowed (enforced at trade-type routing below).
+  // SOFT_TREND is similar: Futures blocked, Spot allowed with an even higher
+  // quality bar (Setup+Entry both strong + good ATR percentile).
   if (transitional) {
     logs.push(`[${symbol}] TRANSITIONAL — Futures חסום; Spot רק עבור Setup איכותי במיוחד (§8/§34)`);
   }
+  if (softTrend) {
+    logs.push(`[${symbol}] SOFT_TREND — Futures חסום עד אישור מגמה מלאה; Spot מותר עם סף איכותי מוגבר (§8)`);
+  }
 
-  const regimePassed = regime.regime !== 'TRANSITIONAL';
+  const regimePassed = regime.regime !== 'TRANSITIONAL' && regime.regime !== 'SOFT_TREND';
   const mkFunnel = (
     gate: DecisionGate,
     outcome: DecisionOutcome,
@@ -227,17 +235,24 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   // EXTREME + leverage is judged too high either way.
   if (regime.volatility === 'EXTREME') tradeType = 'SPOT';
 
-  // ── TRANSITIONAL quality gate (§8/§34) ──────────────────────────────────────
+  // ── TRANSITIONAL / SOFT_TREND quality gate (§8/§34) ─────────────────────────
   // In a transitional (no-clean-regime) market, new FUTURES are blocked and only
   // an especially high-quality SPOT setup is permitted (Setup + Entry both strong).
-  if (transitional) {
+  // SOFT_TRAND gets an even higher bar: both strong + ATR percentile below 70
+  // (not in extreme volatility).
+  if (transitional || softTrend) {
     tradeType = 'SPOT';
-    const highQuality = setup.strong && entry.strong;
+    const isSoftTrend = softTrend;
+    const atrOk = !regime.strictMode && (regime.atrPercentile ?? 50) < (isSoftTrend ? 70 : 80);
+    const highQuality = setup.strong && entry.strong && atrOk;
     if (!highQuality) {
-      logs.push(`[${symbol}] NO_REGIME — TRANSITIONAL דורש Setup+Entry חזקים (strong); נחסם (§8/§34)`);
+      const reason = isSoftTrend
+        ? `SOFT_TREND דורש Setup+Entry חזקים + ATR percentile < 70 (נחשב ${regime.atrPercentile?.toFixed(0) ?? 'N/A'}) — נחסם (§8)`
+        : `TRANSITIONAL דורש Setup+Entry חזקים (strong); נחסם (§8/§34)`;
+      logs.push(`[${symbol}] NO_REGIME — ${reason}`);
       return finalize(symbol, 'NO_REGIME', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_REGIME', 'NO_SIGNAL', setup, entry), null);
     }
-    logs.push(`[${symbol}] TRANSITIONAL — Spot איכותי מאושר (Setup+Entry strong)`);
+    logs.push(`[${symbol}] ${isSoftTrend ? 'SOFT_TREND' : 'TRANSITIONAL'} — Spot איכותי מאושר (Setup+Entry strong${isSoftTrend ? ' + ATR ok' : ''})`);
   }
 
   // ── GATE 6/7: LIQUIDITY + SPREAD (§26/§27) ─────────────────────────────────
@@ -279,6 +294,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
 
   // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
   const risk = buildRiskPlan({
+    symbol,
     direction: setup.direction as Exclude<Direction, 'NONE'>,
     tradeType,
     setupType: setup.setupType as Exclude<SetupType, 'NONE'>,
@@ -291,6 +307,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     openPositions: p.openPositionsCount,
     openFutures: p.openFuturesPositionsCount,
     currentLeveragedExposureUsd: p.totalLeveragedExposureUsd,
+    existingExposureByAsset: input.existingExposureByAsset ?? p.existingExposureByAsset ?? {},
     riskPercent: params.riskPerTradePercent,
     params
   });

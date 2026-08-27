@@ -219,3 +219,7 @@ export function useProSimulationBotContext(): ProSimulationBotContextValue {
   if (!ctx) throw new Error('useProSimulationBotContext must be used within a ProSimulationBotProvider');
   return ctx;
 }
+
+export function useProSimulationBotContextSafe(): ProSimulationBotContextValue | null {
+  return useContext(ProSimulationBotContext);
+}

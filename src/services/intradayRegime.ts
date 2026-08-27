@@ -74,6 +74,30 @@ export function detectRegime1H(h1: Candle[], params: IntradayParams = DEFAULT_IN
     regime = 'BEAR_TREND';
   } else if (adx < params.adxRangeMax) {
     regime = 'RANGING';
+  } else if (adx >= 22) {
+    // SOFT_TREND: ADX is building momentum (22-25) and the EMA pair is not
+    // yet aligned but is not opposing the Supertrend either. (A
+    // `supertrend.direction !== 'NEUTRAL'` test used to sit in this
+    // condition; the field is typed 'BULL' | 'BEAR' and has no NEUTRAL case,
+    // so it never excluded anything — the real alignment test is
+    // `emaNotOpposing` below.) Allows Spot entries
+    // with a higher quality bar while keeping Futures blocked until the hard
+    // trend confirms.
+    const expectedEmaDirection = supertrend.direction === 'BULL' ? 'up' : 'down';
+    const emaNotOpposing = expectedEmaDirection === 'up'
+      ? ema20 >= ema50 * 0.998  // allow near-flat or slight bullish
+      : ema20 <= ema50 * 1.002; // allow near-flat or slight bearish
+    if (emaNotOpposing) {
+      regime = 'SOFT_TREND';
+      notes.push(
+        `ADX ${adx.toFixed(1)} + Supertrend ${supertrend.direction} — משטר רך, EMA בפעMaskת אימוץ (${expectedEmaDirection === 'up' ? 'מתקרב ל-BULL' : 'מתקרב ל-BEAR'}) — Spot מותר עם סף איכותי (§8)`
+      );
+    } else {
+      regime = 'TRANSITIONAL';
+      notes.push(
+        `ADX ${adx.toFixed(1)} ללא יישור EMA/Supertrend — משטר מעבר, לא נחשב מגמה (§8)`
+      );
+    }
   } else {
     regime = 'TRANSITIONAL';
     notes.push(
@@ -81,12 +105,14 @@ export function detectRegime1H(h1: Candle[], params: IntradayParams = DEFAULT_IN
     );
   }
 
-  const trending = regime === 'BULL_TREND' || regime === 'BEAR_TREND';
+  const trending = regime === 'BULL_TREND' || regime === 'BEAR_TREND' || regime === 'SOFT_TREND';
   const ranging = regime === 'RANGING';
-  const bias: Direction = regime === 'BULL_TREND' ? 'LONG' : regime === 'BEAR_TREND' ? 'SHORT' : 'NONE';
+  const bias: Direction = regime === 'BULL_TREND' ? 'LONG' : regime === 'BEAR_TREND' ? 'SHORT' : regime === 'SOFT_TREND' ? (supertrend.direction === 'BULL' ? 'LONG' : 'SHORT') : 'NONE';
 
   const strictMode = atr.bucket === 'EXTREME';
-  const futuresAllowed = trending && atr.bucket !== 'HIGH' && atr.bucket !== 'EXTREME';
+  // SOFT_TREND behaves like TRANSITIONAL for Futures (blocked) but allows Spot
+  // with a higher quality bar — handled in the engine, not here.
+  const futuresAllowed = (regime === 'BULL_TREND' || regime === 'BEAR_TREND') && atr.bucket !== 'HIGH' && atr.bucket !== 'EXTREME';
 
   if (atr.bucket === 'EXTREME') {
     notes.push(`ATR percentile ${atr.atrPercentile} >= ${params.atrPercentileExtreme} — Futures חסום, Spot במצב מחמיר (§10)`);

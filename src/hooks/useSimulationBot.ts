@@ -21,6 +21,7 @@ import {
   PendingOrder,
   SimBotConfig
 } from '../services/simExecution';
+import type { ClosedTradeRecord } from '../services/adaptiveRisk';
 
 export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../services/simExecution';
@@ -305,6 +306,24 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     };
   }, [equity, history]);
 
+  // Closed-trade history feeding adaptive sizing and the losing-streak
+  // cooldown. `trades` is kept NEWEST-FIRST for display; `at` travels with
+  // each record so adaptiveRisk.ts orders it itself rather than trusting the
+  // array order (reading it backwards is how the streak used to be computed
+  // from the OLDEST trades in the window).
+  const closedTradeRecords = useMemo<ClosedTradeRecord[]>(
+    () => trades.filter((t) => typeof t.pnl === 'number').map((t) => ({ pnl: t.pnl ?? 0, at: t.at })),
+    [trades]
+  );
+
+  // H1 series per base asset for the correlation gate — same source the
+  // decision engine already consumes, so no extra fetching.
+  const correlationCandles = useMemo(() => {
+    const out: Record<string, Candle[] | undefined> = {};
+    for (const key of Object.keys(mtfData)) out[key] = mtfData[key]?.h1;
+    return out;
+  }, [mtfData]);
+
   // ═══════════════════════════════════════════════════════
   // Evaluation Engine (Single Source of Truth)
   // ═══════════════════════════════════════════════════════
@@ -321,10 +340,11 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
       totalLeveragedExposureUsd,
+      closedTrades: closedTradeRecords,
       isRunning,
       toBase: (s) => toBaseAsset(s)
     });
-  }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, mtfData]);
+  }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, mtfData, closedTradeRecords]);
 
   // Purely derived from evaluations — a useState+useEffect pair here previously
   // added an extra setState-triggered render on every evaluations change,
@@ -356,7 +376,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       buildCandlesForSymbol,
       computeAtr5,
       maxPositions: config.maxPositions || 7,
-      maxFuturesPositions: config.maxFuturesPositions || 2
+      maxFuturesPositions: config.maxFuturesPositions || 2,
+      closedTrades: closedTradeRecords,
+      correlationCandles,
+      toBase: (sym: string) => toBaseAsset(sym)
     });
 
     if (newOrders.length) {
@@ -364,7 +387,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     }
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec, closedTradeRecords, correlationCandles]);
 
   // Heartbeat — reset countdown timer when bot starts/stops.
   // Equity recording is handled exclusively by the background worker below to avoid duplicates.

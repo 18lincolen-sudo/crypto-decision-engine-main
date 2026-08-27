@@ -234,7 +234,9 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
 
   const closedTrades = useMemo(() => trades.filter((t) => typeof t.pnl === 'number'), [trades]);
   const closedTradeMetrics = useMemo(
-    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0 })),
+    // `at` travels with each record: the trade array is newest-first, and
+    // adaptiveRisk.ts uses the timestamp to order the history itself.
+    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at })),
     [closedTrades]
   );
 
@@ -282,13 +284,14 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       priceFor: priceForRef.current,
       candlesBySymbol: candlesRef.current,
       maxPositions: config.maxPositions || 7,
-      maxFuturesPositions: config.maxFuturesPositions || 2
+      maxFuturesPositions: config.maxFuturesPositions || 2,
+      closedTradeMetrics
     });
 
     if (newOrders.length) setPending((prev) => [...prev, ...newOrders]);
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, config]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, config, closedTradeMetrics]);
 
   useEffect(() => {
     if (!isRunning) return;

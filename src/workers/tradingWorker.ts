@@ -1112,7 +1112,8 @@ async function scan(): Promise<void> {
             weeklyDrawdownPercent: 0,
             openPositionsCount: runningTotals.totalOpen,
             openFuturesPositionsCount: runningTotals.futuresOpen,
-            totalLeveragedExposureUsd: 0
+            totalLeveragedExposureUsd: 0,
+            existingExposureByAsset: {}
           });
 
           const decision = evaluateIntradayDecision({

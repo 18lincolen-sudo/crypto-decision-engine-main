@@ -22,6 +22,22 @@ import {
 } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import { computeEntryBudget, isInEntryCooldown } from './simExecution';
+import {
+  summarizeRecentPerformance,
+  computeSizingMultiplier,
+  computeStreakCooldownUntil,
+  isInStreakCooldown,
+  streakCooldownReason,
+  ClosedTradeRecord
+} from './adaptiveRisk';
+import {
+  evaluateCorrelationGate,
+  toPositionDirection,
+  CorrelatedHolding,
+  DEFAULT_CORRELATION_LOOKBACK,
+  DEFAULT_CORRELATION_THRESHOLD,
+  DEFAULT_MAX_CORRELATED
+} from './correlation';
 import type { SimPosition, PendingOrder, SimBotConfig } from './simExecution';
 
 export const uid = (p: string) => `legacy-${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -46,14 +62,36 @@ export interface LegacyEvaluationContext {
   closedTradeMetrics: ClosedTradeMetric[];
   /** false only while the client engine is paused; the server engine is only ticked while running, so it never needs this. */
   isRunning?: boolean;
+  /** Correlation gate tuning — see correlation.ts for the defaults' rationale. */
+  correlationThreshold?: number;
+  maxCorrelatedPositions?: number;
+  correlationLookback?: number;
 }
 
 export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEvaluation[] {
   const {
     cryptoData, candlesBySymbol, positions: openPos, pending: queued, config,
     equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent,
-    fearGreedIndex, closedTradeMetrics, isRunning = true
+    fearGreedIndex, closedTradeMetrics, isRunning = true,
+    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
+    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
+    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
   } = ctx;
+
+  // Performance feedback into sizing. This engine sizes from Kelly, not from
+  // a risk percentage, so the adaptation lands as a multiplier on the bet
+  // fraction (see computeSizingMultiplier for why it only ever de-risks).
+  const performance = summarizeRecentPerformance(closedTradeMetrics as ClosedTradeRecord[]);
+  const sizingMultiplier = computeSizingMultiplier(performance, dailyDrawdownPercent);
+  const streakCooldownUntil = computeStreakCooldownUntil(performance);
+  const streakCooldownActive = isInStreakCooldown(streakCooldownUntil);
+
+  const heldForCorrelation: CorrelatedHolding[] = [
+    ...openPos.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
+    ...queued
+      .filter((o) => LEGACY_ENTRY_ORDER_SIDES.has(o.side))
+      .map((o) => ({ symbol: o.symbol, direction: toPositionDirection(o.side) }))
+  ];
 
   const maxTotalPositions = config.maxPositions || 7;
   const maxFutures = config.maxFuturesPositions || 2;
@@ -79,7 +117,7 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     let entryPrice = currentPrice;
     let entryReason = '';
     if (layer2.type !== 'HOLD' && layer2.side !== 'NONE') {
-      const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, layer2.side, candles);
+      const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, layer2.side, candles, 0.35, layer0.atrPercent);
       entryPrice = entryTiming.entryPrice;
       entryReason = entryTiming.reason;
     }
@@ -87,7 +125,8 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     const layer3 = layer2.type !== 'HOLD'
       ? calculateRiskParameters(
         entryPrice, layer2.type, layer2.side, layer0.atr, layer0.volatility,
-        layer1.signalScore, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd
+        layer1.signalScore, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
+        undefined, sizingMultiplier
       )
       : null;
 
@@ -113,6 +152,23 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false;
     } else if (layer2.type === 'SPOT' && layer2.side === 'BUY' && isHeld) {
       status = 'כבר מוחזק בתיק (Spot)'; willExecute = false;
+    } else if (streakCooldownActive) {
+      status = streakCooldownReason(streakCooldownUntil as number); willExecute = false;
+    }
+
+    // Correlation gate — refuses a candidate that would make the book hold
+    // the same risk factor a third time over.
+    if (willExecute && layer2.type !== 'HOLD' && layer2.side !== 'NONE') {
+      const gate = evaluateCorrelationGate({
+        symbol,
+        direction: toPositionDirection(layer2.side),
+        held: heldForCorrelation,
+        candlesBySymbol,
+        threshold: correlationThreshold,
+        maxCorrelated: maxCorrelatedPositions,
+        lookback: correlationLookback
+      });
+      if (!gate.allowed) { status = gate.reason as string; willExecute = false; }
     }
 
     const factors: DecisionFactor[] = [
@@ -193,12 +249,25 @@ export interface LegacyOrderGenContext {
    *  (not just the per-symbol evaluations) is required. */
   maxPositions: number;
   maxFuturesPositions: number;
+  /** Closed-trade history driving the post-losing-streak entry cooldown — see
+   *  the identical field on simExecution.ts's OrderGenContext. */
+  closedTradeMetrics?: ClosedTradeMetric[];
+  correlationThreshold?: number;
+  maxCorrelatedPositions?: number;
+  correlationLookback?: number;
 }
 
 const LEGACY_ENTRY_ORDER_SIDES = new Set(['buy', 'sell', 'long', 'short']);
 
 export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[] {
-  const { positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, candlesBySymbol, maxPositions, maxFuturesPositions } = ctx;
+  const {
+    positions, pending, evaluations, executionDelaySec, dailyDrawdownPercent, weeklyDrawdownPercent,
+    exitCooldown, priceFor, candlesBySymbol, maxPositions, maxFuturesPositions,
+    closedTradeMetrics = [],
+    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
+    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
+    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
+  } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -230,7 +299,7 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
       livePrice,
       layer0.atr,
       scores,
-      { dailyDrawdownPercent, weeklyDrawdownPercent }
+      { dailyDrawdownPercent, weeklyDrawdownPercent, adx: layer0.adx }
     );
 
     if (!exitCheck.shouldExit) continue;
@@ -251,6 +320,18 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     }
   }
 
+  // A losing streak stops new entries entirely; exits above still run.
+  if (isInStreakCooldown(computeStreakCooldownUntil(summarizeRecentPerformance(closedTradeMetrics as ClosedTradeRecord[])))) {
+    return newOrders;
+  }
+
+  const correlationBook: CorrelatedHolding[] = [
+    ...positions.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
+    ...pending
+      .filter((o) => LEGACY_ENTRY_ORDER_SIDES.has(o.side))
+      .map((o) => ({ symbol: o.symbol, direction: toPositionDirection(o.side) }))
+  ];
+
   let totalPositionCount = positions.length + pending.filter((o) => LEGACY_ENTRY_ORDER_SIDES.has(o.side)).length;
   let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
     pending.filter((o) => o.type === 'FUTURES' && LEGACY_ENTRY_ORDER_SIDES.has(o.side)).length;
@@ -269,8 +350,24 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
     if (budget < 5) continue;
 
+    // Within-batch correlation check: every evaluation in this tick was
+    // judged against the same starting book, so a cluster firing at once
+    // passes that gate N times over. This one sees the batch as it grows.
+    const evDirection = toPositionDirection(ev.tradeSide as string);
+    const gate = evaluateCorrelationGate({
+      symbol: ev.symbol,
+      direction: evDirection,
+      held: correlationBook,
+      candlesBySymbol,
+      threshold: correlationThreshold,
+      maxCorrelated: maxCorrelatedPositions,
+      lookback: correlationLookback
+    });
+    if (!gate.allowed) continue;
+
     totalPositionCount++;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
+    correlationBook.push({ symbol: ev.symbol, direction: evDirection });
 
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`), symbol: ev.symbol, type: ev.tradeType as 'SPOT' | 'FUTURES',

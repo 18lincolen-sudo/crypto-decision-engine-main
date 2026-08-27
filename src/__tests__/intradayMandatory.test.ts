@@ -101,6 +101,7 @@ const basePortfolio = (over: Partial<Parameters<typeof evaluateIntradayDecision>
   openPositionsCount: 0,
   openFuturesPositionsCount: 0,
   totalLeveragedExposureUsd: 0,
+  existingExposureByAsset: {},
   ...over
 });
 
@@ -170,6 +171,7 @@ describe('INTEGRATION — full orchestrator produces a SIGNAL', () => {
       portfolio: basePortfolio(),
       openPositions: []
     });
+    console.log('Bull scenario result:', d.outcome, d.gate, d.tradeType, d.direction, d.setupType, d.risk?.approved, d.logs.slice(-3));
     expect(d.outcome).toBe('SIGNAL');
     expect(d.tradeType).toBe('FUTURES');
     expect(d.direction).toBe('LONG');

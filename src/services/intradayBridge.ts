@@ -81,6 +81,10 @@ export interface PortfolioInput {
   openPositionsCount: number;
   openFuturesPositionsCount: number;
   totalLeveragedExposureUsd: number;
+  /** Current notional exposure per asset (symbol -> notional USD). Optional:
+   *  a caller that does not track it (backtests, the decision-funnel script)
+   *  simply gets no per-asset cap. */
+  existingExposureByAsset?: Record<string, number>;
   systemLocked?: boolean;
   lockReason?: string;
   lockedAt?: number;
@@ -95,6 +99,7 @@ export function buildPortfolioRiskStats(p: PortfolioInput): PortfolioRiskStats {
     openPositionsCount: p.openPositionsCount,
     openFuturesPositionsCount: p.openFuturesPositionsCount,
     totalLeveragedExposureUsd: p.totalLeveragedExposureUsd,
+    existingExposureByAsset: p.existingExposureByAsset ?? {},
     systemLocked: p.systemLocked,
     lockReason: p.lockReason,
     lockedAt: p.lockedAt

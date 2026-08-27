@@ -297,10 +297,13 @@ export function confirmEntry5M(
   // Volume is not the confirmation factor for reversals (a reversal can print on
   // average/low volume); the volumeScore component already penalises thin tape, so
   // mean reversion is not hard-blocked on volume the way breakouts/trends are.
+  // However, we still enforce a minimum floor to avoid trading on near-zero volume.
+  const meanRevVolumeTooLow = isMeanReversion && triggerVolumeRelative < params.minMeanReversionRelativeVolume;
   const volumeTooLow = !isMeanReversion && (triggerVolumeRelative < params.minEntryRelativeVolume || vol.drying);
+  if (meanRevVolumeTooLow) blockers.push(`נפח MEAN_REVERSION נמוך מדי (${triggerVolumeRelative.toFixed(2)}x < ${params.minMeanReversionRelativeVolume}x) — NO TRADE`);
   if (volumeTooLow) blockers.push(`נפח 5M נמוך מדי (${triggerVolumeRelative.toFixed(2)}x) — NO TRADE (§27)`);
 
-  const confirmed = gatesPassed && entryScore >= params.entryScoreMin && !volumeTooLow && chasePenalty === 0;
+  const confirmed = gatesPassed && entryScore >= params.entryScoreMin && !volumeTooLow && !meanRevVolumeTooLow && chasePenalty === 0;
 
   if (!confirmed && entryScore < params.entryScoreMin) {
     blockers.push(`EntryScore ${entryScore} מתחת לסף ${params.entryScoreMin}`);

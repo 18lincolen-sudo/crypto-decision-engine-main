@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from 'recharts';
 import { TrendingDown, TrendingUp } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import ProfitScale from './ProfitScale';
 
 interface Metric {
   label: string;
@@ -112,6 +113,18 @@ const PortfolioPulseCard = ({
   const pnlPercent = invested ? (pnl / invested) * 100 : 0;
   const up = pnl >= 0;
 
+  // Compute dynamic max loss / max profit from history for the ProfitScale range
+  const { maxLoss, maxProfit } = useMemo(() => {
+    if (!history || history.length === 0) return { maxLoss: 0, maxProfit: 0 };
+    const values = history.map((h) => h.portfolio);
+    const peak = Math.max(...values);
+    const trough = Math.min(...values);
+    return {
+      maxLoss: Math.max(0, invested - trough),
+      maxProfit: Math.max(0, peak - invested),
+    };
+  }, [history, invested]);
+
   const chartData = filteredHistory.length
     ? filteredHistory
     : [{ timestamp: '', portfolio: invested }, { timestamp: '', portfolio: equity }];
@@ -145,20 +158,30 @@ const PortfolioPulseCard = ({
               <span className="text-muted-foreground">P&amp;L</span>
             </div>
             {rangeStats && (
-              <div className={`text-xs font-mono mt-1 ${rangeStats.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {RANGE_LABEL[range]}: {rangeStats.change >= 0 ? '+' : ''}{rangeStats.changePercent.toFixed(2)}%
-                <span className="text-muted-foreground mr-1">({rangeStats.change >= 0 ? '+' : ''}${rangeStats.change.toFixed(2)})</span>
-              </div>
-            )}
-            <div className="flex gap-4 mt-3 text-xs font-mono">
-              <span className="text-muted-foreground">
-                מזומן <span className="text-primary">${cash.toFixed(2)}</span>
-              </span>
-              <span className="text-muted-foreground">
-                פוזיציות <span className="text-primary">${positionsValue.toFixed(2)}</span>
-              </span>
-            </div>
-          </div>
+               <div className={`text-xs font-mono mt-1 ${rangeStats.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                 {RANGE_LABEL[range]}: {rangeStats.change >= 0 ? '+' : ''}{rangeStats.changePercent.toFixed(2)}%
+                 <span className="text-muted-foreground mr-1">({rangeStats.change >= 0 ? '+' : ''}${rangeStats.change.toFixed(2)})</span>
+               </div>
+             )}
+             <div className="flex gap-4 mt-3 text-xs font-mono">
+               <span className="text-muted-foreground">
+                 מזומן <span className="text-primary">${cash.toFixed(2)}</span>
+               </span>
+               <span className="text-muted-foreground">
+                 פוזיציות <span className="text-primary">${positionsValue.toFixed(2)}</span>
+               </span>
+             </div>
+
+             {/* Dynamic profit scale — visualizes P&L relative to invested capital */}
+             <div className="mt-3 pt-2 border-t border-border/20">
+               <ProfitScale
+                 equity={equity}
+                 invested={invested}
+                 maxLoss={maxLoss}
+                 maxProfit={maxProfit}
+               />
+             </div>
+           </div>
 
           <div className="-mx-2">
             <div className="flex items-center justify-start px-2 mb-1 gap-1">

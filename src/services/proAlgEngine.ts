@@ -31,7 +31,8 @@
  * already shared across every engine in this codebase.
  */
 
-import { Candle, calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice } from './tradeEngine';
+import { Candle, calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
+import { computeDrawdownFactor } from './adaptiveRisk';
 
 // ── LAYER 0 — MARKET REGIME DETECTION ──────────────────────────────────────
 
@@ -187,17 +188,18 @@ export function evaluateProSignals(
   else if (currentPrice > bbUpper) signals.push({ name: 'Bollinger Bands (20/2)', weight: 12, signal: 'SELL', strength: 1.0, value: `מחיר מעל $${formatDynamicPrice(bbUpper)}`, reason: 'פריצה מעל הרצועה עליונה' });
   else signals.push({ name: 'Bollinger Bands (20/2)', weight: 12, signal: 'NEUTRAL', strength: 0, value: 'בתוך הרצועות', reason: 'ללא קיצון' });
 
-  // 5. Volume Surge (weight 18): >=1.5x SMA20 -> confirmation(1.0); else NEUTRAL
+  // 5. Volume Surge (weight 18): graded strength instead of all-or-nothing
   const recentVolumes = volumes.slice(-21, -1);
   const avgVol20 = recentVolumes.length ? recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length : 1;
   const latestVol = volumes[volumes.length - 1] || 0;
   const volumeRatio = avgVol20 > 0 ? latestVol / avgVol20 : 1;
   const isPriceUp = priceChange24h > 0 || (closes.length >= 2 && closes[closes.length - 1] > closes[closes.length - 2]);
-  if (volumeRatio >= 1.5) {
-    signals.push({ name: 'Volume Surge', weight: 18, signal: isPriceUp ? 'BUY' : 'SELL', strength: 1.0, value: `נפח פי ${volumeRatio.toFixed(2)}`, reason: 'זינוק נפח מאשש' });
-  } else {
-    signals.push({ name: 'Volume Surge', weight: 18, signal: 'NEUTRAL', strength: 0, value: `נפח פי ${volumeRatio.toFixed(2)}`, reason: 'פחות מ-1.5x — ללא אישור נפח' });
-  }
+  let volumeStrength = 0;
+  if (volumeRatio >= 1.5) volumeStrength = 1.0;
+  else if (volumeRatio >= 1.2) volumeStrength = 0.7;
+  else if (volumeRatio >= 0.9) volumeStrength = 0.4;
+  else volumeStrength = 0.2;
+  signals.push({ name: 'Volume Surge', weight: 18, signal: volumeRatio >= 1.5 ? (isPriceUp ? 'BUY' : 'SELL') : 'NEUTRAL', strength: volumeStrength, value: `נפח פי ${volumeRatio.toFixed(2)}`, reason: volumeRatio >= 1.5 ? 'זינוק נפח מאשש' : 'נפח ממוצע/חלש' });
 
   // 6. Supertrend (weight 12)
   const isSupertrendBull = regime.supertrend.direction === 'BULL';
@@ -254,6 +256,103 @@ export function evaluateProSignals(
   return { action, buyScore, sellScore, rawConfidence, confidence, signals, penalties };
 }
 
+// ── LAYER 1.5 — ENTRY TIMING (limit-order pullback) ─────────────────────────
+// alg.md has no explicit entry-timing layer, but entering at the live market
+// price every time causes chasing and unnecessary slippage. This layer adds
+// a simple but effective pullback filter: if price is already extended beyond
+// the trigger level, defer the entry to a better level.
+
+export interface ProEntryTimingResult {
+  shouldEnter: boolean;
+  entryPrice: number;
+  reason: string;
+  indicators: {
+    rsi: number;
+    ema20: number;
+    bbUpper: number;
+    bbLower: number;
+  };
+}
+
+export function calculateProOptimalEntry(
+  currentPrice: number,
+  atr: number,
+  side: 'LONG' | 'SHORT' | 'BUY' | 'SELL',
+  candles: Candle[],
+  pullbackFactor: number = 0.35,
+  minRelativeVolume: number = MIN_ENTRY_RELATIVE_VOLUME
+): ProEntryTimingResult {
+  const isLong = side === 'LONG' || side === 'BUY';
+  const closes = candles.map((c) => c.close);
+  const ema20Series = calculateEMA(closes, 20);
+  const ema20 = ema20Series[ema20Series.length - 1] || currentPrice;
+
+  // Bollinger Bands (20, 2)
+  const recentCloses = closes.slice(-20);
+  const bbMean = recentCloses.reduce((a, b) => a + b, 0) / Math.max(1, recentCloses.length);
+  const bbStdDev = Math.sqrt(recentCloses.reduce((s, v) => s + (v - bbMean) ** 2, 0) / Math.max(1, recentCloses.length));
+  const bbUpper = bbMean + 2 * bbStdDev;
+  const bbLower = bbMean - 2 * bbStdDev;
+
+  // RSI(14)
+  let rsi = 50;
+  if (closes.length >= 15) {
+    let gains = 0, losses = 0;
+    for (let i = 1; i <= 14; i++) {
+      const diff = closes[i] - closes[i - 1];
+      if (diff >= 0) gains += diff; else losses += Math.abs(diff);
+    }
+    let avgGain = gains / 14, avgLoss = losses / 14;
+    for (let i = 15; i < closes.length; i++) {
+      const diff = closes[i] - closes[i - 1];
+      avgGain = (avgGain * 13 + (diff > 0 ? diff : 0)) / 14;
+      avgLoss = (avgLoss * 13 + (diff < 0 ? Math.abs(diff) : 0)) / 14;
+    }
+    rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+
+  const atrPullback = atr * pullbackFactor;
+
+  // Volume confirmation — same rationale as the legacy engine's entry layer:
+  // the limit order below rests into a pullback, and a pullback on no volume
+  // is drift rather than a defended level.
+  const relativeVolume = computeRelativeVolume(candles);
+  if (relativeVolume !== undefined && relativeVolume < minRelativeVolume) {
+    return {
+      shouldEnter: false,
+      entryPrice: currentPrice,
+      reason: `נפח כניסה נמוך מדי (${relativeVolume.toFixed(2)}x < ${minRelativeVolume}x מהממוצע) — אין עניין בשוק`,
+      indicators: { rsi, ema20, bbUpper, bbLower }
+    };
+  }
+
+  if (isLong) {
+    if (rsi > 70) {
+      return { shouldEnter: false, entryPrice: currentPrice, reason: `RSI קנוי-יתר (${rsi.toFixed(1)} > 70) — ממתין לקירור`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    }
+    if (currentPrice > bbUpper) {
+      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מעל רצועת Bollinger עליונה — ממתין לנסיגה`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    }
+    if (currentPrice > ema20 + atr * 1.5) {
+      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מורחק מ-EMA20 — ממתין לנסיגה לממוצע`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    }
+    const entryPrice = Math.max(1e-8, currentPrice - atrPullback);
+    return { shouldEnter: true, entryPrice: Number(entryPrice.toFixed(8)), reason: `Limit BUY @ ${formatDynamicPrice(entryPrice)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR)`, indicators: { rsi, ema20, bbUpper, bbLower } };
+  } else {
+    if (rsi < 30) {
+      return { shouldEnter: false, entryPrice: currentPrice, reason: `RSI מכירת-יתר (${rsi.toFixed(1)} < 30) — ממתין לעלייה קלה`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    }
+    if (currentPrice < bbLower) {
+      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מתחת לרצועת Bollinger תחתונה — ממתין לעלייה`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    }
+    if (currentPrice < ema20 - atr * 1.5) {
+      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מורחק מתחת ל-EMA20 — ממתין לעלייה לממוצע`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    }
+    const entryPrice = currentPrice + atrPullback;
+    return { shouldEnter: true, entryPrice: Number(entryPrice.toFixed(8)), reason: `Limit SELL/SHORT @ ${formatDynamicPrice(entryPrice)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR)`, indicators: { rsi, ema20, bbUpper, bbLower } };
+  }
+}
+
 // ── LAYER 2 — TRADE TYPE ROUTER ─────────────────────────────────────────────
 
 export type ProTradeType = 'SPOT' | 'FUTURES' | 'HOLD';
@@ -273,6 +372,23 @@ export interface ProRouterOptions {
   isWeeklyLocked?: boolean;
 }
 
+// ═══════════════════════════════════════════════════════
+// DYNAMIC CONFIDENCE THRESHOLDS
+// ═══════════════════════════════════════════════════════
+// Same formula as tradeEngine.ts: static base thresholds are safe in LOW
+// volatility but become dangerously loose as ATR rises. Ramps by up to
+// +15 points from 2% ATR to 8% ATR.
+
+export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
+  if (atrPercent <= 2) return baseThreshold;
+  const ramp = Math.min(1, (atrPercent - 2) / 6);
+  return baseThreshold + ramp * 15;
+}
+
+// ═══════════════════════════════════════════════════════
+// LAYER 2 — TRADE TYPE ROUTING
+// ═══════════════════════════════════════════════════════
+
 export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegimeResult, options: ProRouterOptions = {}): ProRouterResult {
   if (options.isWeeklyLocked) {
     return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'WEEKLY_DRAWDOWN_LOCK', reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני' };
@@ -281,7 +397,21 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
     return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'DAILY_DRAWDOWN_BLOCK', reason: 'הגנת תיק יומית (הפסד >= 8%) — חסימת כניסות חדשות עד יום המסחר הבא' };
   }
   if (regime.regime === 'TRANSITIONAL') {
-    return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'TRANSITIONAL_HARD_BLOCK', reason: `TRANSITIONAL MARKET REGIME: כניסות חדשות חסומות (ADX ${regime.adx.toFixed(1)})` };
+    // SOFT_TREND carve-out: ADX > 22 AND the Supertrend agrees with the side
+    // we are about to take → Spot allowed with a higher bar.
+    //
+    // The old test was `supertrend.direction !== 'NEUTRAL'`, which excluded
+    // nothing: the field is typed 'BULL' | 'BEAR' and never carries NEUTRAL.
+    // The carve-out was therefore "ADX > 22" alone, and a BUY signal against
+    // a bearish Supertrend walked straight through it.
+    const supertrendAgrees =
+      (signal.action === 'BUY' && regime.supertrend.direction === 'BULL') ||
+      (signal.action === 'SELL' && regime.supertrend.direction === 'BEAR');
+    const softTrend = regime.adx > 22 && supertrendAgrees;
+    if (!softTrend) {
+      return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'TRANSITIONAL_HARD_BLOCK', reason: `TRANSITIONAL MARKET REGIME: כניסות חדשות חסומות (ADX ${regime.adx.toFixed(1)})` };
+    }
+    // Fall through to Spot/Futures routing with higher Spot threshold
   }
   if (signal.action === 'HOLD') {
     return { type: 'HOLD', side: 'NONE', reason: `ללא יתרון כיווני מובהק (BUY ${signal.buyScore} vs SELL ${signal.sellScore})` };
@@ -289,21 +419,28 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
 
   // FUTURES — ALL 5 conditions per alg.md §Layer2.1 (no extra Supertrend-match
   // gate — that condition exists in tradeEngine.ts but is not in the spec):
-  // 1. regime TRENDING  2. confidence>=72  3. volatility LOW/NORMAL
+  // 1. regime TRENDING  2. confidence>=dynamic(72)  3. volatility LOW/NORMAL
   // 4. ADX>25  5. no existing Futures position on this asset
   const isTrending = regime.regime === 'TRENDING' && regime.adx > 25;
   const isFuturesVolOk = regime.volatility === 'LOW' || regime.volatility === 'NORMAL';
-  const isFuturesScoreOk = signal.confidence >= 72;
+  const futuresThreshold = dynamicConfidenceThreshold(72, regime.atrPercent);
+  const isFuturesScoreOk = signal.confidence >= futuresThreshold;
   if (isTrending && isFuturesVolOk && isFuturesScoreOk && !options.hasExistingFutures) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'LONG' : 'SHORT';
-    return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${signal.confidence} >= 72, תנודתיות ${regime.volatility}` };
+    return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${signal.confidence} >= ${futuresThreshold.toFixed(1)}, תנודתיות ${regime.volatility}` };
   }
 
-  // SPOT — confidence>=60, regime TRENDING or RANGING
-  const isSpotRegimeOk = regime.regime === 'TRENDING' || regime.regime === 'RANGING';
-  if (isSpotRegimeOk && signal.confidence >= 60) {
+  // SPOT — confidence>=dynamic(60), regime TRENDING or RANGING (or SOFT_TREND with higher bar)
+  const isSpotRegimeOk = regime.regime === 'TRENDING' || regime.regime === 'RANGING' || (regime.regime === 'TRANSITIONAL' && regime.adx > 22);
+  const softTrendSpot = regime.regime === 'TRANSITIONAL' && regime.adx > 22;
+  const spotThreshold = dynamicConfidenceThreshold(60, regime.atrPercent);
+  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(65, regime.atrPercent) : spotThreshold;
+  if (isSpotRegimeOk && signal.confidence >= requiredSpotScore) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'BUY' : 'SELL';
-    return { type: 'SPOT', side, reason: `עסקת Spot מאושרת: confidence ${signal.confidence} >= 60 במצב ${regime.regime}` };
+    const reason = softTrendSpot
+      ? `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} ב-SOFT_TREND (ADX ${regime.adx.toFixed(1)})`
+      : `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} במצב ${regime.regime}`;
+    return { type: 'SPOT', side, reason };
   }
 
   return { type: 'HOLD', side: 'NONE', reason: signal.confidence < 60 ? `confidence ${signal.confidence} מתחת לסף המינימלי (60)` : 'לא עומד בתנאי הבטיחות של Spot או Futures' };
@@ -338,7 +475,14 @@ export function calculateProRisk(
   closedTrades: ProClosedTradeMetric[] = [],
   openPositionsCount: number = 0,
   openFuturesCount: number = 0,
-  currentLeveragedExposureUsd: number = 0
+  currentLeveragedExposureUsd: number = 0,
+  dailyDrawdownPercent: number = 0,
+  /** Performance-adaptive size multiplier (adaptiveRisk.ts). When supplied it
+   *  REPLACES the local drawdown-only adjustment below — it already folds the
+   *  drawdown factor in along with the loss streak and win rate, and applying
+   *  both would compound the same term twice. Left undefined (direct callers,
+   *  tests) the drawdown-only behaviour is preserved. */
+  sizingMultiplier?: number
 ): ProRiskResult | null {
   if (entryPrice <= 0 || atr <= 0 || portfolioValue <= 0) return null;
 
@@ -380,6 +524,8 @@ export function calculateProRisk(
   // §Layer3.3 — Kelly Criterion DIRECTLY sizes the bet (not a risk multiplier
   // like tradeEngine.ts's approach): BetSize = Portfolio × clamp(Kelly×0.5, 0, 0.10),
   // default 3% without >=30 closed trades.
+  // Drawdown adjustment: reduce bet size when the portfolio is in drawdown to
+  // avoid compounding losses during a losing streak.
   let kellyFraction = 0;
   let betFraction = 0.03;
   if (closedTrades.length >= 30) {
@@ -392,6 +538,13 @@ export function calculateProRisk(
     kellyFraction = R > 0 ? winRate - (1 - winRate) / R : 0;
     betFraction = Math.min(Math.max(0, kellyFraction * 0.5), 0.10);
   }
+  // Adaptive sizing, applied to BOTH branches: the pre-Kelly 3% default used
+  // to ignore the drawdown entirely, so the first 30 trades — the ones taken
+  // with the least evidence of an edge — were the only ones never de-risked.
+  const adaptiveFactor = sizingMultiplier !== undefined
+    ? Math.max(0, sizingMultiplier)
+    : computeDrawdownFactor(dailyDrawdownPercent);
+  betFraction = Math.min(Math.max(0, betFraction * adaptiveFactor), 0.10);
   const betSizeUsd = portfolioValue * betFraction;
 
   // §Layer3.4 — total leveraged exposure cap (Futures only; betSizeUsd is the
@@ -440,6 +593,14 @@ export interface ProExitDecision {
   exitType: 'FULL' | 'PARTIAL_50' | 'NONE';
   reason: string;
 }
+
+/** alg.md §Layer4.4 checkpoints the Futures time stop at 24h. A position
+ *  already working in our favour gets one extension to this hour instead. */
+export const PRO_FUTURES_TIME_STOP_EXTENDED_HOURS = 36;
+
+/** Favourable progress (in R) required at the 24h checkpoint to earn the
+ *  extension. Matches the intraday engine's own time-stop progress bar. */
+export const PRO_FUTURES_TIME_STOP_MIN_PROGRESS_R = 0.3;
 
 export function evaluateProExit(
   pos: ProActivePosition,
@@ -526,7 +687,32 @@ export function evaluateProExit(
     // §Layer4.4 documents this literally as a 50% reduction — implemented
     // here as a genuine PARTIAL_50 (unlike tradeEngine.ts's equivalent,
     // which always fully closes due to an unrelated pre-existing bug).
-    return { shouldExit: true, exitType: 'PARTIAL_50', reason: "יציאת זמן (24 שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%" };
+    //
+    // Progress-aware extension: the 24h checkpoint asks "is this trade going
+    // anywhere?", and a position that has covered a third of its stop
+    // distance in the right direction has answered yes — cutting it at a
+    // fixed clock reading discards precisely the slow trends the ATR targets
+    // were sized for. It is a REPRIEVE, not a reset: the trade still faces
+    // the same test at 36h, and by then it must be at least breakeven-plus
+    // to survive, so a stalling position cannot roll the extension forward.
+    const stopDistance = Math.abs(pos.entryPrice - pos.stopLoss);
+    const progressR = stopDistance > 0
+      ? ((currentPrice - pos.entryPrice) * (isLong ? 1 : -1)) / stopDistance
+      : 0;
+
+    if (hoursHeld < PRO_FUTURES_TIME_STOP_EXTENDED_HOURS && progressR > PRO_FUTURES_TIME_STOP_MIN_PROGRESS_R) {
+      return {
+        shouldExit: false,
+        exitType: 'NONE',
+        reason: `הרחבת יציאת זמן: ${progressR.toFixed(2)}R לטובתנו אחרי ${hoursHeld.toFixed(1)} שעות — ממשיכים עד ${PRO_FUTURES_TIME_STOP_EXTENDED_HOURS} שעות`
+      };
+    }
+
+    return {
+      shouldExit: true,
+      exitType: 'PARTIAL_50',
+      reason: `יציאת זמן (${Math.floor(hoursHeld)} שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
+    };
   }
 
   return { shouldExit: false, exitType: 'NONE', reason: 'הפוזיציה ממשיכה לפעול' };

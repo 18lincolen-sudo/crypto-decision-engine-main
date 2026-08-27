@@ -115,17 +115,36 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // Test 4 — Transitional
-  // ADX = 23, ATR% = 2.5, SignalScore = 90
-  // Expected: HOLD, Reason = TRANSITIONAL HARD BLOCK
+  // Test 4 — Soft Trend carve-out (ADX 23, Supertrend BULL)
+  // ADX = 23 is in the TRANSITIONAL range (20-25) but Supertrend is
+  // aligned — this is now treated as SOFT_TREND: Spot allowed with
+  // higher confidence bar (65+), Futures still blocked.
   // ─────────────────────────────────────────────────────────────
-  it('Test 4: Transitional (ADX 23) — Returns HOLD with TRANSITIONAL_HARD_BLOCK', () => {
+  it('Test 4: Soft Trend (ADX 23, Supertrend BULL) — Returns SPOT with higher threshold', () => {
     const regime = makeRegime({
       adx: 23,
       atrPercent: 2.5,
       volatility: 'NORMAL',
       regime: 'TRANSITIONAL',
+      direction: 'BULL',
       supertrend: { value: 95, direction: 'BULL' }
+    });
+    const signal = makeSignal({ action: 'BUY', signalScore: 67 });
+    const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
+
+    expect(result.type).toBe('SPOT');
+    expect(result.side).toBe('BUY');
+    expect(result.reason).toContain('SOFT_TREND');
+  });
+
+  it('Test 4b: True Transitional (ADX 23, Supertrend opposite) — Returns HOLD', () => {
+    const regime = makeRegime({
+      adx: 23,
+      atrPercent: 2.5,
+      volatility: 'NORMAL',
+      regime: 'TRANSITIONAL',
+      direction: 'NEUTRAL',
+      supertrend: { value: 95, direction: 'BEAR' }
     });
     const signal = makeSignal({ action: 'BUY', signalScore: 90 });
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
@@ -134,7 +153,6 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     expect(result.side).toBe('NONE');
     expect(result.hardGateBlocked).toBe(true);
     expect(result.blockReason).toBe('TRANSITIONAL_HARD_BLOCK');
-    expect(result.reason).toContain('TRANSITIONAL');
   });
 
   // ─────────────────────────────────────────────────────────────

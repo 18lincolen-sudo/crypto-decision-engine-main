@@ -38,6 +38,10 @@ export interface PortfolioRiskStats {
   openPositionsCount: number;
   openFuturesPositionsCount: number;
   totalLeveragedExposureUsd: number;
+  /** Current notional exposure per asset (symbol -> notional USD). Optional:
+   *  callers that do not track per-asset exposure (backtests, the decision-
+   *  funnel script) simply get no per-asset cap rather than a type error. */
+  existingExposureByAsset?: Record<string, number>;
   systemLocked?: boolean;
   lockReason?: string;
   lockedAt?: number;
@@ -730,6 +734,25 @@ export interface TradeRouterOptions {
   isWeeklyLocked?: boolean;
 }
 
+// ═══════════════════════════════════════════════════════
+// DYNAMIC CONFIDENCE THRESHOLDS
+// ═══════════════════════════════════════════════════════
+// Static thresholds (72 Futures / 60 Spot) are safe in LOW volatility
+// but become dangerously loose as ATR rises. The formula below ramps the
+// threshold by up to +15 points from the 2% ATR mark to the 8% mark,
+// matching the report's targets: ~85+ for Futures and ~70+ for Spot
+// in EXTREME volatility, flat at the base in LOW volatility.
+
+export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
+  if (atrPercent <= 2) return baseThreshold;
+  const ramp = Math.min(1, (atrPercent - 2) / 6);
+  return baseThreshold + ramp * 15;
+}
+
+// ═══════════════════════════════════════════════════════
+// LAYER 2 — TRADE TYPE ROUTING
+// ═══════════════════════════════════════════════════════
+
 export function routeTradeType(
   signalResult: SignalEngineResult,
   layer0: MarketRegimeResult,
@@ -766,14 +789,32 @@ export function routeTradeType(
 
   // 3. Hard Gate: Transitional Market Regime (ADX 20..25)
   // When 20 <= ADX <= 25 -> NEW ENTRIES = BLOCKED (Spot & Futures)
+  // EXCEPTION (SOFT_TREND): ADX > 22 and the Supertrend AGREES with the
+  // direction we are about to trade — then Spot is allowed with a higher
+  // confidence bar.
+  //
+  // The alignment test used to read `supertrend.direction !== 'NEUTRAL' &&
+  // layer0.direction !== 'NEUTRAL'`, which never excluded anything:
+  // supertrend.direction is typed 'BULL' | 'BEAR' with no NEUTRAL case at
+  // all, and layer0.direction is only NEUTRAL when the regime is RANGING —
+  // which this branch has already excluded. So the carve-out was really
+  // "ADX > 22", and a BUY signal in a bearish Supertrend passed it.
   if (layer0.regime === 'TRANSITIONAL') {
-    return {
-      type: 'HOLD',
-      side: 'NONE',
-      hardGateBlocked: true,
-      blockReason: 'TRANSITIONAL_HARD_BLOCK',
-      reason: `TRANSITIONAL MARKET REGIME: כניסות חדשות חסומות במעבר משטר שוק (ADX ${layer0.adx})`
-    };
+    const supertrendAgrees =
+      (action === 'BUY' && layer0.supertrend.direction === 'BULL') ||
+      (action === 'SELL' && layer0.supertrend.direction === 'BEAR');
+    const softTrend = layer0.adx > 22 && supertrendAgrees;
+    if (!softTrend) {
+      return {
+        type: 'HOLD',
+        side: 'NONE',
+        hardGateBlocked: true,
+        blockReason: 'TRANSITIONAL_HARD_BLOCK',
+        reason: `TRANSITIONAL MARKET REGIME: כניסות חדשות חסומות במעבר משטר שוק (ADX ${layer0.adx})`
+      };
+    }
+    // SOFT_TREND: fall through to Spot/Futures routing below, but Spot needs
+    // a higher score (65 instead of 60) — enforced after the score checks.
   }
 
   // 4. Hard Gate: Same-Asset Cross-Market Policy
@@ -811,14 +852,15 @@ export function routeTradeType(
   // All conditions required (alg.md §Layer2.1 — 5 conditions, NO Supertrend-match):
   // 1. Regime = TRENDING (ADX > 25)
   // 2. Volatility = LOW or NORMAL (ATR% <= 5%) [HIGH VOL -> FUTURES BLOCKED]
-  // 3. SignalScore >= 72
+  // 3. SignalScore >= dynamic threshold (base 72, ramps to 87 in EXTREME)
   // 4. No existing Futures position on this asset
   // 5. (Supertrend is NOT a routing condition per alg.md — it is a Layer 1
   //    signal component, already scored into SignalScore)
   // ═══════════════════════════════════════════════════════
   const isTrending = layer0.regime === 'TRENDING' && layer0.adx > 25;
   const isVolatilitySafeForFutures = layer0.volatility === 'LOW' || layer0.volatility === 'NORMAL';
-  const isFuturesScorePassed = signalScore >= 72;
+  const futuresThreshold = dynamicConfidenceThreshold(72, layer0.atrPercent);
+  const isFuturesScorePassed = signalScore >= futuresThreshold;
 
   if (isTrending && isVolatilitySafeForFutures && isFuturesScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'LONG' : 'SHORT';
@@ -833,16 +875,19 @@ export function routeTradeType(
   // SPOT ROUTING EVALUATION (Evaluated independently)
   // Conditions:
   // 1. Regime in ['TRENDING', 'RANGING'] (Never TRANSITIONAL)
-  // 2. SignalScore >= 60 (flat threshold, per alg.md)
+  // 2. SignalScore >= dynamic threshold (base 60, ramps to 75 in EXTREME)
   // ═══════════════════════════════════════════════════════
-  const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING';
-  const requiredSpotScore = 60;
+  const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING' || (layer0.regime === 'TRANSITIONAL' && layer0.adx > 22);
+  const softTrendSpot = layer0.regime === 'TRANSITIONAL' && layer0.adx > 22;
+  const spotThreshold = dynamicConfidenceThreshold(60, layer0.atrPercent);
+  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(65, layer0.atrPercent) : spotThreshold;
   const isSpotScorePassed = signalScore >= requiredSpotScore;
 
   if (isSpotRegimeValid && isSpotScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'BUY' : 'SELL';
     let reason = `עסקת Spot מאושרת: SignalScore ${signalScore} >= ${requiredSpotScore} במצב ${layer0.regime} (${layer0.volatility} VOL)`;
-    if (layer0.volatility === 'HIGH') {
+    if (softTrendSpot) reason += ' [SOFT_TREND: סף מוגבר 65]';
+    else if (layer0.volatility === 'HIGH') {
       reason += ' [HIGH VOL: Futures חסום, Spot מאושר]';
     } else if (!isTrending) {
       reason += ' [Ranging: רק Spot מותר]';
@@ -865,7 +910,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'SPOT_SCORE_BELOW_HIGH_VOL_THRESHOLD',
-      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש 60 בתנודתיות גבוהה (${layer0.atrPercent}%)`
+      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש ${requiredSpotScore.toFixed(1)} בתנודתיות גבוהה (${layer0.atrPercent}%)`
     };
   }
 
@@ -947,28 +992,117 @@ export function computeEntryIndicators(
 }
 
 /**
+ * Relative volume of the newest bar against the average of the preceding
+ * `lookback` bars — the "is anyone actually here?" check the entry-timing
+ * layers were missing.
+ *
+ * The subtlety this handles: if the newest bar is still FORMING, its volume
+ * is a partial count and a naive ratio reads as "no interest" on every
+ * symbol for most of every bar — which would have turned a volume gate into
+ * a near-total entry block. The bar interval is inferred from the median
+ * spacing of the series, and a forming bar's volume is scaled up by the
+ * fraction of the interval that has elapsed (floored so the first seconds of
+ * a bar can't project a wild number).
+ *
+ * Returns undefined when the series carries no usable volume data — the
+ * callers then skip the gate rather than blocking on a missing feed.
+ */
+export function computeRelativeVolume(candles: Candle[], lookback: number = 20, now: number = Date.now()): number | undefined {
+  if (!candles || candles.length < lookback + 1) return undefined;
+
+  const history = candles.slice(-(lookback + 1), -1);
+  const avg = history.reduce((sum, c) => sum + (c.volume || 0), 0) / history.length;
+  if (!(avg > 0)) return undefined;
+
+  const last = candles[candles.length - 1];
+  if (!(last.volume > 0)) return 0;
+
+  // Median bar spacing — robust to the odd gap a median tolerates and a mean
+  // does not.
+  const gaps: number[] = [];
+  for (let i = candles.length - Math.min(candles.length, 11); i < candles.length; i++) {
+    if (i > 0) gaps.push(candles[i].timestamp - candles[i - 1].timestamp);
+  }
+  gaps.sort((a, b) => a - b);
+  const interval = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+
+  let volume = last.volume;
+  if (interval > 0) {
+    const elapsed = now - last.timestamp;
+    if (elapsed > 0 && elapsed < interval) {
+      const fraction = Math.max(0.15, elapsed / interval);
+      volume = last.volume / fraction;
+    }
+  }
+
+  return volume / avg;
+}
+
+/** Below this multiple of average volume an entry is refused: a pullback
+ *  nobody is trading into is not support, it is the absence of a bid. */
+export const MIN_ENTRY_RELATIVE_VOLUME = 0.6;
+
+/**
  * Validates entry timing to prevent chasing local tops/bottoms
- * BUY / LONG: Block if RSI > 72, Price > BB Upper * 0.999, Price > EMA20 + 1.5*ATR
- * SELL / SHORT: Block if RSI < 28, Price < BB Lower * 1.001, Price < EMA20 - 1.5*ATR
- * Limit Pullback: Entry = CurrentPrice - ATR * 0.35 (BUY) / CurrentPrice + ATR * 0.35 (SELL)
+ * BUY / LONG: Block if RSI > dynamicThreshold, Price > BB Upper, Price > EMA20 + 1.5*ATR
+ * SELL / SHORT: Block if RSI < dynamicThreshold, Price < BB Lower, Price < EMA20 - 1.5*ATR
+ * Limit Pullback: Entry = CurrentPrice - ATR * dynamicPullback (BUY) / CurrentPrice + ATR * dynamicPullback (SELL)
+ *
+ * Dynamic thresholds adapt to volatility:
+ * - Low vol (ATR% < 2): wider pullback (0.5), standard RSI thresholds
+ * - Normal vol (2-5%): standard pullback (0.35), standard RSI thresholds
+ * - High vol (ATR% > 5): tighter pullback (0.2), wider RSI thresholds
  */
 export function calculateOptimalEntry(
   currentPrice: number,
   atr: number,
   side: 'BUY' | 'LONG' | 'SELL' | 'SHORT',
   candles: Candle[],
-  pullbackFactor: number = 0.35
+  pullbackFactor: number = 0.35,
+  atrPercent: number = 0,
+  minRelativeVolume: number = MIN_ENTRY_RELATIVE_VOLUME
 ): EntryTimingResult {
   const isBuy = side === 'BUY' || side === 'LONG';
+
+  // Dynamic pullback based on volatility: low vol = wider pullback, high vol = tighter
+  let dynamicPullback = pullbackFactor;
+  if (atrPercent > 0) {
+    if (atrPercent < 2) dynamicPullback = 0.5;      // LOW vol - wait for bigger pullback
+    else if (atrPercent > 5) dynamicPullback = 0.2;  // HIGH vol - tighter pullback
+    else dynamicPullback = 0.35;                       // NORMAL vol
+  }
+
+  // Dynamic RSI thresholds based on volatility
+  let rsiOverbought = 72, rsiOversold = 28;
+  if (atrPercent > 0) {
+    if (atrPercent < 2) { rsiOverbought = 75; rsiOversold = 25; }      // LOW vol - standard
+    else if (atrPercent > 5) { rsiOverbought = 68; rsiOversold = 32; }  // HIGH vol - wider thresholds
+    else { rsiOverbought = 72; rsiOversold = 28; }                       // NORMAL vol
+  }
+
   const { rsi, ema20, bbUpper, bbLower } = computeEntryIndicators(candles, currentPrice);
-  const atrPullback = atr * pullbackFactor;
+  const atrPullback = atr * dynamicPullback;
+
+  // Volume confirmation. Checked BEFORE the price-extension tests because a
+  // dead tape invalidates the entry regardless of where price sits: the
+  // limit order this function returns rests into a pullback, and a pullback
+  // on no volume is drift, not a level anyone is defending.
+  const relativeVolume = computeRelativeVolume(candles);
+  if (relativeVolume !== undefined && relativeVolume < minRelativeVolume) {
+    return {
+      shouldEnterNow: false,
+      entryPrice: currentPrice,
+      reason: `נפח כניסה נמוך מדי (${relativeVolume.toFixed(2)}x < ${minRelativeVolume}x מהממוצע) — אין עניין בשוק`,
+      indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
+    };
+  }
 
   if (isBuy) {
-    if (rsi > 72) {
+    if (rsi > rsiOverbought) {
       return {
         shouldEnterNow: false,
         entryPrice: currentPrice,
-        reason: `RSI קנוי-יתר (${rsi.toFixed(1)} > 72) — ממתין לקירור לפני כניסה`,
+        reason: `RSI קנוי-יתר (${rsi.toFixed(1)} > ${rsiOverbought}) — ממתין לקירור לפני כניסה`,
         indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
       };
     }
@@ -993,15 +1127,15 @@ export function calculateOptimalEntry(
     return {
       shouldEnterNow: true,
       entryPrice: Number(entryPrice.toFixed(8)),
-      reason: `Limit BUY @ $${formatDynamicPrice(entryPrice)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR מתחת למחיר) | RSI=${rsi.toFixed(1)}`,
+      reason: `Limit BUY @ $${formatDynamicPrice(entryPrice)} (pullback ${(dynamicPullback * 100).toFixed(0)}% ATR מתחת למחיר) | RSI=${rsi.toFixed(1)}`,
       indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
     };
   } else {
-    if (rsi < 28) {
+    if (rsi < rsiOversold) {
       return {
         shouldEnterNow: false,
         entryPrice: currentPrice,
-        reason: `RSI מכירת-יתר (${rsi.toFixed(1)} < 28) — ממתין לעלייה קלה לפני שורט`,
+        reason: `RSI מכירת-יתר (${rsi.toFixed(1)} < ${rsiOversold}) — ממתין לעלייה קלה לפני שורט`,
         indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
       };
     }
@@ -1026,7 +1160,7 @@ export function calculateOptimalEntry(
     return {
       shouldEnterNow: true,
       entryPrice: Number(entryPrice.toFixed(8)),
-      reason: `Limit SELL/SHORT @ $${formatDynamicPrice(entryPrice)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR מעל המחיר) | RSI=${rsi.toFixed(1)}`,
+      reason: `Limit SELL/SHORT @ $${formatDynamicPrice(entryPrice)} (pullback ${(dynamicPullback * 100).toFixed(0)}% ATR מעל המחיר) | RSI=${rsi.toFixed(1)}`,
       indicators: { rsi, ema20, bbUpper, bbLower, atrPullback }
     };
   }
@@ -1047,6 +1181,10 @@ export function calculateOptimalEntry(
 
 export interface ClosedTradeMetric {
   pnl: number;
+  /** Fill timestamp. Optional for backward compatibility, but supply it:
+   *  adaptiveRisk.ts orders the history by it, and without it a caller whose
+   *  trade array is newest-first has its streak read backwards. */
+  at?: number;
 }
 
 export function calculateRiskParameters(
@@ -1061,7 +1199,13 @@ export function calculateRiskParameters(
   openPositionsCount: number = 0,
   openFuturesCount: number = 0,
   currentLeveragedExposureUsd: number = 0,
-  _configuredPositionPercent?: number
+  _configuredPositionPercent?: number,
+  /** Performance-adaptive size multiplier (adaptiveRisk.ts). 1 = base sizing.
+   *  Applied to the Kelly bet fraction — this engine sizes from Kelly, not
+   *  from a risk percentage, so this is where recent-performance feedback
+   *  belongs. Capped at 1 upstream: half-Kelly is already the growth-optimal
+   *  ceiling, so the adaptation only ever de-risks. */
+  sizingMultiplier: number = 1
 ): RiskParametersResult | null {
   if (tradeType === 'HOLD' || entryPrice <= 0 || atr <= 0 || portfolioValue <= 0) return null;
 
@@ -1136,6 +1280,10 @@ export function calculateRiskParameters(
     }
     betFraction = Math.min(Math.max(0, kellyFraction * 0.5), 0.10);
   }
+  // Applied to BOTH branches — the pre-Kelly 3% default was previously the
+  // one path where a losing streak or an open drawdown changed nothing at
+  // all, which is exactly the phase (first 30 trades) where it matters most.
+  betFraction = Math.min(Math.max(0, betFraction * Math.max(0, sizingMultiplier)), 0.10);
   const betSizeUsd = portfolioValue * betFraction;
 
   // Sizing Caps:
@@ -1194,7 +1342,7 @@ export function evaluateExit(
   currentPrice: number,
   currentAtr: number,
   currentSignalScores: { buy: number; sell: number },
-  portfolioStats: { dailyDrawdownPercent: number; weeklyDrawdownPercent: number; systemLocked?: boolean }
+  portfolioStats: { dailyDrawdownPercent: number; weeklyDrawdownPercent: number; systemLocked?: boolean; adx?: number }
 ): ExitDecision {
   const isFutures = pos.type === 'FUTURES';
   const isLong = pos.side === 'LONG' || pos.side === 'BUY';
@@ -1313,21 +1461,23 @@ export function evaluateExit(
     }
   }
 
-  // 4. Reversal Exit
-  // Long/BUY exits when SELL SignalScore >= 65
-  // Short/SELL exits when BUY SignalScore >= 65
-  if (isLong && currentSignalScores.sell >= 65) {
+  // 4. Reversal Exit — dynamic threshold based on ADX
+  // In strong trends (ADX > 30) we need stronger confirmation (70+)
+  // In weak markets (ADX < 20) we exit earlier (55+)
+  const adx = portfolioStats.adx ?? 25;
+  const reversalThreshold = adx < 20 ? 55 : adx > 30 ? 70 : 65;
+  if (isLong && currentSignalScores.sell >= reversalThreshold) {
     return {
       shouldExit: true,
       exitType: 'REVERSAL',
-      reason: `היפוך אותות: זוהה ציון מכירה גבוה (${currentSignalScores.sell.toFixed(1)} >= 65)`
+      reason: `היפוך אותות: זוהה ציון מכירה גבוה (${currentSignalScores.sell.toFixed(1)} >= ${reversalThreshold.toFixed(0)}, ADX ${adx.toFixed(1)})`
     };
   }
-  if (isShort && currentSignalScores.buy >= 65) {
+  if (isShort && currentSignalScores.buy >= reversalThreshold) {
     return {
       shouldExit: true,
       exitType: 'REVERSAL',
-      reason: `היפוך אותות: זוהה ציון קנייה גבוה (${currentSignalScores.buy.toFixed(1)} >= 65)`
+      reason: `היפוך אותות: זוהה ציון קנייה גבוה (${currentSignalScores.buy.toFixed(1)} >= ${reversalThreshold.toFixed(0)}, ADX ${adx.toFixed(1)})`
     };
   }
 
@@ -1335,15 +1485,15 @@ export function evaluateExit(
   const heldMs = Date.now() - (pos.openTimestamp || Date.now());
   const hoursHeld = heldMs / (1000 * 60 * 60);
 
-  if (!isFutures && hoursHeld >= 48) {
-    // Spot: if after 48h position is in loss > 50% of distance to SL
+  if (!isFutures && hoursHeld >= 72) {
+    // Spot: if after 72h position is in loss > 50% of distance to SL
     const distanceToSL = Math.abs(pos.entryPrice - pos.stopLoss);
     const currentLoss = pos.entryPrice - currentPrice;
     if (currentLoss > distanceToSL * 0.5) {
       return {
         shouldExit: true,
         exitType: 'TIME_BASED',
-        reason: `יציאת זמן (48 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL`
+        reason: `יציאת זמן (72 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL`
       };
     }
   }

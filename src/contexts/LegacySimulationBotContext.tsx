@@ -223,3 +223,7 @@ export function useLegacySimulationBotContext(): LegacySimulationBotContextValue
   if (!ctx) throw new Error('useLegacySimulationBotContext must be used within a LegacySimulationBotProvider');
   return ctx;
 }
+
+export function useLegacySimulationBotContextSafe(): LegacySimulationBotContextValue | null {
+  return useContext(LegacySimulationBotContext);
+}

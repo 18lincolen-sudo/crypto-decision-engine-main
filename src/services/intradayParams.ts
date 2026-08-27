@@ -9,7 +9,7 @@
  *      5M  → ENTRY CONFIRMATION
  */
 
-export type Regime1HType = 'BULL_TREND' | 'BEAR_TREND' | 'TRANSITIONAL' | 'RANGING';
+export type Regime1HType = 'BULL_TREND' | 'BEAR_TREND' | 'TRANSITIONAL' | 'RANGING' | 'SOFT_TREND';
 export type SetupType = 'TREND_PULLBACK' | 'BREAKOUT_RETEST' | 'MEAN_REVERSION' | 'NONE';
 export type Direction = 'LONG' | 'SHORT' | 'NONE';
 export type EntryTrigger = 'PULLBACK_HOLD' | 'BREAKOUT_RETEST' | 'REVERSAL_RECOVERY' | 'NONE';
@@ -71,6 +71,9 @@ export interface IntradayParams {
   entryLimitOffsetAtr: number;
   /** Minimum relative volume on the 5M trigger candle */
   minEntryRelativeVolume: number;
+  /** Minimum relative volume for MEAN_REVERSION entries (lower than trend/breakout
+   *  since reversals can print on thinner tape, but still needs some participation) */
+  minMeanReversionRelativeVolume: number;
 
   // ── Cost / Edge (§25) ─────────────────────────────────────────────────────
   costSafetyMultiplier: number;
@@ -143,9 +146,20 @@ export interface IntradayParams {
   timeStopFraction: number;
   /** Favourable progress (in R) required at the time-stop checkpoint */
   timeStopMinProgressR: number;
+  /** Multiplier applied to a setup's max hold when the trade is ALREADY
+   *  working at the max-hold checkpoint (>= maxHoldExtensionMinProgressR).
+   *  1 = no extension. A fixed clock cut is the wrong tool for a position
+   *  that is demonstrably progressing — but the extension is re-tested on
+   *  every subsequent evaluation, so a trade that stalls after earning it
+   *  is cut at the next check rather than riding the longer budget out. */
+  maxHoldExtensionFactor: Record<Exclude<SetupType, 'NONE'>, number>;
+  /** Favourable progress (in R) required to earn the max-hold extension. */
+  maxHoldExtensionMinProgressR: number;
 
   // ── Trailing (§32) ────────────────────────────────────────────────────────
-  /** MFE (in R) required before trailing may activate */
+  /** MFE (in R) required before trailing may activate — per-setup override */
+  trailingActivationRBySetup: Record<Exclude<SetupType, 'NONE'>, number>;
+  /** Fallback when setupType is unknown or not in the record */
   trailingActivationR: number;
   trailingAtrMult: number;
 
@@ -187,6 +201,7 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   maxChaseAtr: 1.2,
   entryLimitOffsetAtr: 0.15,
   minEntryRelativeVolume: 0.7,
+  minMeanReversionRelativeVolume: 0.5,
 
   costSafetyMultiplier: 2.0,
   maxSpreadShareOfMove: 0.2,
@@ -227,10 +242,16 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   minOrderUsd: 5,
   allowShortDuringHighVolatility: false,
 
-  maxHoldMinutes: { TREND_PULLBACK: 90, BREAKOUT_RETEST: 60, MEAN_REVERSION: 45 },
+  maxHoldMinutes: { TREND_PULLBACK: 120, BREAKOUT_RETEST: 60, MEAN_REVERSION: 45 },
   timeStopFraction: 0.45,
   timeStopMinProgressR: 0.3,
+  // MEAN_REVERSION is deliberately excluded (1 = no extension): its edge is
+  // the snap back to the mean and it decays with time held — extending it is
+  // not patience, it is holding a thesis after its window closed.
+  maxHoldExtensionFactor: { TREND_PULLBACK: 1.5, BREAKOUT_RETEST: 1.5, MEAN_REVERSION: 1 },
+  maxHoldExtensionMinProgressR: 0.5,
 
+  trailingActivationRBySetup: { TREND_PULLBACK: 0.8, BREAKOUT_RETEST: 1.0, MEAN_REVERSION: 1.5 },
   trailingActivationR: 1.0,
   trailingAtrMult: 1.2,
 
@@ -251,6 +272,8 @@ export function withParams(overrides: Partial<IntradayParams> = {}): IntradayPar
     ...DEFAULT_INTRADAY_PARAMS,
     ...overrides,
     setupWeights: { ...DEFAULT_INTRADAY_PARAMS.setupWeights, ...(overrides.setupWeights || {}) },
-    maxHoldMinutes: { ...DEFAULT_INTRADAY_PARAMS.maxHoldMinutes, ...(overrides.maxHoldMinutes || {}) }
+    maxHoldMinutes: { ...DEFAULT_INTRADAY_PARAMS.maxHoldMinutes, ...(overrides.maxHoldMinutes || {}) },
+    maxHoldExtensionFactor: { ...DEFAULT_INTRADAY_PARAMS.maxHoldExtensionFactor, ...(overrides.maxHoldExtensionFactor || {}) },
+    trailingActivationRBySetup: { ...DEFAULT_INTRADAY_PARAMS.trailingActivationRBySetup, ...(overrides.trailingActivationRBySetup || {}) }
   };
 }

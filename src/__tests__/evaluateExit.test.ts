@@ -106,9 +106,9 @@ describe('evaluateExit', () => {
     expect(result.exitType).toBe('REVERSAL');
   });
 
-  it('returns TIME_BASED for spot after 48h with significant loss', () => {
+  it('returns TIME_BASED for spot after 72h with significant loss', () => {
     const pos = makePosition({
-      openTimestamp: Date.now() - 48 * 60 * 60 * 1000,
+      openTimestamp: Date.now() - 72 * 60 * 60 * 1000,
       entryPrice: 100,
       stopLoss: 90
     });

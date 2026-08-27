@@ -201,7 +201,7 @@ export function createProSimEngine(getSymbols?: () => string[]) {
     const totalLeveragedExposureUsd = leveragedExposure();
     const closedTradeMetrics = trades
       .filter((t) => typeof t.pnl === 'number')
-      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0 }));
+      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at }));
     const candlesBySymbol = candlesBySymbolView();
 
     const evaluations = buildProEvaluations({
@@ -233,7 +233,8 @@ export function createProSimEngine(getSymbols?: () => string[]) {
       priceFor,
       candlesBySymbol,
       maxPositions: config.maxPositions || 7,
-      maxFuturesPositions: config.maxFuturesPositions || 2
+      maxFuturesPositions: config.maxFuturesPositions || 2,
+      closedTradeMetrics
     });
     if (newOrders.length) pending = [...pending, ...newOrders];
 

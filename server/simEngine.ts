@@ -6,7 +6,7 @@
 // src/services/simExecution.ts, shared with useSimulationBot.ts — this file
 // only owns the server's own state (plain closure variables instead of React
 // state) and market-data refresh loop.
-import { formatDynamicPrice } from '../src/services/tradeEngine';
+import { formatDynamicPrice, Candle } from '../src/services/tradeEngine';
 import { getAggregatedPrices } from '../src/services/cryptoPriceAggregator';
 import { CryptoData } from '../src/types/crypto';
 import { computeAtr5, MultiTimeframeSnapshot, SignalEvaluation } from '../src/services/intradayBridge';
@@ -226,6 +226,14 @@ export function createSimEngine(getSymbols?: () => string[]) {
     const { dailyDrawdownPercent, weeklyDrawdownPercent } = drawdowns(eq);
     const totalLeveragedExposureUsd = leveragedExposure();
 
+    // Closed-trade history drives adaptive sizing and the losing-streak
+    // cooldown; `at` is what orders it (trades are kept newest-first).
+    const closedTradeRecords = trades
+      .filter((t) => typeof t.pnl === 'number')
+      .map((t) => ({ pnl: t.pnl ?? 0, at: t.at }));
+    const correlationCandles: Record<string, Candle[] | undefined> = {};
+    for (const key of Object.keys(liveCandles)) correlationCandles[key] = liveCandles[key]?.h1;
+
     const evaluations = buildEvaluations({
       cryptoData,
       mtfData: liveCandles,
@@ -237,6 +245,7 @@ export function createSimEngine(getSymbols?: () => string[]) {
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
       totalLeveragedExposureUsd,
+      closedTrades: closedTradeRecords,
       toBase: (s) => toBaseAsset(s)
     });
     lastEvaluations = evaluations;
@@ -256,7 +265,10 @@ export function createSimEngine(getSymbols?: () => string[]) {
       buildCandlesForSymbol,
       computeAtr5,
       maxPositions: config.maxPositions || 7,
-      maxFuturesPositions: config.maxFuturesPositions || 2
+      maxFuturesPositions: config.maxFuturesPositions || 2,
+      closedTrades: closedTradeRecords,
+      correlationCandles,
+      toBase: (sym: string) => toBaseAsset(sym)
     });
     if (newOrders.length) pending = [...pending, ...newOrders];
 

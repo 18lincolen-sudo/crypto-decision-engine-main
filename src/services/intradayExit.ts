@@ -104,6 +104,12 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
 
   const base = { progressR: Number(progressR.toFixed(2)), mfeR: Number(mfeR.toFixed(2)), heldMinutes };
 
+  // Per-setup parameter lookups all key off this: 'NONE' is a valid SetupType
+  // on the position record but never a key in the per-setup tables, so it is
+  // narrowed once here instead of at each lookup.
+  const setupForParams: Exclude<SetupType, 'NONE'> =
+    pos.setupType && pos.setupType !== 'NONE' ? pos.setupType : 'TREND_PULLBACK';
+
   // 1 ── Weekly emergency protection ─────────────────────────────────────────
   if (ctx.portfolio.systemLocked || ctx.portfolio.weeklyDrawdownPercent >= params.weeklyDrawdownFlattenPercent) {
     return {
@@ -167,7 +173,9 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   }
 
   // 4 ── Trailing — only after the trade proved itself (§32) ─────────────────
-  const trailingActive = pos.type === 'FUTURES' ? !!pos.tp1Hit : mfeR >= params.trailingActivationR;
+  const trailingActive = pos.type === 'FUTURES'
+    ? !!pos.tp1Hit
+    : mfeR >= (params.trailingActivationRBySetup[setupForParams] ?? params.trailingActivationR);
   if (trailingActive) {
     const anchor = pos.type === 'FUTURES'
       ? isLong
@@ -206,12 +214,20 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   const maxHoldMs = pos.maxHoldMs ?? params.maxHoldMinutes.TREND_PULLBACK * 60_000;
   const timeStopMs = pos.timeStopMs ?? Math.round(maxHoldMs * params.timeStopFraction);
 
-  if (heldMs >= maxHoldMs) {
+  // Progress-aware max hold: a position that has covered half its stop
+  // distance in the right direction has earned the longer budget. Re-tested
+  // on every evaluation — if progress falls back below the bar, the very
+  // next check cuts it at the original budget.
+  const extensionFactor = params.maxHoldExtensionFactor?.[setupForParams] ?? 1;
+  const extensionEarned = extensionFactor > 1 && progressR >= params.maxHoldExtensionMinProgressR;
+  const effectiveMaxHoldMs = extensionEarned ? Math.round(maxHoldMs * extensionFactor) : maxHoldMs;
+
+  if (heldMs >= effectiveMaxHoldMs) {
     return {
       shouldExit: true,
       exitType: 'FULL',
       reasonCode: 'MAX_DURATION',
-      reason: `משך החזקה מקסימלי (${Math.round(maxHoldMs / 60_000)} דק') — יציאת זמן`,
+      reason: `משך החזקה מקסימלי (${Math.round(effectiveMaxHoldMs / 60_000)} דק'${extensionEarned ? ' — כולל הרחבה' : ''}) — יציאת זמן`,
       ...base
     };
   }

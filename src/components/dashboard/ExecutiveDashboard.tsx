@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,8 @@ import {
 import { createTradingApiClient } from '@/services/tradingApiClient';
 import type { WorkerAccountSummary, WorkerBotState } from '@/services/tradingApiClient';
 import { useSimulationBotContextSafe } from '@/contexts/SimulationBotContext';
+import { useLegacySimulationBotContextSafe } from '@/contexts/LegacySimulationBotContext';
+import { useProSimulationBotContextSafe } from '@/contexts/ProSimulationBotContext';
 import { useWorkerAuth } from '@/contexts/WorkerAuthContext';
 
 export const ExecutiveDashboard: React.FC = () => {
@@ -37,26 +39,10 @@ export const ExecutiveDashboard: React.FC = () => {
   // the dashboard reflects real-time data). Falls back to the last persisted
   // snapshot in localStorage when the provider is unavailable.
   const sim = useSimulationBotContextSafe();
+  const legacy = useLegacySimulationBotContextSafe();
+  const pro = useProSimulationBotContextSafe();
 
-  const simState = useMemo<{
-    cash: number;
-    initialAmount: number;
-    positionsCount: number;
-    totalTrades: number;
-    winRate: number;
-    totalProfit: number;
-    isRunning: boolean;
-    activePositions: Array<{
-      symbol: string;
-      side: string;
-      entryPrice: number;
-      currentPrice: number;
-      pnlPercent: number;
-      leverage: number;
-      takeProfit?: number;
-      stopLoss?: number;
-    }>;
-  } | null>(() => {
+  const deriveSimState = (source: any, fallbackKey: string, fallbackStatusKey: string) => {
     const derive = (cash: number, positions: any[], trades: any[], initial: number, isRunning: boolean) => {
       let currentVal = cash;
       const activeMapped = positions.map((p: any) => {
@@ -82,21 +68,25 @@ export const ExecutiveDashboard: React.FC = () => {
       return { cash, initialAmount: initial, positionsCount: positions.length, totalTrades: trades.length, winRate, totalProfit, isRunning, activePositions: activeMapped };
     };
 
-    if (sim) {
-      return derive(sim.cash, sim.positions, sim.trades, sim.config.initialAmount || 10000, sim.isRunning);
+    if (source) {
+      return derive(source.cash, source.positions, source.trades, source.config?.initialAmount || 10000, source.isRunning);
     }
     // Fallback: read last snapshot persisted by the simulation bot hook.
     try {
-      const raw = localStorage.getItem('simulation-bot-state-v2');
+      const raw = localStorage.getItem(fallbackKey);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       const initial = 10000;
-      const status = localStorage.getItem('simulation-bot-status-v2');
+      const status = localStorage.getItem(fallbackStatusKey);
       return derive(parsed.cash ?? initial, parsed.positions ?? [], parsed.trades ?? [], initial, status === 'running');
     } catch {
       return null;
     }
-  }, [sim]);
+  };
+
+  const simState = deriveSimState(sim, 'simulation-bot-state-v2', 'simulation-bot-status-v2');
+  const legacyState = deriveSimState(legacy, 'legacy-sim-bot-state-v2', 'legacy-sim-bot-status-v2');
+  const proState = deriveSimState(pro, 'pro-sim-bot-state-v2', 'pro-sim-bot-status-v2');
 
   // Shared with RealTradingBot.tsx via context (lives above the router, so it
   // survives in-app navigation) — BOT_ADMIN_TOKEN is memory-only, never in
@@ -295,63 +285,9 @@ export const ExecutiveDashboard: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* 2. Dual Bots Live Status Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Real Trading Bot Summary */}
-        <Card className="border-border/60 bg-card hover:border-primary/40 transition-all shadow-md">
-          <CardHeader className="pb-3 flex flex-row items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <Zap className="w-5 h-5" />
-              </div>
-              <div>
-                <CardTitle className="text-base font-bold font-mono">בוט Bybit Live Trading</CardTitle>
-                <p className="text-xs text-muted-foreground font-mono">מסחר אמיתי עם בקרת סיכונים</p>
-              </div>
-            </div>
-            <Badge variant={workerState?.running ? "default" : "secondary"} className="font-mono text-xs">
-              {workerState?.running ? "🟢 פעיל" : "⚪ מופסק"}
-            </Badge>
-          </CardHeader>
-
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
-                <div className="text-[11px] text-muted-foreground font-mono">פוזיציות פתוחות</div>
-                <div className="text-lg font-bold font-mono text-primary mt-0.5">
-                  {workerSummary?.openFuturesCount ?? 0}
-                </div>
-              </div>
-              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
-                <div className="text-[11px] text-muted-foreground font-mono">סריקות</div>
-                <div className="text-lg font-bold font-mono text-emerald-400 mt-0.5">
-                  {workerState?.scans ?? 0}
-                </div>
-              </div>
-              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
-                <div className="text-[11px] text-muted-foreground font-mono">מצב</div>
-                <div className="text-lg font-bold font-mono text-foreground mt-0.5">
-                  {workerState?.dryRun ? 'Dry' : 'Live'}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-border/40">
-              <div className="text-xs text-muted-foreground font-mono flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Trailing Stop & Break-Even פעילים</span>
-              </div>
-              <Link to="/real-trading">
-                <Button variant="ghost" size="sm" className="font-mono text-xs gap-1 h-7 px-2 text-primary hover:text-primary">
-                  ניהול בוט Bybit
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </Button>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Simulation Bot Summary */}
+      {/* 2. Simulation Bots Grid — all 3 engines */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        {/* Intraday Simulation Bot */}
         <Card className="border-border/60 bg-card hover:border-primary/40 transition-all shadow-md">
           <CardHeader className="pb-3 flex flex-row items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -359,8 +295,8 @@ export const ExecutiveDashboard: React.FC = () => {
                 <Bot className="w-5 h-5" />
               </div>
               <div>
-                <CardTitle className="text-base font-bold font-mono">בוט סימולציה (Paper Trading)</CardTitle>
-                <p className="text-xs text-muted-foreground font-mono">בדיקת אסטרטגיות ללא סיכון הון</p>
+                <CardTitle className="text-base font-bold font-mono">מנוע חדש · Multi-Timeframe</CardTitle>
+                <p className="text-xs text-muted-foreground font-mono">Setup + Entry מבניים על 1H/15M/5M</p>
               </div>
             </div>
             <Badge variant="outline" className="font-mono text-xs text-blue-400 border-blue-500/30">
@@ -371,7 +307,6 @@ export const ExecutiveDashboard: React.FC = () => {
                   : "ממתין לאותות"}
             </Badge>
           </CardHeader>
-
           <CardContent className="space-y-4">
             <div className="grid grid-cols-3 gap-2 text-center">
               <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
@@ -382,11 +317,8 @@ export const ExecutiveDashboard: React.FC = () => {
               </div>
               <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
                 <div className="text-[11px] text-muted-foreground font-mono">סך רווח / הפסד</div>
-                <div className={`text-lg font-bold font-mono mt-0.5 ${
-                  (simState?.totalProfit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
-                }`}>
-                  {(simState?.totalProfit || 0) >= 0 ? '+' : ''}
-                  ${simState?.totalProfit.toFixed(0) ?? '0'}
+                <div className={`text-lg font-bold font-mono mt-0.5 ${(simState?.totalProfit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {(simState?.totalProfit || 0) >= 0 ? '+' : ''}${simState?.totalProfit.toFixed(0) ?? '0'}
                 </div>
               </div>
               <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
@@ -396,11 +328,122 @@ export const ExecutiveDashboard: React.FC = () => {
                 </div>
               </div>
             </div>
-
             <div className="flex items-center justify-between pt-2 border-t border-border/40">
               <div className="text-xs text-muted-foreground font-mono flex items-center gap-1.5">
                 <Activity className="w-3.5 h-3.5 text-blue-400" />
                 <span>מנוע 4-Layer Decision Engine</span>
+              </div>
+              <Link to="/simulation-bot">
+                <Button variant="ghost" size="sm" className="font-mono text-xs gap-1 h-7 px-2 text-primary hover:text-primary">
+                  כניסה לסימולציה
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Legacy Simulation Bot */}
+        <Card className="border-border/60 bg-card hover:border-cyan-400/40 transition-all shadow-md">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                <Bot className="w-5 h-5" />
+              </div>
+              <div>
+                <CardTitle className="text-base font-bold font-mono">מנוע מקורי · Confidence Score</CardTitle>
+                <p className="text-xs text-muted-foreground font-mono">ציון משוקלל 7 אינדיקטורים</p>
+              </div>
+            </div>
+            <Badge variant="outline" className="font-mono text-xs text-cyan-400 border-cyan-500/30">
+              {legacyState?.isRunning
+                ? (legacyState.positionsCount > 0 ? `🟢 ${legacyState.positionsCount} פוזיציות פעילות` : "🟢 פועל — ממתין לאותות")
+                : legacyState && legacyState.positionsCount > 0
+                  ? `🟡 מושהה • ${legacyState.positionsCount} פוזיציות`
+                  : "ממתין לאותות"}
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
+                <div className="text-[11px] text-muted-foreground font-mono">יתרת סימולציה</div>
+                <div className="text-lg font-bold font-mono text-foreground mt-0.5">
+                  ${legacyState?.cash.toLocaleString('en-US', { maximumFractionDigits: 0 }) ?? '$10,000'}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
+                <div className="text-[11px] text-muted-foreground font-mono">סך רווח / הפסד</div>
+                <div className={`text-lg font-bold font-mono mt-0.5 ${(legacyState?.totalProfit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {(legacyState?.totalProfit || 0) >= 0 ? '+' : ''}${legacyState?.totalProfit.toFixed(0) ?? '0'}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
+                <div className="text-[11px] text-muted-foreground font-mono">אחוז הצלחה</div>
+                <div className="text-lg font-bold font-mono text-cyan-400 mt-0.5">
+                  {legacyState?.winRate.toFixed(1) ?? '0'}%
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-2 border-t border-border/40">
+              <div className="text-xs text-muted-foreground font-mono flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                <span>מנוע מקורי · Confidence Score</span>
+              </div>
+              <Link to="/simulation-bot">
+                <Button variant="ghost" size="sm" className="font-mono text-xs gap-1 h-7 px-2 text-primary hover:text-primary">
+                  כניסה לסימולציה
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Pro Simulation Bot */}
+        <Card className="border-border/60 bg-card hover:border-amber-400/40 transition-all shadow-md">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                <Bot className="w-5 h-5" />
+              </div>
+              <div>
+                <CardTitle className="text-base font-bold font-mono">בוט פרו · alg.md</CardTitle>
+                <p className="text-xs text-muted-foreground font-mono">מימוש מדויק של alg.md — Kelly, קנסות</p>
+              </div>
+            </div>
+            <Badge variant="outline" className="font-mono text-xs text-amber-400 border-amber-500/30">
+              {proState?.isRunning
+                ? (proState.positionsCount > 0 ? `🟢 ${proState.positionsCount} פוזיציות פעילות` : "🟢 פועל — ממתין לאותות")
+                : proState && proState.positionsCount > 0
+                  ? `🟡 מושהה • ${proState.positionsCount} פוזיציות`
+                  : "ממתין לאותות"}
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
+                <div className="text-[11px] text-muted-foreground font-mono">יתרת סימולציה</div>
+                <div className="text-lg font-bold font-mono text-foreground mt-0.5">
+                  ${proState?.cash.toLocaleString('en-US', { maximumFractionDigits: 0 }) ?? '$10,000'}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
+                <div className="text-[11px] text-muted-foreground font-mono">סך רווח / הפסד</div>
+                <div className={`text-lg font-bold font-mono mt-0.5 ${(proState?.totalProfit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {(proState?.totalProfit || 0) >= 0 ? '+' : ''}${proState?.totalProfit.toFixed(0) ?? '0'}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-background/80 border border-border/40">
+                <div className="text-[11px] text-muted-foreground font-mono">אחוז הצלחה</div>
+                <div className="text-lg font-bold font-mono text-amber-400 mt-0.5">
+                  {proState?.winRate.toFixed(1) ?? '0'}%
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-2 border-t border-border/40">
+              <div className="text-xs text-muted-foreground font-mono flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-amber-400" />
+                <span>בוט פרו · alg.md</span>
               </div>
               <Link to="/simulation-bot">
                 <Button variant="ghost" size="sm" className="font-mono text-xs gap-1 h-7 px-2 text-primary hover:text-primary">

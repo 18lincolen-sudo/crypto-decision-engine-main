@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Play, Pause, Square, Zap, Settings, ArrowDownCircle, ArrowUpCircle, ChevronDown, FileText } from 'lucide-react';
 import PortfolioPulseCard from './PortfolioPulseCard';
+import ProfitScale from './ProfitScale';
 import LivePositionChart from './LivePositionChart';
 import type { CryptoData } from '@/types/crypto';
 import type { SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder, SignalEvaluation, DecisionFactor } from '@/hooks/useSimulationBot';
@@ -107,7 +108,7 @@ export default function SimulationEngineColumn({
   );
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col h-full space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h2 className={`text-lg font-bold font-mono ${accentClass}`}>{title}</h2>
@@ -327,24 +328,27 @@ export default function SimulationEngineColumn({
         </CardContent>
       </Card>
 
-      <PortfolioPulseCard
-        equity={equity}
-        invested={botConfig.initialAmount}
-        cash={cash}
-        positionsValue={positionsValue}
-        history={history}
-        trades={trades}
-        statusLabel={status === 'running' ? 'פעיל' : status === 'paused' ? 'מושהה' : 'מושבת'}
-        statusTone={status}
-        metrics={[
-          { label: 'עסקאות', value: `${totalTrades}`, hint: `${closedTrades} נסגרו · ${winRate.toFixed(1)}%` },
-          { label: 'פוזיציות', value: `${positions.length}/${botConfig.maxPositions ?? 7}`, hint: `${openFuturesCount} פיוצ'רס` },
-          { label: 'עלויות', value: `-$${(totalFees + totalSlippageCost).toFixed(2)}`, tone: 'negative', hint: `עמלות $${totalFees.toFixed(2)}` },
-          { label: 'אחרון', value: lastTrade ? `${lastTrade.side.toUpperCase()} ${lastTrade.symbol}` : '—', hint: lastTrade?.timestamp || 'אין' }
-        ]}
-      />
+      {/* Portfolio Pulse Card — grows to fill available space */}
+      <div className="flex-1">
+        <PortfolioPulseCard
+          equity={equity}
+          invested={botConfig.initialAmount}
+          cash={cash}
+          positionsValue={positionsValue}
+          history={history}
+          trades={trades}
+          statusLabel={status === 'running' ? 'פעיל' : status === 'paused' ? 'מושהה' : 'מושבת'}
+          statusTone={status}
+          metrics={[
+            { label: 'עסקאות', value: `${totalTrades}`, hint: `${closedTrades} נסגרו · ${winRate.toFixed(1)}%` },
+            { label: 'פוזיציות', value: `${positions.length}/${botConfig.maxPositions ?? 7}`, hint: `${openFuturesCount} פיוצ'רס` },
+            { label: 'עלויות', value: `-$${(totalFees + totalSlippageCost).toFixed(2)}`, tone: 'negative', hint: `עמלות $${totalFees.toFixed(2)}` },
+            { label: 'אחרון', value: lastTrade ? `${lastTrade.side.toUpperCase()} ${lastTrade.symbol}` : '—', hint: lastTrade?.timestamp || 'אין' }
+          ]}
+        />
+      </div>
 
-      {/* Positions & Trades */}
+      {/* Positions & Trades — fixed height section */}
       <Card className="border-border/40 bg-card/50 backdrop-blur">
         <CardContent className="p-3">
           <Tabs defaultValue="positions">
