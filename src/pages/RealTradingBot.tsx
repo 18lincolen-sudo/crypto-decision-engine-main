@@ -16,6 +16,7 @@ import {
   type WorkerSkippedSymbol
 } from '@/services/tradingApiClient';
 import { useWorkerAuth } from '@/contexts/WorkerAuthContext';
+import { useApiPolling } from '@/hooks/useApiPolling';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Live trading is performed ONLY by the server worker (src/workers/tradingWorker.ts or dist/worker.js).
@@ -40,42 +41,39 @@ const RealTradingBot = () => {
   const clientRef = useRef(createTradingApiClient(config.baseUrl, config.adminToken));
   clientRef.current = createTradingApiClient(config.baseUrl, config.adminToken);
 
-  // Heartbeat: poll the public /health endpoint. Drives the explicit online/offline state.
-  // While offline, live order controls are disabled and no live orders can be queued.
-  const refresh = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client.baseUrl || !config.adminToken) {
-      setOnline(false);
-      setBotState(null);
-      setAccount(null);
-      return;
-    }
-    try {
-      const health = await client.getHealth();
-      if (!health || health.ok !== true) throw new Error('Worker לא מגיב');
-      const state = await client.getState();
-      setBotState(state);
-      setOnline(true);
-      setError(null);
-      setLastHeartbeat(Date.now());
-      try {
-        setAccount(await client.getAccountSummary());
-      } catch {
+  // Heartbeat: poll the public /health endpoint with exponential backoff on 429s.
+  const { syncStatus, refresh: refreshBot } = useApiPolling<null>(
+    async () => {
+      const client = clientRef.current;
+      if (!client.baseUrl || !config.adminToken) {
+        setOnline(false);
+        setBotState(null);
         setAccount(null);
+        return null;
       }
-    } catch (e) {
-      setOnline(false);
-      setBotState(null);
-      setAccount(null);
-      setError(e instanceof Error ? e.message : 'שגיאת חיבור ל-Worker');
-    }
-  }, [config.baseUrl, config.adminToken]);
-
-  useEffect(() => {
-    void refresh();
-    const id = setInterval(() => void refresh(), 5000);
-    return () => clearInterval(id);
-  }, [refresh]);
+      try {
+        const health = await client.getHealth();
+        if (!health || health.ok !== true) throw new Error('Worker לא מגיב');
+        const state = await client.getState();
+        setBotState(state);
+        setOnline(true);
+        setError(null);
+        setLastHeartbeat(Date.now());
+        try {
+          setAccount(await client.getAccountSummary());
+        } catch {
+          setAccount(null);
+        }
+      } catch (e) {
+        setOnline(false);
+        setBotState(null);
+        setAccount(null);
+        setError(e instanceof Error ? e.message : 'שגיאת חיבור ל-Worker');
+      }
+      return null;
+    },
+    { baseInterval: 5000, maxInterval: 30000 }
+  );
 
   const saveConfig = () => {
     if (!config.baseUrl) {
@@ -85,7 +83,7 @@ const RealTradingBot = () => {
     // Only baseUrl is persisted — adminToken stays memory-only (shared via
     // WorkerAuthContext, matching the security warning shown on this page).
     persistBaseUrl();
-    void refresh();
+    void refreshBot();
   };
 
   const startBot = async () => {

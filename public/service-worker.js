@@ -32,9 +32,10 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // APIs, Bybit, Binance, CoinGecko, and external requests
+  // APIs, Bybit, Binance, CoinGecko, external requests, and manifest
   if (
     url.pathname.startsWith('/api/') ||
+    url.pathname === '/manifest.json' ||
     url.origin !== self.location.origin ||
     url.hostname.includes('bybit.com') ||
     url.hostname.includes('binance.com') ||

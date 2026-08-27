@@ -20,6 +20,7 @@ import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
 import type { SimStatus } from './SimulationBotContext';
+import { useApiPolling } from '../hooks/useApiPolling';
 
 // Matches server/legacySimEngine.ts DEFAULT_LEGACY_SIM_CONFIG — this engine is
 // server-driven (the poll effect below overwrites this with the server's real
@@ -37,8 +38,6 @@ const DEFAULT_LEGACY_CONFIG: SimBotConfig = {
   executionDelaySec: 3,
   minConfidenceOverride: 0
 };
-
-const POLL_INTERVAL_MS = 5000;
 
 export interface LegacySimulationBotContextValue {
   cash: number;
@@ -95,8 +94,6 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
     }
   });
   const [serverSnapshot, setServerSnapshot] = useState<LegacySimBotStateResponse['snapshot']>(null);
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'local-only' | 'connecting'>('connecting');
-  const [syncError, setSyncError] = useState<string | null>(null);
   const fearGreedIndex = useFearGreedIndex();
   const { baseUrl } = useWorkerAuth();
 
@@ -125,32 +122,17 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
     }
   }, []);
 
-  // Poll server state if a dedicated worker backend is present. Failure here
-  // (no baseUrl configured on THIS device, or the Worker unreachable) means
-  // this device silently falls back to an unstarted local-only simulation —
-  // surfaced via syncStatus/syncError instead of failing silently.
+  // Poll server state with exponential backoff on 429s / network errors.
+  const { data: legacySimStateData, syncStatus, syncError } = useApiPolling<LegacySimBotStateResponse>(
+    () => getLegacySimState(baseUrl),
+    { baseInterval: 5000, maxInterval: 30000 }
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const st = await getLegacySimState(baseUrl);
-        if (cancelled) return;
-        applyServerState(st);
-        setSyncStatus('synced');
-        setSyncError(null);
-      } catch (e) {
-        if (cancelled) return;
-        setSyncStatus('local-only');
-        setSyncError(e instanceof Error ? e.message : 'שגיאת סנכרון עם Worker');
-      }
-    };
-    poll();
-    const id = setInterval(poll, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [applyServerState, baseUrl]);
+    if (legacySimStateData) {
+      applyServerState(legacySimStateData);
+    }
+  }, [legacySimStateData, applyServerState]);
 
   const start = useCallback(() => {
     setStatus('running');

@@ -14,6 +14,7 @@ import type { SignalEvaluation } from '../services/intradayBridge';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
+import { useApiPolling } from '../hooks/useApiPolling';
 
 // Matches server/simEngine.ts DEFAULT_SIM_CONFIG — this engine is server-driven
 // (the poll effect below overwrites this with the server's real config on sync),
@@ -31,8 +32,6 @@ const DEFAULT_CONFIG: SimBotConfig = {
   minConfidenceOverride: 0,
   positionPercent: 10
 };
-
-const POLL_INTERVAL_MS = 5000;
 
 export type SimStatus = 'running' | 'paused' | 'idle';
 
@@ -94,8 +93,6 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     }
   });
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'local-only' | 'connecting'>('connecting');
-  const [syncError, setSyncError] = useState<string | null>(null);
   const fearGreedIndex = useFearGreedIndex();
   const { baseUrl } = useWorkerAuth();
 
@@ -128,33 +125,21 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Poll server state if a dedicated worker backend is present. Failure here
-  // (no baseUrl configured on THIS device, or the Worker unreachable) means
-  // this device silently falls back to an unstarted local-only simulation —
-  // surfaced via syncStatus/syncError instead of failing silently, since
-  // localStorage baseUrl is per-device and commonly unset on a second device.
+  // Poll server state with exponential backoff on 429s / network errors.
+  // The server is the actual execution authority — a reload or network blip
+  // on the client never pauses real trading, it only affects what this device
+  // can currently SEE. Backoff prevents hammering an already rate-limited
+  // backend and lets the rate-limit window recover.
+  const { data: simStateData, syncStatus, syncError, refresh: refreshSimState } = useApiPolling<SimBotStateResponse>(
+    () => getSimState(baseUrl),
+    { baseInterval: 5000, maxInterval: 30000 }
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const st = await getSimState(baseUrl);
-        if (cancelled) return;
-        applyServerState(st);
-        setSyncStatus('synced');
-        setSyncError(null);
-      } catch (e) {
-        if (cancelled) return;
-        setSyncStatus('local-only');
-        setSyncError(e instanceof Error ? e.message : 'שגיאת סנכרון עם Worker');
-      }
-    };
-    poll();
-    const id = setInterval(poll, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [applyServerState, baseUrl]);
+    if (simStateData) {
+      applyServerState(simStateData);
+    }
+  }, [simStateData, applyServerState]);
 
   const start = useCallback(() => {
     setStatus('running');

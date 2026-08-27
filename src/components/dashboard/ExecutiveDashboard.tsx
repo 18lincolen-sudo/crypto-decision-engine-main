@@ -26,6 +26,7 @@ import { useLegacySimulationBotContextSafe } from '@/contexts/LegacySimulationBo
 import { useProSimulationBotContextSafe } from '@/contexts/ProSimulationBotContext';
 import type { SimPosition, SimTrade } from '@/hooks/useSimulationBot';
 import { useWorkerAuth } from '@/contexts/WorkerAuthContext';
+import { useApiPolling } from '@/hooks/useApiPolling';
 
 export const ExecutiveDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -114,8 +115,6 @@ export const ExecutiveDashboard: React.FC = () => {
       setLastUpdated(new Date().toLocaleTimeString('he-IL'));
 
       if (!adminToken) {
-        // Account summary / bot state need the admin token — enter it on the
-        // Real Trading Bot page; no error here, this is a normal not-yet-connected state.
         setWorkerSummary(null);
         setWorkerState(null);
         return;
@@ -132,15 +131,14 @@ export const ExecutiveDashboard: React.FC = () => {
     }
   }, [workerUrl, adminToken]);
 
-  useEffect(() => {
-    fetchWorkerData();
-
-    const interval = setInterval(() => {
-      fetchWorkerData();
-    }, 15000); // 15s refresh
-
-    return () => clearInterval(interval);
-  }, [fetchWorkerData]);
+  // Poll with exponential backoff on 429s / network errors.
+  const { syncStatus, syncError, refresh: refreshWorkerData } = useApiPolling<null>(
+    async () => {
+      await fetchWorkerData();
+      return null;
+    },
+    { baseInterval: 15000, maxInterval: 60000 }
+  );
 
   return (
     <div className="space-y-6 mb-8">
