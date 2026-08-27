@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, ReactNode } from 'react';
-import { resolveWorkerBaseUrl } from '../services/workerConfig';
+import { resolveWorkerBaseUrlWithSource, UrlSource } from '../services/workerConfig';
 
 // Shared worker connection state — lives above the router so it survives
 // in-app navigation between pages (RealTradingBot, ExecutiveDashboard, ...).
@@ -20,17 +20,23 @@ interface WorkerAuthContextValue {
   setBaseUrl: (url: string) => void;
   setAdminToken: (token: string) => void;
   persistBaseUrl: () => void;
+  baseUrlSource: UrlSource;
+  setBaseUrlSource: (source: UrlSource) => void;
 }
 
 const WorkerAuthContext = createContext<WorkerAuthContextValue | null>(null);
 
 export function WorkerAuthProvider({ children }: { children: ReactNode }) {
-  const [baseUrl, setBaseUrlState] = useState<string>(() => resolveWorkerBaseUrl());
+  const [baseUrl, setBaseUrlState] = useState<string>(() => resolveWorkerBaseUrlWithSource().url);
+  const [baseUrlSource, setBaseUrlSourceState] = useState<UrlSource>(() => resolveWorkerBaseUrlWithSource().source);
   const [adminToken, setAdminTokenState] = useState<string>(() => {
     try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch { return ''; }
   });
 
-  const setBaseUrl = (url: string) => setBaseUrlState(url);
+  const setBaseUrl = (url: string) => {
+    setBaseUrlState(url);
+    setBaseUrlSource('manual');
+  };
   const setAdminToken = (token: string) => {
     setAdminTokenState(token);
     try {
@@ -38,14 +44,16 @@ export function WorkerAuthProvider({ children }: { children: ReactNode }) {
       else localStorage.removeItem(ADMIN_TOKEN_KEY);
     } catch { /* ignore */ }
   };
+  const setBaseUrlSource = (source: UrlSource) => setBaseUrlSourceState(source);
   const persistBaseUrl = () => {
     try {
       localStorage.setItem('workerConfig', JSON.stringify({ baseUrl }));
+      setBaseUrlSource('localStorage');
     } catch { /* ignore */ }
   };
 
   return (
-    <WorkerAuthContext.Provider value={{ baseUrl, adminToken, setBaseUrl, setAdminToken, persistBaseUrl }}>
+    <WorkerAuthContext.Provider value={{ baseUrl, adminToken, setBaseUrl, setAdminToken, persistBaseUrl, baseUrlSource, setBaseUrlSource }}>
       {children}
     </WorkerAuthContext.Provider>
   );

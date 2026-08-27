@@ -1,7 +1,7 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Bot, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
+import { Bot, RefreshCw, AlertTriangle, Trash2, ExternalLink } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import PortfolioRiskMeter from '../components/trading/PortfolioRiskMeter';
 import SimulationEngineColumn from '../components/trading/SimulationEngineColumn';
@@ -30,7 +30,20 @@ const SimulationBot = () => {
   const legacy = useLegacySimulationBotContext();
   const pro = useProSimulationBotContext();
   const { cryptoData, isLoading } = useCryptoData();
-  const { baseUrl, setBaseUrl, persistBaseUrl } = useWorkerAuth();
+  const { baseUrl, setBaseUrl, persistBaseUrl, baseUrlSource, setBaseUrlSource } = useWorkerAuth();
+
+  const resetWorkerUrl = () => {
+    localStorage.removeItem('workerConfig');
+    setBaseUrl('');
+    setBaseUrlSource('none');
+  };
+
+  const sourceLabel: Record<string, string> = {
+    manual: 'הקלדה ידנית',
+    localStorage: 'שמור ב-localStorage',
+    env: 'משתנה סביבה (Netlify)',
+    none: 'לא הוגדר'
+  };
 
   const clearAllCache = () => {
     if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של שלושת המנועים ותרענן את הדף.')) {
@@ -83,6 +96,46 @@ const SimulationBot = () => {
             איפוס מלא של כל המטמון (מקומי + שרת)
           </Button>
         </div>
+
+        {/* Worker URL diagnostic — shows exactly which URL the frontend is using
+            and where it came from. This is the #1 cause of "CORS blocked" errors
+            after a Render URL change: localStorage still holds the old address. */}
+        <Card className="border-primary/20 bg-card/50">
+          <CardContent className="p-3 flex flex-wrap items-center gap-3 text-xs font-mono">
+            <span className="text-muted-foreground">Worker URL:</span>
+            <span className="text-primary font-semibold break-all">{baseUrl || 'לא הוגדר'}</span>
+            <span className="text-muted-foreground">מקור:</span>
+            <span className={`px-2 py-0.5 rounded ${
+              baseUrlSource === 'env' ? 'bg-green-500/10 text-green-400' :
+              baseUrlSource === 'localStorage' ? 'bg-yellow-500/10 text-yellow-400' :
+              baseUrlSource === 'manual' ? 'bg-blue-500/10 text-blue-400' :
+              'bg-muted text-muted-foreground'
+            }`}>
+              {sourceLabel[baseUrlSource] || baseUrlSource}
+            </span>
+            {baseUrl && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={resetWorkerUrl}
+                className="h-7 text-xs text-destructive hover:text-destructive"
+              >
+                איפוס כתובת
+              </Button>
+            )}
+            {baseUrl && (
+              <a
+                href={`${baseUrl}/health`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline flex items-center gap-1"
+              >
+                <ExternalLink className="w-3 h-3" />
+                בדיקת /health
+              </a>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Cross-device sync status — the shared server state (so a second device
             sees the SAME running bot) needs a Worker URL configured on THIS

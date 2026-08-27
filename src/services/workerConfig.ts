@@ -7,17 +7,29 @@
  * typecheck context (server/_smoke.ts -> bybitApi.ts) with no Vite types.
  */
 export function resolveWorkerBaseUrl(configured?: string): string {
-  let savedUrl = '';
+  const { url, source } = resolveWorkerBaseUrlWithSource(configured);
+  return url;
+}
+
+export type UrlSource = 'manual' | 'localStorage' | 'env' | 'none';
+
+export function resolveWorkerBaseUrlWithSource(configured?: string): { url: string; source: UrlSource } {
+  if (configured && configured.trim()) {
+    return { url: configured.trim().replace(/\/$/, ''), source: 'manual' };
+  }
   try {
     const saved = localStorage.getItem('workerConfig');
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (parsed.baseUrl) savedUrl = parsed.baseUrl;
+      if (parsed.baseUrl && parsed.baseUrl.trim()) {
+        return { url: parsed.baseUrl.trim().replace(/\/$/, ''), source: 'localStorage' };
+      }
     }
   } catch { /* ignore */ }
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
   const fromEnv = env?.VITE_TRADING_API_URL;
-  // Prefer an explicitly configured (manually entered/saved) URL over the build-time
-  // VITE_TRADING_API_URL, so a saved Worker address is actually used.
-  return (configured || savedUrl || fromEnv || '').replace(/\/$/, '');
+  if (fromEnv && fromEnv.trim()) {
+    return { url: fromEnv.trim().replace(/\/$/, ''), source: 'env' };
+  }
+  return { url: '', source: 'none' };
 }
