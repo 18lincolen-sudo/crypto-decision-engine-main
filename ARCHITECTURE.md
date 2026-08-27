@@ -1,6 +1,6 @@
 # מפת ארכיטקטורה — Crypto Decision Engine
 
-> מסמך זה נועד לתת תמונה מלאה ומהירה של הפרוייקט: ארכיטקטורה, קבצים, לוגיקה, מנוי ופרונט.
+> מסמך זה נועד לתת תמונה מלאה ומהירה של הפרוייקט: ארכיטקטורה, קבצים, לוגיקה, פריסה ופרונט.
 
 ---
 
@@ -34,7 +34,7 @@
 │  │                                                           │      │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │      │
 │  │  │  Live Bot   │  │  Sim Engine │  │ Legacy Sim  │      │      │
-│  │  │  (מסחר     │  │  (סימולציה │  │ Engine      │      │      │
+│  │  │  (מסחר     │  │  (סימולציה  │  │ Engine      │      │      │
 │  │  │   אמיתי)   │  │   חדש)     │  │ (מקורי)    │      │      │
 │  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘      │      │
 │  │         │                │                │                 │      │
@@ -82,12 +82,17 @@ crypto-decision-engine-main/
 ├── capacitor.config.ts           # Capacitor (אפליקציה מובייל)
 │
 ├── server/                       # קבצי backend (מועלים ל-Render)
-│   ├── index.mjs                 # נקודת כניסה (ייבוא מ-tradingWorker.ts)
-│   ├── package.json              # תלויות backend (dotenv)
+│   ├── package.json              # תלויות backend (dotenv + esbuild/tsx/typescript)
+│   ├── tradingWorker.ts          # שרת HTTP + לוגיקת Bot 24/7
 │   ├── simEngine.ts              # מנוע סימולציה חדש (MTF)
 │   ├── legacySimEngine.ts        # מנוע סימולציה מקורי
 │   ├── proSimEngine.ts           # מנוע סימולציה פרו (alg.md)
+│   ├── kvStore.ts                # אחסון מקומי
 │   └── .data/                    # קבצי מצב (מועלים אוטומטית ל-Firestore)
+│
+├── ALG_intraday.md               # תיעוד אלגוריתם בוט חדש
+├── ALG_legacy.md                 # תיעוד אלגוריתם בוט מקורי
+├── ALG_pro.md                    # תיעוד אלגוריתם בוט פרו
 │
 ├── public/                       # קבצים סטטיים
 │   ├── _redirects                # Netlify redirects (SPA)
@@ -150,7 +155,7 @@ crypto-decision-engine-main/
 │   │   ├── proSimExecution.ts    # לוגיקת ביצוע Pro (alg.md)
 │   │   ├── proAlgEngine.ts       # מנוע Pro (alg.md)
 │   │   ├── tradeEngine.ts        # מנוע מסחר בסיסי
-│   │   ├── adaptiveRisk.ts       # סיכון adaptiv
+│   │   ├── adaptiveRisk.ts       # סיכון אדפטיבי
 │   │   ├── correlation.ts        # בדיקת קורלציה
 │   │   ├── bybitApi.ts           # לקוח Bybit (ציבורי + מאומת)
 │   │   ├── binancePublicApi.ts   # לקוח Binance (ציבורי)
@@ -160,9 +165,6 @@ crypto-decision-engine-main/
 │   │   ├── symbolUniverse.ts     # ניהול יוניברס סמלים
 │   │   ├── assetUniverse.ts      # מיפוי סמלים
 │   │   └── ...
-│   │
-│   ├── workers/                  # Worker (server-side)
-│   │   └── tradingWorker.ts      # שרת HTTP + לוגיקת Bot
 │   │
 │   ├── types/                    # TypeScript types
 │   │   └── crypto.ts
@@ -182,7 +184,7 @@ crypto-decision-engine-main/
 │
 ├── dist/                         # תוצר build (מועלה ל-Netlify)
 ├── node_modules/
-└── docs/                         # תיעוד (אם קיים)
+└── ASSETS/                       # נכסים סטטיים (תמונות, וכו')
 ```
 
 ---
@@ -215,7 +217,7 @@ crypto-decision-engine-main/
 | **tradingWorker.ts** | שרת HTTP + לוגיקת Bot 24/7 |
 | **simEngine.ts** | מנוע סימולציה חדש (MTF) |
 | **legacySimEngine.ts** | מנוע סימולציה מקורי |
-| **proSimEngine.ts** | מנוע סימו�לציה פרו (alg.md) |
+| **proSimEngine.ts** | מנוע סימולציה פרו (alg.md) |
 | **intradayEngine.ts** | מנוע החלטות MTF (מקור אמת) |
 | **marketDataService.ts** | Multi-Timeframe OHLCV pipeline |
 | **bybitApi.ts** | לקוח Bybit (ציבורי + מאומת) |
@@ -253,17 +255,25 @@ crypto-decision-engine-main/
 
 ## 4. שלושת מנועי הסימולציה
 
-| מנוע | קובץ | אלגוריתם | שימוש |
-|------|------|-----------|--------|
-| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest |
-| **מקורי** | `legacySimEngine.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | סימולציה |
-| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה |
+| מנוע | קובץ | אלגוריתם | שימוש | minConfidence |
+|------|------|-----------|--------|---------------|
+| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 52 |
+| **מקורי** | `legacySimEngine.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | סימולציה | 58 |
+| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 60 |
+
+**מקורות מידע לכל המנועים:**
+- **Bybit** — נתוני שוק (candles, ticker, instruments-info)
+- **Binance** — גיבוי לנתוני שרת (fallback)
+- **CoinGecko** — נתוני ניתוח (לא intraday)
+- **Alternative.me** — מדד פחד וחמדנות
 
 ---
 
 ## 5. הגדרות פריסה (Deployment)
 
 ### 5.1 Render (Backend)
+
+**Root Directory:** `server`
 
 ```yaml
 # render.yaml
@@ -272,18 +282,27 @@ services:
     name: crypto-trading-worker
     runtime: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build:worker
+    buildCommand: npm install && npm run build
     startCommand: node dist/worker.js
     healthCheckPath: /health
 ```
 
 **משתני סביבה ב-Render:**
-- `BYBIT_API_KEY` / `BYBIT_SECRET_KEY` — מפתחות Bybit
-- `BYBIT_TESTNET` — `true` לטסטרנט, `false` למ�ייננט
-- `BOT_ADMIN_TOKEN` — טוקן ניהול
-- `BOT_DRY_RUN` — `true` למצב סימולציה
-- `CORS_ORIGIN` — מקורות מותרים (למשל: `https://crypto-d.netlify.app`)
-- `PORT` — `3001`
+| משתנה | ערך ברירת מחדל | תיאור |
+|-------|-----------------|--------|
+| `BYBIT_API_KEY` | — | מפתח Bybit |
+| `BYBIT_SECRET_KEY` | — | סוד Bybit |
+| `BYBIT_TESTNET` | `false` | `true` לטסטרנט |
+| `BOT_ADMIN_TOKEN` | — | טוקן ניהול |
+| `BOT_DRY_RUN` | `true` | מצב סימולציה |
+| `BOT_AUTOSTART` | `true` | הפעלה אוטומטית |
+| `BOT_RISK_LEVEL` | `medium` | רמת סיכון |
+| `BOT_SYMBOLS` | `100` | מספר סמלים |
+| `BOT_MIN_CONFIDENCE` | `60` | סף confidence מינימלי |
+| `BOT_POSITION_PERCENT` | `10` | אחוז מהתיק לפוזיציה |
+| `BOT_MAX_OPEN_POSITIONS` | `9` | מקסימום פוזיציות פתוחות |
+| `CORS_ORIGIN` | `https://crypto-d.netlify.app` | מקורות מותרים |
+| `PORT` | `3001` | פורט |
 
 ### 5.2 Netlify (Frontend)
 
@@ -306,19 +325,45 @@ services:
 
 ---
 
-## 6. אבטחה
+## 6. Build & Deploy
+
+### Build מקומי
+
+```bash
+# Frontend
+npm run build
+
+# Worker
+npm run build:worker
+# או:
+cd server && npm install && npm run build
+```
+
+### מבנה Build
+
+```
+server/
+├── dist/
+│   └── worker.js          # 361.5kb (מכל את כל התלויות)
+├── package.json
+└── .data/                 # קבצי מצב (נוצרים בזמן ריצה)
+```
+
+---
+
+## 7. אבטחה
 
 | רכיב | הסבר |
 |------|------|
 | **Admin Token** | נדרש לשליטה בבוט אמיתי (start/stop/state) |
 | **CORS** | מוגבל ל-origins מורשים ב-`CORS_ORIGIN` |
-| **Rate Limiting** | הגבלת בקשות לפי IP |
+| **Rate Limiting** | הגבלת בקשות לפי IP (ברירת מחדל: 120 בקשות/דקה) |
 | **Secrets** | מפתחות Bybit נשארים בשרת, לעולם לא נשלחים לפרונט |
 | **localStorage** | Admin Token נשמר מקומית (אפשרות משתמש) |
 
 ---
 
-## 7. תלויות חיצוניות
+## 8. תלויות חיצוניות
 
 | שירות | שימוש |
 |--------|--------|
@@ -331,24 +376,53 @@ services:
 
 ---
 
-## 8. תיקון CORS — מדריך מהיר
+## 9. שינויים אחרונים
 
-### הבעיה
+### מקסימום פוזיציות דינמי
+
+המקסימום פוזיציות מחושב כעת בהתאם להשקעה ההתחלתית:
+
 ```
-Access to fetch at 'https://crypto-decision-engine-main.onrender.com/api/pro-sim/state'
-from origin 'https://crypto-d.netlify.app' has been blocked by CORS policy:
-No 'Access-Control-Allow-Origin' header is present on the requested resource.
+maxPositions = Math.max(1, Math.floor(7 * 1000 / initialAmount))
 ```
 
-### סיבות אפשריות
-1. **השירות ב-Render לא redeploy אחרי שינוי env vars** — שינויים ב-Render Dashboard דורשים redeploy.
-2. **`CORS_ORIGIN` ב-Render לא תואם את ה-Netlify origin** — צריך להיות `https://crypto-d.netlify.app` בדיוק.
-3. **הפרונט עדיין מכוון לכתובת ישנה** — `VITE_TRADING_API_URL` ב-Netlify נטען בזמן build, שינוי דורש deploy חדש.
-4. **שירות Render שונה / נוצר מחדש** — אם נוצר שירות חדש, ה-env vars מ-`render.yaml` לא חלים עליו אוטומטית.
+| השקעה | מקסימום פוזיציות |
+|-------|-----------------|
+| 100$ | 70 |
+| 500$ | 14 |
+| 1000$ | 7 |
+| 2000$ | 3 |
+| 10000$ | 1 |
 
-### פתרון
-1. ב-Render Dashboard → Environment → וודא ש-`CORS_ORIGIN=https://crypto-d.netlify.app`.
-2. ב-Render Dashboard → התקע redeploy ידני.
-3. ב-Netlify → Site settings → Environment → וודא ש-`VITE_TRADING_API_URL` מכוון לכתובת ה-Render הנכונה.
-4. ב-Netlify → Trigger deploy חדש (לא רק save).
-5. בדוק `/health` ב-Render — האחור `cors` אמור להראות `https://crypto-d.netlify.app`.
+### סינון Confidence
+
+כל שלושת המנועים מיישמים כעת סינון confidence מינימלי:
+
+| בוט | סף מינימלי | מקור בקוד |
+|-----|-----------|-----------|
+| חדש | 52 | `simExecution.ts` |
+| Legacy | 58 | `legacySimExecution.ts` |
+| Pro | 60 | `proSimExecution.ts` |
+
+### סף Futures דינמי
+
+הסף ל-Futures הופחת מ-72 ל-70:
+```typescript
+const futuresThreshold = dynamicConfidenceThreshold(70, atrPercent);
+```
+
+### הפרדת Frontend/Backend
+
+- `server/package.json` נפרד עם תלויות מינימליות (dotenv, esbuild, tsx, typescript)
+- `render.yaml` מוגדר עם Root Directory = `server`
+- ה-build רץ ישירות מתוך `server/`
+
+---
+
+## 10. קבצי תיעוד נוספים
+
+| קובץ | תיאור |
+|------|-------|
+| `ALG_intraday.md` | תיעוד מלא של אלגוריתם הבוט החדש (MTF) |
+| `ALG_legacy.md` | תיעוד מלא של אלגוריתם הבוט המקורי |
+| `ALG_pro.md` | תיעוד מלא של אלגוריתם בוט פרו (alg.md) |

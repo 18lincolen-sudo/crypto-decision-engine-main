@@ -29,7 +29,7 @@ const DEFAULT_CONFIG: SimBotConfig = {
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
-  minConfidenceOverride: 52,
+  minConfidenceOverride: 58,
   positionPercent: 10
 };
 
