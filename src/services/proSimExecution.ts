@@ -165,6 +165,12 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       status = streakCooldownReason(streakCooldownUntil as number); willExecute = false;
     }
 
+    // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
+    if (willExecute && router.type !== 'HOLD' && router.side !== 'NONE') {
+      const minConf = config.minConfidenceOverride ?? 60;
+      if (signal.rawConfidence < minConf) { status = `Confidence נמוך מדי (${signal.rawConfidence} < ${minConf})`; willExecute = false; }
+    }
+
     if (willExecute && router.type !== 'HOLD' && router.side !== 'NONE') {
       const gate = evaluateCorrelationGate({
         symbol,

@@ -156,6 +156,12 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       status = streakCooldownReason(streakCooldownUntil as number); willExecute = false;
     }
 
+    // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
+    if (willExecute && layer2.type !== 'HOLD' && layer2.side !== 'NONE') {
+      const minConf = config.minConfidenceOverride ?? 58;
+      if (layer1.signalScore < minConf) { status = `Confidence נמוך מדי (${layer1.signalScore.toFixed(1)} < ${minConf})`; willExecute = false; }
+    }
+
     // Correlation gate — refuses a candidate that would make the book hold
     // the same risk factor a third time over.
     if (willExecute && layer2.type !== 'HOLD' && layer2.side !== 'NONE') {

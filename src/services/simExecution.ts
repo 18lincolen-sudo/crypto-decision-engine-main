@@ -354,6 +354,12 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
     else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) { status = 'כבר מוחזק בתיק (Spot)'; willExecute = false; }
     else if (streakCooldownActive) { status = streakCooldownReason(streakCooldownUntil as number); willExecute = false; }
 
+    // Confidence floor — minimum signal quality threshold
+    if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {
+      const minConf = config.minConfidenceOverride ?? 52;
+      if (ev.confidence < minConf) { status = `Confidence נמוך מדי (${ev.confidence} < ${minConf})`; willExecute = false; }
+    }
+
     // Correlation gate — last, because it is the most expensive check and
     // only meaningful for a candidate that survived every other gate.
     if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {

@@ -859,7 +859,7 @@ export function routeTradeType(
   // ═══════════════════════════════════════════════════════
   const isTrending = layer0.regime === 'TRENDING' && layer0.adx > 25;
   const isVolatilitySafeForFutures = layer0.volatility === 'LOW' || layer0.volatility === 'NORMAL';
-  const futuresThreshold = dynamicConfidenceThreshold(72, layer0.atrPercent);
+  const futuresThreshold = dynamicConfidenceThreshold(70, layer0.atrPercent);
   const isFuturesScorePassed = signalScore >= futuresThreshold;
 
   if (isTrending && isVolatilitySafeForFutures && isFuturesScorePassed) {
