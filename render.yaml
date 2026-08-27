@@ -3,8 +3,8 @@ services:
     name: crypto-trading-worker
     runtime: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build:worker
-    startCommand: node dist/worker.js
+    buildCommand: cd server && npm install && npm run build
+    startCommand: cd server && node dist/worker.js
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -53,10 +53,7 @@ services:
       - key: BOT_REQUEST_TIMEOUT_MS
         value: "15000"
       - key: CORS_ORIGIN
-        # Wildcard let ANY website make requests to this worker. The
-        # frontend's actual origin (matches .env locally) is the only one
-        # that legitimately needs it; add more as comma-separated if other
-        # trusted origins (a custom domain, a preview deploy) are added.
+        # Restricted to the Netlify frontend origin. No wildcard.
         value: "https://crypto-d.netlify.app"
       - key: PORT
         value: "3001"

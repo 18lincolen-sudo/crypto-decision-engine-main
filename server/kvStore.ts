@@ -149,13 +149,6 @@ class FirestoreKV {
   }
 }
 
-// Serializes all read-modify-write operations against a given file path.
-// LocalKV.set/del each do read-full-file → modify → write-full-file; two
-// calls interleaved across their own await points (e.g. two concurrent
-// set() calls on different keys) would race and silently drop one write.
-// Chaining every operation onto a per-file promise queue forces them to run
-// one at a time, which removes the race entirely — the temp-then-rename
-// below only protects against a torn/corrupted file on crash, not this.
 const fileQueues = new Map<string, Promise<unknown>>();
 function enqueue<T>(file: string, task: () => Promise<T>): Promise<T> {
   const prev = fileQueues.get(file) ?? Promise.resolve();
@@ -185,22 +178,16 @@ class LocalKV {
     await mkdir(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, JSON.stringify(full, null, 2), 'utf8');
-    // rename() is atomic on the same filesystem — readers/other writers
-    // never observe a partially-written file, even if the process crashes
-    // mid-write (the .tmp file is simply orphaned, never linked in).
     await rename(tmp, this.file);
   }
 
   async set(key: string, value: string): Promise<void> {
     return enqueue(this.file, async () => {
       try {
-        // Read full file to preserve other keys
         let full: Record<string, string> = {};
         try {
           full = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, string>;
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
         full[key] = value;
         await this.writeAtomic(full);
       } catch (err) {
@@ -215,14 +202,10 @@ class LocalKV {
         let full: Record<string, string> = {};
         try {
           full = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, string>;
-        } catch {
-          return;
-        }
+        } catch { return; }
         delete full[key];
         await this.writeAtomic(full);
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     });
   }
 }
@@ -249,7 +232,6 @@ class KVStore {
     }
     const remote = await this.firestore.get(k);
     if (remote !== null) return remote;
-    // Fallback to local if remote miss (cold start after deploy)
     return this.local.get(k);
   }
 
@@ -260,7 +242,6 @@ class KVStore {
       return;
     }
     await this.firestore.set(k, value);
-    // Also write locally as immediate fallback
     await this.local.set(k, value);
   }
 

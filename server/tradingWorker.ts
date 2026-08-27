@@ -16,20 +16,20 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { config as loadEnv } from 'dotenv';
 // Server-side simulation engine (runs the bot 24/7 without a browser).
-import { createSimEngine, SimSnapshot } from '../../server/simEngine.ts';
+import { createSimEngine, SimSnapshot } from './simEngine.ts';
 // Server-side legacy simulation engine (original alg.md algorithm) — same
 // server, same infra, only the decision logic differs (see legacySimEngine.ts).
-import { createLegacySimEngine, LegacySimSnapshot } from '../../server/legacySimEngine.ts';
+import { createLegacySimEngine, LegacySimSnapshot } from './legacySimEngine.ts';
 // Server-side "Bot Pro" — a literal, verified-faithful implementation of
 // ASSETS/alg.md, independent from the (drifted) legacy engine above. Same
 // server, same infra, only the decision logic differs (see proSimEngine.ts).
-import { createProSimEngine, ProSimSnapshot } from '../../server/proSimEngine.ts';
+import { createProSimEngine, ProSimSnapshot } from './proSimEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
-import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../services/intradayEngine';
-import { buildPortfolioRiskStats } from '../services/intradayBridge';
-import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '../services/marketDataService';
-import { toBybitSymbol } from '../services/assetUniverse';
-import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../src/services/intradayEngine';
+import { buildPortfolioRiskStats } from '../src/services/intradayBridge';
+import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '../src/services/marketDataService';
+import { toBybitSymbol } from '../src/services/assetUniverse';
+import { TARGET_SYMBOLS } from '../src/shared/targetSymbols';
 import { createKVStore } from './kvStore';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,18 +57,13 @@ function boundedNumber(name: string, fallback: number, min: number, max: number)
   return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
 }
 const minConfidence = boundedNumber('BOT_MIN_CONFIDENCE', 60, 0, 100);
-const positionPercent = boundedNumber('BOT_POSITION_PERCENT', 10, 0.1, 100); // % of available USDT
+const positionPercent = boundedNumber('BOT_POSITION_PERCENT', 10, 0.1, 100);
 const maxOpenPositions = Math.floor(boundedNumber('BOT_MAX_OPEN_POSITIONS', 5, 1, 100));
 const scanConcurrency = Math.floor(boundedNumber('BOT_SCAN_CONCURRENCY', 5, 1, 20));
 const intervalMs = boundedNumber('BOT_SCAN_INTERVAL_SECONDS', 300, 60, 3600) * 1000;
-// FIX #1: symbols that opened a SPOT position are no longer blocked forever.
-// After this many hours they become eligible again even if we can't verify
-// the spot position closed (Bybit spot has no "position list" like Futures).
-// Futures positions are still verified directly against the exchange (see scan()).
 const REENTRY_COOLDOWN_MS = boundedNumber('BOT_REENTRY_COOLDOWN_HOURS', 24, 1, 720) * 3600 * 1000;
 
 // CORS: restrict to configured frontend origins. Comma-separated, or '*' to allow any.
-// A value such as https://*.netlify.app permits Netlify Deploy Preview URLs.
 const corsOriginEnv = process.env.CORS_ORIGIN || '';
 const allowedOrigins = corsOriginEnv.split(',').map(s => s.trim()).filter(Boolean);
 // Basic rate limiting: per-IP window.
@@ -84,7 +79,7 @@ function clientIp(req: { headers: Record<string, string | string[] | undefined>;
   return req.socket?.remoteAddress || 'unknown';
 }
 
-const rateBuckets = new Map<string, number[]>(); // ip -> [timestamps]
+const rateBuckets = new Map<string, number[]>();
 function rateLimited(ip: string): boolean {
   const now = Date.now();
   const hits = (rateBuckets.get(ip) || []).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
@@ -93,8 +88,6 @@ function rateLimited(ip: string): boolean {
   return hits.length > RATE_LIMIT_MAX;
 }
 
-// FIX #3: rateBuckets grew forever (one entry per distinct IP, never removed).
-// Periodically drop IPs with no hits left in the current window.
 function pruneRateBuckets(): void {
   const now = Date.now();
   for (const [ip, hits] of rateBuckets) {
@@ -120,7 +113,6 @@ function setCors(req: { headers: Record<string, string | string[] | undefined> }
   }
 }
 
-// Abort external calls that exceed the request timeout so the worker never hangs.
 async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -131,12 +123,8 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
   }
 }
 
-// Send critical error alerts to Telegram. Requires TELEGRAM_BOT_TOKEN and
-// TELEGRAM_CHAT_ID environment variables. No-op if not configured.
 let lastAlertedError: string | null = null;
 
-// Send order execution notification to Telegram. Requires TELEGRAM_BOT_TOKEN and
-// TELEGRAM_CHAT_ID environment variables. No-op if not configured.
 async function sendTelegramOrder(message: string): Promise<void> {
   if (!telegramBotToken || !telegramChatId) {
     console.warn('[telegram] not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID) — order notification dropped');
@@ -146,23 +134,13 @@ async function sendTelegramOrder(message: string): Promise<void> {
     const res = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: telegramChatId,
-        text: message
-        // No parse_mode: none of these messages use actual HTML markup, and
-        // 'HTML' mode makes Telegram reject the WHOLE message if the text
-        // ever contains a raw '<'/'>'/'&' (e.g. a reasoning string like
-        // "RSI < 30") — a failure that, before the check below, was 100%
-        // silent (fetch() only rejects on network failure, not on a non-2xx
-        // response).
-      })
+      body: JSON.stringify({ chat_id: telegramChatId, text: message })
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       console.warn(`[telegram] sendMessage failed (order): HTTP ${res.status} ${body.slice(0, 300)}`);
     }
   } catch (e) {
-    // Never throw from notification — a Telegram failure must not crash the worker.
     console.warn('[telegram] sendMessage threw (order):', e instanceof Error ? e.message : String(e));
   }
 }
@@ -174,69 +152,34 @@ async function sendTelegramAlert(message: string): Promise<void> {
     const res = await fetchWithTimeout(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: telegramChatId,
-        text: `🚨 Crypto Bot Error\n\n${message}`
-      })
+      body: JSON.stringify({ chat_id: telegramChatId, text: `🚨 Crypto Bot Error\n\n${message}` })
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       console.warn(`[telegram] sendMessage failed (alert): HTTP ${res.status} ${body.slice(0, 300)}`);
     }
   } catch (e) {
-    // Never throw from alerting — a Telegram failure must not crash the worker.
     console.warn('[telegram] sendMessage threw (alert):', e instanceof Error ? e.message : String(e));
   }
 }
 
-// Public market data is ALWAYS Mainnet. Execution/account URL depends on testnet flag.
 const PUBLIC_BASE = 'https://api.bybit.com';
 const EXEC_BASE = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
 
-// Kline interval for the scan. Daily ('D') candles rarely reach a TRENDING
-// regime (ADX>25), so Futures almost never triggers and the bot stays on SPOT.
-// Shorter intervals (4h='240', 1h='60') detect trends far more often, letting
-// the existing Futures routing/leverage logic actually engage. Configurable.
 const klineInterval = process.env.BOT_KLINE_INTERVAL || '240';
 
-// `BOT_SYMBOLS=100` (or unset) means the full supported universe; any other
-// value is treated as an explicit comma-separated list, which pins the
-// universe and disables the automatic liquidity-based refresh below.
 const botSymbolsRaw = process.env.BOT_SYMBOLS?.trim();
 const isExplicitSymbolOverride = Boolean(botSymbolsRaw && botSymbolsRaw !== '100');
 const rawSymbols = (isExplicitSymbolOverride
   ? botSymbolsRaw!.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
   : TARGET_SYMBOLS
 );
-// Unsupported symbols are recorded with a visible reason — never silently treated as a successful scan.
 const unsupportedSymbols = rawSymbols.filter(s => !s.endsWith('USDT')).map(s => ({ symbol: s, reason: 'לא מסתיים ב-USDT (לא נתמך)' }));
-// Mutable: refreshUniverseIfStale() swaps this to a fresh liquidity-based list
-// (see below). Read at call time everywhere it's used, never captured once.
-// Deduplicated — an explicit BOT_SYMBOLS list with a repeated entry (typo,
-// copy-paste) would otherwise scan and evaluate the same symbol twice per
-// cycle for no reason (harmless, but wasted API calls and log noise).
 let symbols = [...new Set(rawSymbols.filter(s => s.endsWith('USDT')))];
 
-// ── Liquidity-based universe refresh ────────────────────────────────────────
-// TARGET_SYMBOLS (the static list) can drift: a coin's Bybit liquidity shifts,
-// or a symbol gets delisted outright, day to day. computeLiquidUniverse() re-
-// derives the tradeable list live from Bybit turnover and is persisted to
-// Firestore (via configStore) so the SAME refreshed universe survives
-// restarts/redeploys without waiting on a fresh full recompute every boot.
-// Skipped entirely when the operator pinned an explicit BOT_SYMBOLS list.
-//
-// Refreshed daily (was 7 days): the recompute is just 3 lightweight public
-// Bybit ticker calls (spot/linear/inverse, no auth, no per-symbol overhead —
-// nothing like the per-symbol candle fetching that needs rate-limit care
-// elsewhere), so daily cost is negligible. A 7-day staleness window meant a
-// symbol that got delisted from Bybit Spot could sit dead in the trading
-// universe for up to a week before self-healing, silently wasting that slot's
-// worth of scan budget the whole time.
-const UNIVERSE_STALE_MS = 24 * 60 * 60 * 1000; // 1 day
-const UNIVERSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // re-check staleness daily
+const UNIVERSE_STALE_MS = 24 * 60 * 60 * 1000;
+const UNIVERSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-// Exposed read-only via GET /api/public/universe so the simulation frontend
-// (no admin token) can mirror the SAME live universe as the real bot.
 let universeGeneratedAt = 0;
 
 async function refreshUniverseIfStale(): Promise<void> {
@@ -252,9 +195,9 @@ async function refreshUniverseIfStale(): Promise<void> {
     }
     if (!isStale) return;
 
-    const { computeLiquidUniverse } = await import('../services/symbolUniverse');
+    const { computeLiquidUniverse } = await import('../src/services/symbolUniverse');
     const fresh = await computeLiquidUniverse();
-    if (!fresh.symbols.length) return; // never adopt an empty result
+    if (!fresh.symbols.length) return;
     symbols = fresh.symbols;
     universeGeneratedAt = fresh.generatedAt;
     await configStore.set('targetSymbols', JSON.stringify({ symbols: fresh.symbols, generatedAt: fresh.generatedAt }));
@@ -264,10 +207,8 @@ async function refreshUniverseIfStale(): Promise<void> {
   }
 }
 
-// ── Source health counters ─────────────────────────────────────────────────
 const health = { publicRequests: 0, publicFailures: 0, execRequests: 0, execFailures: 0, lastScanAt: null as string | null };
 
-// ── In-memory + persisted state ────────────────────────────────────────────
 const state = {
   running: autostart,
   lastScanAt: null as string | null,
@@ -278,18 +219,8 @@ const state = {
   orders: [] as { at: string; dryRun: boolean; symbol: string; side: string; reason?: string; error?: string; result?: unknown }[],
   openedSymbols: new Map<string, { at: number; type: 'SPOT' | 'FUTURES'; reason?: string; confidence?: number }>(),
   skippedSymbols: [...unsupportedSymbols] as { symbol: string; reason: string }[],
-  // Cumulative realized P&L from FUTURES positions the bot has closed since
-  // this process last had an empty state (i.e. since first boot with no
-  // saved state, or since a manual reset) — not a full account P&L (the
-  // account may carry balance/positions from before the bot existed or from
-  // manual trades), but an honest "what has the bot itself made" figure for
-  // the exit-notification footer.
   realizedPnlTotal: 0,
-  // Pending Limit Orders: symbol → { orderId, placedAt, expiresAt }
-  // Auto-cancelled after LIMIT_ORDER_TTL_MS if not filled.
   pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>(),
-  // Confirmed-held SPOT positions (Buy fill verified against the real wallet
-  // balance) — see confirmSpotEntries/checkClosedSpotPositions.
   spotHoldings: new Map<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>()
 };
 
@@ -298,7 +229,6 @@ function json(res: { writeHead: (status: number, headers?: Record<string, string
   res.end(JSON.stringify(body));
 }
 
-// Read a JSON request body (used by the shared simulation bot endpoints).
 async function readJsonBody(req: { on: (event: string, handler: (chunk?: string | Buffer) => void) => void; destroy: () => void }, limitBytes = 5_000_000): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
     let data = '';
@@ -315,9 +245,6 @@ async function readJsonBody(req: { on: (event: string, handler: (chunk?: string 
   });
 }
 
-// FIX #2: constant-time comparison so a bad admin token can't be brute-forced
-// via response-time measurement. Falls back to a safe `false` on any length
-// mismatch instead of throwing (timingSafeEqual requires equal-length buffers).
 function authorized(req: { headers: { authorization?: string } }): boolean {
   if (!adminToken) return false;
   const header = req.headers.authorization || '';
@@ -327,10 +254,6 @@ function authorized(req: { headers: { authorization?: string } }): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// BYBIT CLIENT — public (Mainnet) + authenticated execution (testnet/mainnet)
-// ═══════════════════════════════════════════════════════════════════════════
 
 function sign(timestamp: string, payload: string): string {
   return createHmac('sha256', secretKey).update(`${timestamp}${apiKey}5000${payload}`).digest('hex');
@@ -359,18 +282,11 @@ async function bybitExec(path: string, method = 'GET', params: Record<string, st
     data = JSON.parse(responseText);
   } catch {
     health.execFailures++;
-    // Render logs retain enough context to identify a proxy/WAF/upstream error,
-    // while the client receives no credentials, response headers, or raw body.
     console.error(`[bybit] Invalid JSON from ${method} ${path}`, {
       status: res.status,
       contentType: res.headers.get('content-type'),
       preview: responseText.slice(0, 300)
     });
-    // A non-JSON body (often an EMPTY body) alongside a 4xx/5xx status usually
-    // means a proxy/WAF/gateway rejected the request before it reached Bybit's
-    // API layer (e.g. transient edge issue) rather than Bybit returning a real
-    // retCode error — retry a couple of times before giving up. Do NOT retry
-    // POST order-placement calls, to avoid ever double-submitting an order.
     if (method === 'GET' && attempt < MAX_ATTEMPTS - 1) {
       await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       return bybitExec(path, method, params, attempt + 1);
@@ -381,9 +297,6 @@ async function bybitExec(path: string, method = 'GET', params: Record<string, st
   return data.result;
 }
 
-// FIX #5: Public candles ALWAYS from Mainnet — never from the testnet execution URL.
-// Added a small retry with backoff so a transient failure (proxy hiccup, brief
-// rate limit) doesn't immediately fall back to stale cached candles.
 async function fetchPublicCandles(symbol: string, attempt = 0): Promise<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]> {
   const MAX_ATTEMPTS = 3;
   const url = `${PUBLIC_BASE}/v5/market/kline?category=spot&symbol=${symbol}&interval=${klineInterval}&limit=100`;
@@ -407,7 +320,6 @@ async function fetchPublicCandles(symbol: string, attempt = 0): Promise<{ timest
   }
 }
 
-// Account context (Testnet/Live only). Simulation never reaches here.
 async function getAccountContext(): Promise<{ available: number; total: number; openFutures: { symbol: string; size: string; leverage: string; entryPrice: string; side?: string }[]; openFuturesCount: number; spotBalances: Record<string, number> } | null> {
   if (!apiKey || !secretKey) return null;
   const wallet = await bybitExec('/v5/account/wallet-balance', 'GET', { accountType: 'UNIFIED' }) as { list?: { totalEquity?: string; totalWalletBalance?: string; coin?: { coin: string; availableBalance: string; walletBalance: string }[] }[] };
@@ -415,10 +327,6 @@ async function getAccountContext(): Promise<{ available: number; total: number; 
   const total = Number(account.totalEquity || account.totalWalletBalance || 0);
   const usdt = account.coin?.find((c: { coin: string }) => c.coin === 'USDT');
   const available = Number(usdt?.availableBalance || 0);
-  // Every non-USDT coin balance in the same wallet response — used to detect
-  // a SPOT position closing (held balance drops back to ~0) without a second
-  // API call. walletBalance (not availableBalance) so a balance locked in an
-  // open Sell order still counts as "held".
   const spotBalances: Record<string, number> = {};
   for (const c of account.coin || []) {
     if (c.coin === 'USDT') continue;
@@ -429,19 +337,13 @@ async function getAccountContext(): Promise<{ available: number; total: number; 
   return { available, total, openFutures, openFuturesCount: openFutures.length, spotBalances };
 }
 
-// Base coin for a Bybit USDT spot pair, e.g. "BTCUSDT" -> "BTC". Every symbol
-// this bot trades is a USDT pair (see fetchPublicCandles/executeOrder).
 function baseCoin(symbol: string): string {
   return symbol.replace(/USDT$/, '');
 }
 
-// Sum of execPrice*execQty / totalQty (weighted avg fill price) plus totals,
-// for one side (Buy or Sell) of a symbol's spot execution history since `since`.
 async function getSpotFillSummary(symbol: string, side: 'Buy' | 'Sell', since: number): Promise<{ avgPrice: number; totalQty: number; totalFee: number } | null> {
   try {
-    const res = await bybitExec('/v5/execution/list', 'GET', {
-      category: 'spot', symbol, startTime: since, limit: 50
-    }) as { result?: { list?: { execPrice: string; execQty: string; execFee: string; side: string }[] } };
+    const res = await bybitExec('/v5/execution/list', 'GET', { category: 'spot', symbol, startTime: since, limit: 50 }) as { result?: { list?: { execPrice: string; execQty: string; execFee: string; side: string }[] } };
     const fills = (res?.result?.list ?? []).filter((e) => e.side === side);
     if (!fills.length) return null;
     const totalQty = fills.reduce((sum, f) => sum + Number(f.execQty || 0), 0);
@@ -455,25 +357,13 @@ async function getSpotFillSummary(symbol: string, side: 'Buy' | 'Sell', since: n
   }
 }
 
-// ── SPOT position tracking (two-stage: confirm the Buy filled, then detect the
-// held balance dropping back to ~0 as a close) ──────────────────────────────
-// A SPOT entry is a real order (executeOrder places a live Limit Buy), but
-// unlike Futures there is no "position list" API for spot — the only signal
-// that a position exists (or closed) is the held coin balance itself. This
-// pairs with checkClosedFuturesPositions below to give every real position,
-// SPOT or FUTURES, the same close-detected + Telegram-notified treatment.
-
-// Stage 1: once a SPOT order's Buy actually fills (held balance appears),
-// move it from "just placed" (state.openedSymbols) into state.spotHoldings
-// with its real fill price/qty — needed to compute P&L when it later closes.
 async function confirmSpotEntries(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
   if (dryRun || !ctx) return;
   for (const [sym, meta] of [...state.openedSymbols]) {
     if (meta.type !== 'SPOT' || state.spotHoldings.has(sym)) continue;
     const lot = await getSpotLotSize(sym);
     const balance = ctx.spotBalances[baseCoin(sym)] || 0;
-    if (!lot || balance < lot.minOrderQty) continue; // Buy limit order hasn't filled yet
-
+    if (!lot || balance < lot.minOrderQty) continue;
     const fill = await getSpotFillSummary(sym, 'Buy', meta.at - 60_000);
     state.spotHoldings.set(sym, {
       entryPrice: fill?.avgPrice || 0,
@@ -485,70 +375,37 @@ async function confirmSpotEntries(ctx: Awaited<ReturnType<typeof getAccountConte
   }
 }
 
-// Stage 2: a previously-confirmed SPOT holding whose balance has dropped back
-// to ~0 has been sold (by the bot, once live SPOT SELL is enabled, or
-// manually) — pull the actual sell fills and send the same close notification
-// FUTURES gets.
 async function checkClosedSpotPositions(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
   if (dryRun || !ctx) return;
   for (const [sym, holding] of [...state.spotHoldings]) {
     const lot = await getSpotLotSize(sym);
     const balance = ctx.spotBalances[baseCoin(sym)] || 0;
-    if (lot && balance >= lot.minOrderQty) continue; // still held
+    if (lot && balance >= lot.minOrderQty) continue;
     state.spotHoldings.delete(sym);
     state.openedSymbols.delete(sym);
-
     const fill = await getSpotFillSummary(sym, 'Sell', holding.at - 60_000);
-    if (!fill) continue; // balance vanished with no matching Sell fill on record — nothing honest to report
+    if (!fill) continue;
     const totalPnl = (fill.avgPrice - holding.entryPrice) * fill.totalQty - fill.totalFee;
     const pnlPercent = holding.entryPrice > 0 ? ((fill.avgPrice - holding.entryPrice) / holding.entryPrice) * 100 : 0;
     state.realizedPnlTotal += totalPnl;
-
-    const msg = `🤖 בוט מסחר אמיתי${dryRun ? ' (dry-run)' : ''}\n\n` +
-      `${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה (SPOT)\n\n` +
-      `סמל: ${sym}\n` +
-      `כיוון: LONG\n` +
-      `מחיר כניסה: ${holding.entryPrice.toFixed(4)}\n` +
-      `מחיר יציאה: ${fill.avgPrice.toFixed(4)}\n` +
-      `רווח/הפסד: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
+    const msg = `🤖 בוט מסחר אמיתי${dryRun ? ' (dry-run)' : ''}\n\n${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה (SPOT)\n\nסמל: ${sym}\nכיוון: LONG\nמחיר כניסה: ${holding.entryPrice.toFixed(4)}\nמחיר יציאה: ${fill.avgPrice.toFixed(4)}\nרווח/הפסד: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
       (holding.reason ? `סיבת כניסה: ${holding.reason}\n` : '') +
-      `\n📊 מצב כולל של הבוט\n` +
-      `רווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\n` +
-      `יתרת חשבון כוללת: $${ctx.total.toFixed(2)}\n` +
-      `זמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
+      `\n📊 מצב כולל של הבוט\nרווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\nיתרת חשבון כוללת: $${ctx.total.toFixed(2)}\nזמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
     await sendTelegramOrder(msg);
   }
 }
 
-// Detects FUTURES positions that closed since the last scan (TP/SL hit on
-// Bybit's side, or a manual close) by diffing state.openedSymbols against the
-// exchange's current open-position list, then pulls the realized P&L from
-// Bybit's own closed-pnl ledger (accurate fill prices/fees, not an estimate)
-// and sends a Telegram exit notification. SPOT has its own equivalent below
-// (confirmSpotEntries/checkClosedSpotPositions) since Bybit has no "open spot
-// positions" list — it tracks the held coin balance instead. Note SPOT SELL
-// execution by the bot itself is still disabled live (see executeOrder), so
-// today a SPOT close only happens via a manual sell — but this now detects
-// and notifies on it either way, and will need no changes once live SPOT
-// SELL is enabled.
 async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAccountContext>>): Promise<void> {
-  if (dryRun) return; // dry-run never opens a real position, so nothing ever really "closes"
-  if (!ctx) return; // couldn't verify the exchange's position list this cycle — don't guess
+  if (dryRun) return;
+  if (!ctx) return;
   const stillOpenSymbols = new Set(ctx.openFutures.map((p) => p.symbol));
-
   for (const [sym, meta] of [...state.openedSymbols]) {
     if (meta.type !== 'FUTURES' || stillOpenSymbols.has(sym)) continue;
     state.openedSymbols.delete(sym);
-
     try {
-      const res = await bybitExec('/v5/position/closed-pnl', 'GET', {
-        category: 'linear', symbol: sym, startTime: meta.at, limit: 50
-      }) as { result?: { list?: { closedPnl: string; avgEntryPrice: string; avgExitPrice: string; qty: string; side: string; leverage: string }[] } };
+      const res = await bybitExec('/v5/position/closed-pnl', 'GET', { category: 'linear', symbol: sym, startTime: meta.at, limit: 50 }) as { result?: { list?: { closedPnl: string; avgEntryPrice: string; avgExitPrice: string; qty: string; side: string; leverage: string }[] } };
       const records = res?.result?.list ?? [];
-      if (!records.length) continue; // e.g. cancelled before ever filling — nothing to report
-
-      // Bybit returns newest → oldest. Sum every record since entry (covers a
-      // partial TP1 reduction plus the final close as separate ledger rows).
+      if (!records.length) continue;
       const totalPnl = records.reduce((sum, r) => sum + Number(r.closedPnl || 0), 0);
       const entryPrice = Number(records[records.length - 1]?.avgEntryPrice || 0);
       const exitPrice = Number(records[0]?.avgExitPrice || 0);
@@ -557,24 +414,10 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
       const leverage = Number(records[0]?.leverage || 1);
       const marginUsed = leverage > 0 ? (totalQty * entryPrice) / leverage : 0;
       const pnlPercent = marginUsed > 0 ? (totalPnl / marginUsed) * 100 : 0;
-
       state.realizedPnlTotal += totalPnl;
-
-      const msg = `🤖 בוט מסחר אמיתי${dryRun ? ' (dry-run)' : ''}\n\n` +
-        `${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה\n\n` +
-        `סמל: ${sym}\n` +
-        `כיוון: ${side} (${leverage}x)\n` +
-        `מחיר כניסה: ${entryPrice.toFixed(4)}\n` +
-        `מחיר יציאה: ${exitPrice.toFixed(4)}\n` +
-        `רווח/הפסד: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
+      const msg = `🤖 בוט מסחר אמיתי${dryRun ? ' (dry-run)' : ''}\n\n${totalPnl >= 0 ? '✅' : '🔴'} פוזיציה נסגרה\n\nסמל: ${sym}\nכיוון: ${side} (${leverage}x)\nמחיר כניסה: ${entryPrice.toFixed(4)}\nמחיר יציאה: ${exitPrice.toFixed(4)}\nרווח/הפסד: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)\n` +
         (meta.reason ? `סיבת כניסה: ${meta.reason}\n` : '') +
-        `\n📊 מצב כולל של הבוט\n` +
-        `רווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\n` +
-        `יתרת חשבון כוללת: $${ctx.total.toFixed(2)}\n` +
-        `פוזיציות פתוחות: ${ctx.openFuturesCount}\n` +
-        // Explicit timeZone: the server runs in UTC (Render), not Israel time —
-        // without it this showed a timestamp 3 hours behind the real time.
-        `זמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
+        `\n📊 מצב כולל של הבוט\nרווח מצטבר מאז ההפעלה: ${state.realizedPnlTotal >= 0 ? '+' : ''}$${state.realizedPnlTotal.toFixed(2)}\nיתרת חשבון כוללת: $${ctx.total.toFixed(2)}\nפוזיציות פתוחות: ${ctx.openFuturesCount}\nזמן: ${new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' })}`;
       await sendTelegramOrder(msg);
     } catch (e) {
       console.warn(`[exit-notify] closed-pnl lookup failed for ${sym}:`, e instanceof Error ? e.message : String(e));
@@ -582,50 +425,25 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PERSISTENCE — KV Store (Firestore in production, local file in dev)
-// ═══════════════════════════════════════════════════════════════════════════
-
 const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
 const legacySimStore = createKVStore('legacy-sim-state', join(DATA_DIR, 'legacy-sim-state.json'));
 const proSimStore = createKVStore('pro-sim-state', join(DATA_DIR, 'pro-sim-state.json'));
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
-// ── Shared Simulation Bot state ───────────────────────────────────────────────
-// The simulation engine runs in exactly ONE browser (the "leader"); it pushes its
-// full snapshot here so every other device (followers) views the SAME bot. This
-// is the single source of truth that replaces per-device localStorage state.
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_LEADER_TIMEOUT_MS = 8000;
 const DEFAULT_SIM_CONFIG = {
-  riskLevel: 'medium' as const,
-  initialAmount: 10000,
-  stopLoss: 4.2,
-  takeProfit: 3,
-  maxPositions: 5,
-  maxFuturesPositions: 2,
-  feePercent: 0.1,
-  slippagePercent: 0.05,
-  executionDelaySec: 3,
-  minConfidenceOverride: 0,
-  positionPercent: 10
+  riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
+  maxPositions: 5, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: 0, positionPercent: 10
 };
 const simState = {
-  running: false,
-  config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
-  snapshot: null as unknown | null,
-  leaderId: null as string | null,
-  leaderHeartbeat: 0,
-  updatedAt: 0,
-  epoch: 0
+  running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
+  snapshot: null as unknown | null, leaderId: null as string | null,
+  leaderHeartbeat: 0, updatedAt: 0, epoch: 0
 };
 
-// The simulation engine now runs SERVER-SIDE (24/7, no browser required).
-// It is the single source of truth; clients are pure viewers.
-// Pass a getter (not the array) so it always reads the CURRENT `symbols` —
-// refreshUniverseIfStale() reassigns that binding, and capturing it once here
-// would freeze the sim engine on the boot-time universe.
 const simEngine = createSimEngine(() => symbols);
 
 async function hydrateSim() {
@@ -643,41 +461,19 @@ async function hydrateSim() {
 
 async function persistSim() {
   await simStore.set('state', JSON.stringify({
-    running: simState.running,
-    config: simState.config,
-    snapshot: simState.snapshot,
-    leaderId: simState.leaderId,
-    leaderHeartbeat: simState.leaderHeartbeat,
-    updatedAt: simState.updatedAt,
-    epoch: simState.epoch
+    running: simState.running, config: simState.config, snapshot: simState.snapshot,
+    leaderId: simState.leaderId, leaderHeartbeat: simState.leaderHeartbeat,
+    updatedAt: simState.updatedAt, epoch: simState.epoch
   }));
 }
 
-// ── Shared LEGACY Simulation Bot state — same server, same shared-viewer
-// model as the new engine above; only the decision algorithm differs (see
-// legacySimEngine.ts). No leader election needed: both engines are fully
-// server-driven, clients are pure viewers.
 const DEFAULT_LEGACY_SIM_CONFIG = {
-  riskLevel: 'medium' as const,
-  initialAmount: 10000,
-  stopLoss: 4.2,
-  takeProfit: 3,
-  maxPositions: 7,
-  maxFuturesPositions: 2,
-  feePercent: 0.1,
-  slippagePercent: 0.05,
-  executionDelaySec: 3,
-  minConfidenceOverride: 0
+  riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
+  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: 0
 };
-const legacySimState = {
-  running: false,
-  config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG,
-  snapshot: null as unknown | null,
-  updatedAt: 0
-};
+const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
 
-// Same pattern as simEngine above: pass a getter so the legacy engine always
-// reads the CURRENT `symbols` binding (refreshUniverseIfStale() reassigns it).
 const legacySimEngine = createLegacySimEngine(() => symbols);
 
 async function hydrateLegacySim() {
@@ -692,35 +488,17 @@ async function hydrateLegacySim() {
 
 async function persistLegacySim() {
   await legacySimStore.set('state', JSON.stringify({
-    running: legacySimState.running,
-    config: legacySimState.config,
-    snapshot: legacySimState.snapshot,
-    updatedAt: legacySimState.updatedAt
+    running: legacySimState.running, config: legacySimState.config,
+    snapshot: legacySimState.snapshot, updatedAt: legacySimState.updatedAt
   }));
 }
 
-// ── Shared "Bot Pro" state — same shared-viewer model as the two engines
-// above; a literal alg.md implementation, independent from the legacy
-// engine (which has drifted from alg.md — see proAlgEngine.ts's header for
-// the specifics). No leader election: fully server-driven.
 const DEFAULT_PRO_SIM_CONFIG = {
-  riskLevel: 'medium' as const,
-  initialAmount: 10000,
-  stopLoss: 4.2,
-  takeProfit: 3,
-  maxPositions: 7,
-  maxFuturesPositions: 2,
-  feePercent: 0.1,
-  slippagePercent: 0.05,
-  executionDelaySec: 3,
-  minConfidenceOverride: 0
+  riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
+  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: 0
 };
-const proSimState = {
-  running: false,
-  config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG,
-  snapshot: null as unknown | null,
-  updatedAt: 0
-};
+const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
 
 const proSimEngine = createProSimEngine(() => symbols);
 
@@ -736,28 +514,18 @@ async function hydrateProSim() {
 
 async function persistProSim() {
   await proSimStore.set('state', JSON.stringify({
-    running: proSimState.running,
-    config: proSimState.config,
-    snapshot: proSimState.snapshot,
-    updatedAt: proSimState.updatedAt
+    running: proSimState.running, config: proSimState.config,
+    snapshot: proSimState.snapshot, updatedAt: proSimState.updatedAt
   }));
 }
 
 function serializeState(): string {
   return JSON.stringify({
-    running: state.running,
-    lastScanAt: state.lastScanAt,
-    lastError: state.lastError,
-    scans: state.scans,
-    startedAt: state.startedAt,
-    decisions: state.decisions,
-    orders: state.orders,
-    openedSymbols: Object.fromEntries(state.openedSymbols),
-    skippedSymbols: state.skippedSymbols,
-    pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
-    spotHoldings: Object.fromEntries(state.spotHoldings),
-    realizedPnlTotal: state.realizedPnlTotal,
-    health
+    running: state.running, lastScanAt: state.lastScanAt, lastError: state.lastError,
+    scans: state.scans, startedAt: state.startedAt, decisions: state.decisions,
+    orders: state.orders, openedSymbols: Object.fromEntries(state.openedSymbols),
+    skippedSymbols: state.skippedSymbols, pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
+    spotHoldings: Object.fromEntries(state.spotHoldings), realizedPnlTotal: state.realizedPnlTotal, health
   });
 }
 
@@ -782,34 +550,22 @@ async function hydrate(): Promise<void> {
   }
   state.realizedPnlTotal = typeof s.realizedPnlTotal === 'number' ? s.realizedPnlTotal : 0;
   state.skippedSymbols = Array.isArray(s.skippedSymbols) ? s.skippedSymbols as { symbol: string; reason: string }[] : [];
-  // Restore pending limit orders (if any survived a restart)
   const savedPending = s.pendingLimitOrders;
   if (savedPending && typeof savedPending === 'object') {
-    state.pendingLimitOrders = new Map(
-      Object.entries(savedPending as Record<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>)
-    );
+    state.pendingLimitOrders = new Map(Object.entries(savedPending as Record<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>));
   } else {
     state.pendingLimitOrders = new Map();
   }
   const savedSpotHoldings = s.spotHoldings;
   if (savedSpotHoldings && typeof savedSpotHoldings === 'object') {
-    state.spotHoldings = new Map(
-      Object.entries(savedSpotHoldings as Record<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>)
-    );
+    state.spotHoldings = new Map(Object.entries(savedSpotHoldings as Record<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>));
   } else {
     state.spotHoldings = new Map();
   }
   health.lastScanAt = typeof (s.health as Record<string, unknown> | undefined)?.lastScanAt === 'string' ? (s.health as Record<string, unknown> | undefined)?.lastScanAt as string : null;
 }
 
-// ── Warm market-data cache (Firestore in prod / local file in dev) ──────────────
-// The in-memory timeframe cache in marketDataService is the hot path. On boot we
-// hydrate it from the KV store so a restart/deploy doesn't re-pull every full
-// window; afterwards we only delta-fetch what changed. Persistence is THROTTLED
-// (not per-scan) and split per-symbol so each document stays well under the
-// Firestore 1MB limit while still carrying enough history (minCandles) to let the
-// first post-restart scan evaluate immediately instead of doing a full refetch.
-const MARKET_CACHE_PERSIST_MS = 10 * 60 * 1000; // 10 min
+const MARKET_CACHE_PERSIST_MS = 10 * 60 * 1000;
 let lastCachePersistAt = 0;
 
 async function hydrateMarketCache(): Promise<void> {
@@ -825,9 +581,7 @@ async function hydrateMarketCache(): Promise<void> {
           importMarketDataCache({ [`${bybitSym}:${tf}`]: entry });
         }
       }
-    } catch {
-      /* corrupt warm cache is non-fatal — fall back to a cold fetch */
-    }
+    } catch { /* corrupt warm cache is non-fatal */ }
   }
 }
 
@@ -843,23 +597,14 @@ async function persistMarketCache(): Promise<void> {
       for (const tf of TIMEFRAME_ORDER) {
         const entry = full[`${bybitSym}:${tf}`];
         if (entry) {
-          // Trim to minCandles so each per-symbol document stays under the 1MB limit.
           doc[tf] = { ...entry, candles: entry.candles.slice(-TIMEFRAME_SPECS[tf].minCandles) };
         }
       }
       if (Object.keys(doc).length) await store.set(`mcache:${bybitSym}`, JSON.stringify(doc));
     }
-  } catch {
-    /* never block a scan on cache persistence */
-  }
+  } catch { /* never block a scan on cache persistence */ }
 }
 
-// Live Fear & Greed index (0-100). Falls back to neutral 50 on any failure so
-// the scan never blocks on an external sentiment source. The full reading is
-// cached 15 minutes and ALSO served to the frontend via GET /api/fear-greed,
-// so browsers no longer hit api.alternative.me directly (under the combined
-// browser+worker load the API rate-limited them with 429s and the hanging
-// requests died on the browser's 8s AbortController timeout).
 interface FearGreedReading {
   value: number;
   value_classification: string;
@@ -889,9 +634,7 @@ async function fetchFearGreedFull(): Promise<FearGreedReading | null> {
         timestamp: String(latest.timestamp || Math.floor(Date.now() / 1000)),
         at: Date.now()
       };
-    } catch {
-      // Keep any stale reading; null only if we never got a good one.
-    } finally {
+    } catch { /* Keep any stale reading; null only if we never got a good one. */ } finally {
       fearGreedInFlight = null;
     }
     return fearGreedCache;
@@ -908,16 +651,8 @@ async function fetchFearGreed(): Promise<number> {
 // SCAN + EXECUTION ENGINE
 // ═══════════════════════════════════════════════════════════════════════════
 
-// How long a Limit Order is kept alive before auto-cancellation.
 const LIMIT_ORDER_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
-// ── Spot lot-size rounding ───────────────────────────────────────────────────
-// Bybit rejects a Spot order whose qty doesn't match the symbol's own step
-// size (basePrecision) or falls below its minOrderQty — both vary per symbol
-// (e.g. BTC allows 6 decimals, some low-price alts allow none at all). This
-// used to be unhandled entirely, so Spot SELL (closing a long) was hard-
-// blocked rather than risk a rejected order — eliminating an entire class of
-// trades. Cached per symbol (lot sizes change rarely) with a 6h TTL.
 interface LotSizeInfo { basePrecision: number; minOrderQty: number }
 const lotSizeCache = new Map<string, { info: LotSizeInfo; at: number }>();
 const LOT_SIZE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -948,7 +683,6 @@ async function getSpotLotSize(symbol: string): Promise<LotSizeInfo | null> {
   }
 }
 
-/** Rounds DOWN to the symbol's step size so the order never exceeds the intended budget, and returns null if that rounds below the exchange minimum. */
 function roundToLotSize(qty: number, lot: LotSizeInfo): number | null {
   const stepDecimals = Math.max(0, -Math.floor(Math.log10(lot.basePrecision)));
   const stepped = Math.floor(qty / lot.basePrecision) * lot.basePrecision;
@@ -963,12 +697,6 @@ async function executeOrder(d: IntradayDecision, ctx: { available: number } | nu
     return { opened: false, skipped: 'נפסל על ידי מנוע הסיכון' };
   }
 
-  // Lot-size rounding (getSpotLotSize/roundToLotSize above) is now implemented
-  // and ready to use, but the block below is intentionally NOT removed yet —
-  // see the reasoning left for the user in chat. Spot has no margin/borrow, so
-  // a "sell" only makes sense against a position this bot already holds, and
-  // nothing here currently verifies the held balance before attempting one;
-  // lot-size rounding alone doesn't make that safe.
   if (tradeType === 'SPOT' && direction === 'SHORT') {
     if (dryRun) {
       state.orders.unshift({ at: new Date().toISOString(), dryRun: true, symbol, side: 'SELL', reason: 'Spot SELL מושבת (אין אימות יתרה מוחזקת) — dry-run only' });
@@ -1060,11 +788,6 @@ async function scan(): Promise<void> {
   scanInProgress = true;
   try {
     if (!apiKey || !secretKey) throw new Error('Missing BYBIT_API_KEY / BYBIT_SECRET_KEY (server-only)');
-    // Account/auth failures (e.g. Bybit 401, IP-restriction rejection, transient
-    // network error) must NOT abort the whole scan — every symbol would otherwise
-    // go unevaluated for the entire cycle on a single account-endpoint hiccup.
-    // Degrade to ctx=null (already handled via `ctx ? ... : ...` everywhere below)
-    // and keep evaluating symbols off public market data.
     let ctx: Awaited<ReturnType<typeof getAccountContext>> = null;
     try {
       ctx = await getAccountContext();
@@ -1075,28 +798,21 @@ async function scan(): Promise<void> {
     }
     const decisions: ScanResult[] = [];
     const scannedThisRun = new Set();
-    state.skippedSymbols = [...unsupportedSymbols]; // reset to config-time unsupported each scan
+    state.skippedSymbols = [...unsupportedSymbols];
     const runningTotals = { totalOpen: ctx ? ctx.openFuturesCount : 0, futuresOpen: ctx ? ctx.openFuturesCount : 0 };
     const fearGreed = await fetchFearGreed();
 
     const now = Date.now();
 
-    // ── TTL: cancel stale Limit Orders that were never filled ──────────────────
-    // If the price didn't reach our limit within LIMIT_ORDER_TTL_MS, cancel the
-    // order on Bybit and remove the re-entry block so the next scan can try again.
     if (!dryRun) {
       for (const [sym, pending] of state.pendingLimitOrders) {
         if (now >= pending.expiresAt) {
           try {
-            // Attempt to cancel on Bybit; ignore errors (order may already be filled/cancelled)
             const category = ctx?.openFutures.some(p => p.symbol === sym) ? 'linear' : 'spot';
             await bybitExec('/v5/order/cancel', 'POST', { category, symbol: sym, orderId: pending.orderId });
             console.log(`[TTL] Cancelled expired limit order ${pending.orderId} for ${sym}`);
-          } catch {
-            // Silently ignore — order may have already been filled or rejected
-          }
+          } catch { /* order may have already been filled/cancelled */ }
           state.pendingLimitOrders.delete(sym);
-          // Release the re-entry block so the bot can re-evaluate next scan
           state.openedSymbols.delete(sym);
           state.orders.unshift({
             at: new Date().toISOString(),
@@ -1109,14 +825,6 @@ async function scan(): Promise<void> {
       }
     }
 
-    // FIX #1: expire re-entry blocks instead of holding them forever.
-    // - FUTURES: closure is detected (and Telegram-notified) below in
-    //   checkClosedFuturesPositions(), which also removes the re-entry block.
-    // - SPOT: closure is now also detected (checkClosedSpotPositions, via the
-    //   held wallet balance dropping to ~0) and removes the block the same
-    //   way. This cooldown fallback only matters if a Buy order never fills
-    //   (so it never reaches state.spotHoldings) or the balance check ever
-    //   misses a close — without it that symbol would stay blocked forever.
     for (const [sym, meta] of state.openedSymbols) {
       if (meta.type === 'SPOT' && now - meta.at > REENTRY_COOLDOWN_MS) {
         state.openedSymbols.delete(sym);
@@ -1179,8 +887,8 @@ async function scan(): Promise<void> {
       for (const d of results) {
         decisions.push(d);
         if (d.action === 'HOLD') continue;
-        if (scannedThisRun.has(d.symbol)) continue; // idempotency within scan
-        if (state.openedSymbols.has(d.symbol)) continue; // idempotency across restarts (now with expiry, see above)
+        if (scannedThisRun.has(d.symbol)) continue;
+        if (state.openedSymbols.has(d.symbol)) continue;
         if (runningTotals.totalOpen >= maxOpenPositions) { d.skipped = 'הגעה למקסימום פוזיציות'; continue; }
         const res = await executeOrder(d.decision, ctx, runningTotals);
         if (res.opened) {
@@ -1188,8 +896,6 @@ async function scan(): Promise<void> {
           if (d.action === 'FUTURES') runningTotals.futuresOpen++;
           state.openedSymbols.set(d.symbol, { at: Date.now(), type: d.action as 'SPOT' | 'FUTURES', reason: d.decision.summary, confidence: d.confidence });
           scannedThisRun.add(d.symbol);
-          // No Telegram notification on entry — only on close, with the full
-          // entry+exit+P&L picture in one message (see checkClosedFuturesPositions).
         } else if (res.skipped) {
           d.skipped = res.skipped;
         }
@@ -1216,7 +922,6 @@ async function scan(): Promise<void> {
   }
 }
 
-// Sanitized account summary — never includes secrets, signatures, or auth headers.
 async function getAccountSummary(): Promise<{ availableUsdt: number; totalUsdt: number; openFuturesCount: number; positions: { symbol: string; side: string; size: number; leverage: number; entryPrice: number }[] } | null> {
   if (!apiKey || !secretKey) return null;
   const ctx = await getAccountContext();
@@ -1236,8 +941,7 @@ async function getAccountSummary(): Promise<{ availableUsdt: number; totalUsdt: 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// HTTP SERVER — public /health + authenticated bot control
-// CORS restricted to CORS_ORIGIN; basic per-IP rate limiting; request timeout.
+// HTTP SERVER
 // ═══════════════════════════════════════════════════════════════════════════
 
 interface BotRequest {
@@ -1258,7 +962,6 @@ interface BotResponse {
 createServer(async (req: BotRequest, res: BotResponse) => {
   setCors(req, res);
 
-  // Preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'cache-control': 'no-store' });
     return res.end();
@@ -1276,21 +979,14 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     });
   }
 
-  // Health is public and must remain available to Render probes.
   if (rateLimited(clientIp(req))) {
     return json(res, 429, { error: 'Too many requests' });
   }
 
-  // Public (no admin token) — lets the simulation frontend mirror the SAME
-  // liquidity-based universe the live bot trades, instead of a static list
-  // that can drift out of date.
   if (req.method === 'GET' && url.pathname === '/api/public/universe') {
     return json(res, 200, { symbols, generatedAt: universeGeneratedAt });
   }
 
-  // Public Fear & Greed reading for the frontend (15-min cached upstream).
-  // Lets every browser tab share ONE worker-side Alternative.me request
-  // instead of each tab polling the sentiment API directly (429 storms).
   if (req.method === 'GET' && url.pathname === '/api/fear-greed') {
     const fg = await fetchFearGreedFull();
     if (!fg) return json(res, 503, { error: 'Fear & Greed unavailable' });
@@ -1320,7 +1016,6 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/decisions') {
-    // Decisions include rejection reasons; skippedSymbols lists unsupported/failed scans.
     return json(res, 200, {
       decisions: state.decisions,
       skippedSymbols: state.skippedSymbols,
@@ -1342,19 +1037,11 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, { ...state, openedSymbols: Object.fromEntries(state.openedSymbols), dryRun, testnet, health });
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // SHARED SIMULATION BOT — public, single shared bot for every viewer.
-  // One browser (the leader) runs the engine and pushes snapshots here; all
-  // other devices read the same state. No admin token required (it's a sim).
-  // ═══════════════════════════════════════════════════════════════════════════
-
   if (req.method === 'GET' && url.pathname === '/api/sim/state') {
     return json(res, 200, simState);
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sim/state') {
-    // The engine now runs server-side and owns the snapshot. Clients are pure
-    // viewers, so pushes are ignored (the server is the single source of truth).
     return json(res, 200, { ok: true, updatedAt: simState.updatedAt });
   }
 
@@ -1405,13 +1092,6 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, simState);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // SHARED LEGACY SIMULATION BOT — same shared-viewer model as above, running
-  // the original alg.md algorithm (server/legacySimEngine.ts). No leader
-  // election: fully server-driven, clients are pure viewers, so there's no
-  // claim/push step to mirror from the block above.
-  // ═══════════════════════════════════════════════════════════════════════════
-
   if (req.method === 'GET' && url.pathname === '/api/legacy-sim/state') {
     return json(res, 200, legacySimState);
   }
@@ -1445,12 +1125,6 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     await persistLegacySim();
     return json(res, 200, legacySimState);
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // SHARED "BOT PRO" — same shared-viewer model as the two blocks above,
-  // running a literal alg.md implementation (server/proSimEngine.ts). No
-  // leader election: fully server-driven, clients are pure viewers.
-  // ═══════════════════════════════════════════════════════════════════════════
 
   if (req.method === 'GET' && url.pathname === '/api/pro-sim/state') {
     return json(res, 200, proSimState);
@@ -1502,14 +1176,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   setInterval(() => void scan(), intervalMs);
   setInterval(() => void refreshUniverseIfStale(), UNIVERSE_CHECK_INTERVAL_MS);
 
-  // FIX #3: periodically drop rate-limit buckets for IPs with no recent hits,
-  // so long-lived uptime on Render doesn't leak memory per distinct visitor IP.
   setInterval(pruneRateBuckets, RATE_LIMIT_WINDOW_MS);
 
-  // Self-ping: keep a free-tier host (e.g. Render free) from sleeping after
-  // inactivity. Pings the service's own /health every 12 minutes. Prefers the
-  // platform-provided external URL so the request counts as inbound traffic;
-  // falls back to loopback for local development.
   const SELF_PING_INTERVAL_MS = 12 * 60 * 1000;
   const selfBase = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '') || `http://127.0.0.1:${port}`;
   setInterval(async () => {
@@ -1521,7 +1189,6 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     }
   }, SELF_PING_INTERVAL_MS);
 
-  // Server-side simulation loop: advance the shared bot while it is running.
   let simTickInProgress = false;
   let cachedSimFearGreed = 50;
   let lastFgFetchAt = 0;
@@ -1545,9 +1212,6 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     }
   }, 4000);
 
-  // Server-side LEGACY simulation loop — same cadence/shape as the engine
-  // above, own in-progress guard so a slow tick on one engine never blocks
-  // the other. Shares the same cached Fear & Greed value (same data source).
   let legacySimTickInProgress = false;
   setInterval(async () => {
     if (!legacySimState.running || legacySimTickInProgress) return;
@@ -1569,9 +1233,6 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     }
   }, 4000);
 
-  // Server-side "Bot Pro" simulation loop — same cadence/shape, own
-  // in-progress guard so a slow tick on any one engine never blocks the
-  // others. Shares the same cached Fear & Greed value (same data source).
   let proSimTickInProgress = false;
   setInterval(async () => {
     if (!proSimState.running || proSimTickInProgress) return;
@@ -1594,12 +1255,10 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   }, 4000);
 });
 
-// Graceful shutdown: flush bot state and the warm market-data cache (Firestore in
-// prod) so the next boot can delta-fetch instead of re-pulling every full window.
 async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] ${signal} — flushing state and warm cache`);
   try { await store.set('state', serializeState()); } catch { /* ignore */ }
-  lastCachePersistAt = 0; // bypass throttle so the final flush always writes
+  lastCachePersistAt = 0;
   try { await persistMarketCache(); } catch { /* ignore */ }
   process.exit(0);
 }

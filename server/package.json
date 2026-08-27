@@ -3,9 +3,18 @@
   "private": true,
   "type": "module",
   "version": "1.0.0",
-  "scripts": { "start": "npx tsx index.mjs" },
+  "scripts": {
+    "start": "node dist/worker.js",
+    "build": "npx esbuild tradingWorker.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --format=esm --banner:js=\"import { createRequire as topLevelCreateRequire } from 'module'; const require = topLevelCreateRequire(import.meta.url);\"",
+    "dev": "npx tsx tradingWorker.ts"
+  },
   "engines": { "node": ">=20" },
   "dependencies": {
     "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "tsx": "^4.23.12",
+    "typescript": "^5.5.3"
   }
 }

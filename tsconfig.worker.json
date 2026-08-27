@@ -15,5 +15,5 @@
     "noUnusedParameters": false,
     "types": ["node"]
   },
-  "include": ["src/workers", "server"]
+  "include": ["server", "src/services", "src/shared", "src/types"]
 }

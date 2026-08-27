@@ -1,4 +1,4 @@
-// Typed client for the local trading worker (src/workers/tradingWorker.ts or dist/worker.js).
+// Typed client for the local trading worker (server/tradingWorker.ts or server/dist/worker.js).
 import type { SimBotConfig } from '../hooks/useSimulationBot';
 import { resolveWorkerBaseUrl as resolveBaseUrl } from './workerConfig';
 // The browser never holds the Bybit secret and never signs orders.

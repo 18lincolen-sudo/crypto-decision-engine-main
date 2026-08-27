@@ -19,5 +19,5 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "capacitor.config.ts", "src/workers", "scripts"]
+  "include": ["vite.config.ts", "capacitor.config.ts", "server", "scripts"]
 }

@@ -1,3 +1,3 @@
-// Legacy wrapper — production uses dist/worker.js (compiled from src/workers/tradingWorker.ts).
-// For local development: npx tsx src/workers/tradingWorker.ts
-import '../src/workers/tradingWorker.ts';
+// Entry point — production uses dist/worker.js (compiled from tradingWorker.ts).
+// For local development: npx tsx tradingWorker.ts
+import './tradingWorker.ts';
