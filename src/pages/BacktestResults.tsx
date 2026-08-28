@@ -62,12 +62,16 @@ export default function BacktestResults() {
       const res = await fetch(`${API_BASE}/api/backtest/results`, { headers: authHeaders });
       if (res.ok) {
         const data = await parseJsonOrThrow(res);
-        if (data) setState(data);
+        if (data) {
+          setState(s => ({
+            ...s,
+            ...data,
+            status: data.status === 'running' ? 'running' : (data.results?.length ? 'done' : s.status),
+          }));
+        }
       }
     } catch (e) {
       console.error('Failed to fetch backtest results:', e);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -82,18 +86,26 @@ export default function BacktestResults() {
 
   const handleRun = async () => {
     try {
-      setLoading(true);
-      const res = await fetch(`${API_BASE}/api/backtest/run`, { method: 'POST', headers: authHeaders });
+      setState(s => ({ ...s, status: 'running', error: null }));
+      const res = await fetch(`${API_BASE}/api/backtest/run`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      });
       if (res.ok) {
         await fetchResults();
       } else {
-        const body = await res.text().catch(() => '');
-        console.error(`Failed to start backtest: ${res.status} ${body.slice(0, 300)}`);
+        let errMsg = `שגיאה ${res.status}`;
+        try {
+          const body = await res.json();
+          errMsg = body?.error || errMsg;
+        } catch { /* not JSON */ }
+        setState(s => ({ ...s, status: 'error', error: errMsg }));
+        console.error(`Failed to start backtest: ${res.status}`, errMsg);
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setState(s => ({ ...s, status: 'error', error: msg }));
       console.error('Failed to start backtest:', e);
-    } finally {
-      setLoading(false);
     }
   };
 

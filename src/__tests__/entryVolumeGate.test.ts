@@ -64,6 +64,7 @@ describe('entry timing volume gate', () => {
     const candles = series([...new Array(25).fill(1000), 200]);
     const result = calculateProOptimalEntry(100, 2, 'LONG', candles);
     expect(result.shouldEnter).toBe(false);
+    expect(result.sizeMultiplier).toBe(0);
     expect(result.reason).toContain('נפח');
   });
 
@@ -71,5 +72,6 @@ describe('entry timing volume gate', () => {
     const candles = series([...new Array(25).fill(1000), 1000]);
     const result = calculateProOptimalEntry(100, 2, 'LONG', candles);
     expect(result.shouldEnter).toBe(true);
+    expect(result.sizeMultiplier).toBe(1.0);
   });
 });

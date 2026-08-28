@@ -267,6 +267,7 @@ export function evaluateProSignals(
 export interface ProEntryTimingResult {
   shouldEnter: boolean;
   entryPrice: number;
+  sizeMultiplier: number;
   reason: string;
   indicators: {
     rsi: number;
@@ -281,6 +282,7 @@ export function calculateProOptimalEntry(
   atr: number,
   side: 'LONG' | 'SHORT' | 'BUY' | 'SELL',
   candles: Candle[],
+  confidence: number = 50,
   pullbackFactor: number = 0.35,
   minRelativeVolume: number = MIN_ENTRY_RELATIVE_VOLUME
 ): ProEntryTimingResult {
@@ -313,7 +315,11 @@ export function calculateProOptimalEntry(
     rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   }
 
-  const atrPullback = atr * pullbackFactor;
+  // Adaptive pullback: high-confidence signals get a tighter limit (closer to
+  // market price) so the order fills before the window expires. Low-confidence
+  // signals keep the wider pullback to avoid chasing.
+  const adaptivePullbackFactor = confidence >= 75 ? 0.2 : confidence >= 60 ? 0.35 : 0.5;
+  const atrPullback = atr * adaptivePullbackFactor;
 
   // Volume confirmation — same rationale as the legacy engine's entry layer:
   // the limit order below rests into a pullback, and a pullback on no volume
@@ -323,35 +329,54 @@ export function calculateProOptimalEntry(
     return {
       shouldEnter: false,
       entryPrice: currentPrice,
+      sizeMultiplier: 0,
       reason: `נפח כניסה נמוך מדי (${relativeVolume.toFixed(2)}x < ${minRelativeVolume}x מהממוצע) — אין עניין בשוק`,
       indicators: { rsi, ema20, bbUpper, bbLower }
     };
   }
 
+  // Instead of hard-blocking on extended price, reduce position size. This
+  // lets high-confidence signals enter even when price is extended, while
+  // still protecting capital by scaling down exposure.
+  let sizeMultiplier = 1.0;
+  let protectionNotes: string[] = [];
+
   if (isLong) {
     if (rsi > 70) {
-      return { shouldEnter: false, entryPrice: currentPrice, reason: `RSI קנוי-יתר (${rsi.toFixed(1)} > 70) — ממתין לקירור`, indicators: { rsi, ema20, bbUpper, bbLower } };
+      sizeMultiplier = Math.min(sizeMultiplier, 0.5);
+      protectionNotes.push(`RSI קנוי-יתר (${rsi.toFixed(1)} > 70) — גודל מצומצם`);
     }
     if (currentPrice > bbUpper) {
-      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מעל רצועת Bollinger עליונה — ממתין לנסיגה`, indicators: { rsi, ema20, bbUpper, bbLower } };
+      sizeMultiplier = Math.min(sizeMultiplier, 0.5);
+      protectionNotes.push(`מחיר מעל רצועת Bollinger עליונה — גודל מצומצם`);
     }
     if (currentPrice > ema20 + atr * 1.5) {
-      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מורחק מ-EMA20 — ממתין לנסיגה לממוצע`, indicators: { rsi, ema20, bbUpper, bbLower } };
+      sizeMultiplier = Math.min(sizeMultiplier, 0.7);
+      protectionNotes.push(`מחיר מורחק מ-EMA20 — גודל מצומצם`);
     }
     const entryPrice = Math.max(1e-8, currentPrice - atrPullback);
-    return { shouldEnter: true, entryPrice: Number(entryPrice.toFixed(8)), reason: `Limit BUY @ ${formatDynamicPrice(entryPrice)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR)`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    const reason = protectionNotes.length > 0
+      ? `Limit BUY @ ${formatDynamicPrice(entryPrice)} (pullback ${(adaptivePullbackFactor * 100).toFixed(0)}% ATR, גודל ${(sizeMultiplier * 100).toFixed(0)}%) | ${protectionNotes.join('; ')}`
+      : `Limit BUY @ ${formatDynamicPrice(entryPrice)} (pullback ${(adaptivePullbackFactor * 100).toFixed(0)}% ATR)`;
+    return { shouldEnter: true, entryPrice: Number(entryPrice.toFixed(8)), sizeMultiplier, reason, indicators: { rsi, ema20, bbUpper, bbLower } };
   } else {
     if (rsi < 30) {
-      return { shouldEnter: false, entryPrice: currentPrice, reason: `RSI מכירת-יתר (${rsi.toFixed(1)} < 30) — ממתין לעלייה קלה`, indicators: { rsi, ema20, bbUpper, bbLower } };
+      sizeMultiplier = Math.min(sizeMultiplier, 0.5);
+      protectionNotes.push(`RSI מכירת-יתר (${rsi.toFixed(1)} < 30) — גודל מצומצם`);
     }
     if (currentPrice < bbLower) {
-      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מתחת לרצועת Bollinger תחתונה — ממתין לעלייה`, indicators: { rsi, ema20, bbUpper, bbLower } };
+      sizeMultiplier = Math.min(sizeMultiplier, 0.5);
+      protectionNotes.push(`מחיר מתחת לרצועת Bollinger תחתונה — גודל מצומצם`);
     }
     if (currentPrice < ema20 - atr * 1.5) {
-      return { shouldEnter: false, entryPrice: currentPrice, reason: `מחיר מורחק מתחת ל-EMA20 — ממתין לעלייה לממוצע`, indicators: { rsi, ema20, bbUpper, bbLower } };
+      sizeMultiplier = Math.min(sizeMultiplier, 0.7);
+      protectionNotes.push(`מחיר מורחק מתחת ל-EMA20 — גודל מצומצם`);
     }
     const entryPrice = currentPrice + atrPullback;
-    return { shouldEnter: true, entryPrice: Number(entryPrice.toFixed(8)), reason: `Limit SELL/SHORT @ ${formatDynamicPrice(entryPrice)} (pullback ${(pullbackFactor * 100).toFixed(0)}% ATR)`, indicators: { rsi, ema20, bbUpper, bbLower } };
+    const reason = protectionNotes.length > 0
+      ? `Limit SELL/SHORT @ ${formatDynamicPrice(entryPrice)} (pullback ${(adaptivePullbackFactor * 100).toFixed(0)}% ATR, גודל ${(sizeMultiplier * 100).toFixed(0)}%) | ${protectionNotes.join('; ')}`
+      : `Limit SELL/SHORT @ ${formatDynamicPrice(entryPrice)} (pullback ${(adaptivePullbackFactor * 100).toFixed(0)}% ATR)`;
+    return { shouldEnter: true, entryPrice: Number(entryPrice.toFixed(8)), sizeMultiplier, reason, indicators: { rsi, ema20, bbUpper, bbLower } };
   }
 }
 

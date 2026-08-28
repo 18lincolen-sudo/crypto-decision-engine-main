@@ -152,19 +152,26 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
     // Entry timing layer: if the signal passed routing, check whether entering
     // now is wise or whether we should wait for a pullback. This prevents
     // chasing extended price and improves R:R by entering at a better level.
+    // The layer now returns a sizeMultiplier so extended-price entries can
+    // still execute with reduced exposure instead of being hard-blocked.
     let entryPrice = currentPrice;
-    let entryTiming: { shouldEnter: boolean; reason: string } | null = null;
+    let entryTiming: { shouldEnter: boolean; sizeMultiplier: number; reason: string } | null = null;
     if (router.type !== 'HOLD' && !router.hardGateBlocked && signal.action !== 'HOLD') {
-      const timing = calculateProOptimalEntry(currentPrice, regime.atr, signal.action, candles);
+      const timing = calculateProOptimalEntry(currentPrice, regime.atr, signal.action, candles, signal.rawConfidence);
       entryPrice = timing.entryPrice;
-      entryTiming = { shouldEnter: timing.shouldEnter, reason: timing.reason };
+      entryTiming = { shouldEnter: timing.shouldEnter, sizeMultiplier: timing.sizeMultiplier, reason: timing.reason };
     }
+
+    // Combine the entry-timing size reduction with the adaptive performance
+    // multiplier. Both are protective; neither alone should zero the position.
+    const entrySizeMultiplier = entryTiming?.sizeMultiplier ?? 1.0;
+    const combinedSizingMultiplier = Math.max(0, (sizingMultiplier || 1) * entrySizeMultiplier);
 
     const risk = router.type !== 'HOLD'
       ? calculateProRisk(
         entryPrice, router.type, router.side, regime.atr, regime.volatility,
         signal.rawConfidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
-        dailyDrawdownPercent, sizingMultiplier,
+        dailyDrawdownPercent, combinedSizingMultiplier,
         undefined, // slConfig
         config.maxPositions ?? 7, config.maxFuturesPositions ?? 2
       )
@@ -196,6 +203,17 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       status = 'כבר מוחזק בתיק (Spot)'; willExecute = false;
     } else if (symbolStreakCooldownActive) {
       status = streakCooldownReason(symbolStreakCooldownUntil as number, symbol); willExecute = false;
+    }
+
+    // Budget floor — surface low cash before the order-generation layer silently
+    // skips the trade. This makes the UI reason transparent instead of showing
+    // "ready" and then never filling.
+    if (willExecute && router.type !== 'HOLD' && router.side !== 'NONE') {
+      const budget = computeEntryBudget(ctx.cash, router.type === 'FUTURES' ? 'FUTURES' : 'SPOT');
+      if (budget < 5) {
+        status = `תקציב נמוך מדי ($${budget.toFixed(2)} < $5)`;
+        willExecute = false;
+      }
     }
 
     // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
@@ -246,7 +264,11 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       },
       ...(entryTiming ? [{
         label: 'כניסה (Entry Timing)',
-        value: entryTiming.shouldEnter ? `Limit @ ${formatDynamicPrice(entryPrice)}` : 'נמנע מרידפינג',
+        value: entryTiming.shouldEnter
+          ? entryTiming.sizeMultiplier < 1
+            ? `Limit @ ${formatDynamicPrice(entryPrice)} (גודל ${(entryTiming.sizeMultiplier * 100).toFixed(0)}%)`
+            : `Limit @ ${formatDynamicPrice(entryPrice)}`
+          : 'נמנע מרידפינג',
         impact: (entryTiming.shouldEnter ? 'positive' : 'negative') as DecisionFactor['impact'],
         note: entryTiming.reason
       }] : []),

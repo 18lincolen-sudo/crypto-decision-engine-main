@@ -21,6 +21,7 @@
 │  ┌──────────────────────────────────────────────────┐              │
 │  │  SimulationBot (3 מנועי סימולציה)               │              │
 │  │  RealTradingBot (בוט מסחר אמיתי)                │              │
+│  │  ProSimulationBot (בוט פרו — Advanced Analysis) │              │
 │  └──────────────────────────────────────────────────┘              │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ HTTPS API
@@ -108,7 +109,9 @@ crypto-decision-engine-main/
 │   │   ├── Index.tsx             # דף בית
 │   │   ├── Portfolio.tsx         # תיק השקעות
 │   │   ├── Alerts.tsx            # התראות
-│   │   ├── SimulationBot.tsx     # בוט סימולציה (3 מנועים)
+│   │   ├── SimulationBot.tsx     # בוט סימולציה (מנוע חדש)
+│   │   ├── LegacySimulationBot.tsx # בוט סימולציה מקורי
+│   │   ├── ProSimulationBot.tsx  # בוט פרו (Advanced Analysis)
 │   │   ├── RealTradingBot.tsx    # בוט מסחר אמיתי
 │   │   ├── AdvancedAnalysis.tsx  # ניתוח מתקדם
 │   │   └── NotFound.tsx           # 404
@@ -153,7 +156,8 @@ crypto-decision-engine-main/
 │   │   ├── simExecution.ts       # לוגיקת ביצוע סימולציה (משותף)
 │   │   ├── legacySimExecution.ts # לוגיקת ביצוע legacy
 │   │   ├── proSimExecution.ts    # לוגיקת ביצוע Pro (alg.md)
-│   │   ├── proAlgEngine.ts       # מנוע Pro (alg.md)
+│   │   ├── proAlgEngine.ts       # מנוע Pro — ניתוב/סיכון/יציאה (alg.md)
+│   │   ├── proAdvancedAnalysis.ts # ניתוח מתקדם (מקור אותות Pro)
 │   │   ├── tradeEngine.ts        # מנוע מסחר בסיסי
 │   │   ├── adaptiveRisk.ts       # סיכון אדפטיבי
 │   │   ├── correlation.ts        # בדיקת קורלציה
@@ -217,7 +221,7 @@ crypto-decision-engine-main/
 | **tradingWorker.ts** | שרת HTTP + לוגיקת Bot 24/7 |
 | **simEngine.ts** | מנוע סימולציה חדש (MTF) |
 | **legacySimEngine.ts** | מנוע סימולציה מקורי |
-| **proSimEngine.ts** | מנוע סימולציה פרו (alg.md) |
+| **proSimEngine.ts** | מנוע סימולציה פרו (alg.md + Advanced Analysis) |
 | **intradayEngine.ts** | מנוע החלטות MTF (מקור אמת) |
 | **marketDataService.ts** | Multi-Timeframe OHLCV pipeline |
 | **bybitApi.ts** | לקוח Bybit (ציבורי + מאומת) |
@@ -255,11 +259,11 @@ crypto-decision-engine-main/
 
 ## 4. שלושת מנועי הסימולציה
 
-| מנוע | קובץ | אלגוריתם | שימוש | minConfidence |
-|------|------|-----------|--------|---------------|
-| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 52 |
-| **מקורי** | `legacySimEngine.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | סימולציה | 58 |
-| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 58 |
+| מנוע | קבצים | מקור אותות | אלגוריתם | שימוש | minConfidence |
+|------|-------|-----------|-----------|--------|---------------|
+| **חדש** | `simEngine.ts` + `intradayEngine.ts` + `intradayBridge.ts` | Multi-Timeframe (1H/15M/5M) | MTF Layer 0-3 | סימולציה + Backtest | 52 |
+| **מקורי** | `legacySimEngine.ts` + `legacySimExecution.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | alg.md (drifted) | סימולציה | 58 |
+| **פרו** | `proSimEngine.ts` + `proSimExecution.ts` + `proAlgEngine.ts` + `proAdvancedAnalysis.ts` | Advanced Analysis (site engine) | alg.md (medoash) | סימולציה | 58 |
 
 **מקורות מידע לכל המנועים:**
 - **Bybit** — נתוני שוק (candles, ticker, instruments-info)
@@ -378,6 +382,19 @@ server/
 
 ## 9. שינויים אחרונים
 
+### שינוי מקור אותות בבוט פרו
+
+בוט פרו עבר שינוי משמעותי: **מקור האותות שונה** מ-internal signal engine ל-**Advanced Analysis engine** של האתר.
+
+**לפני:**
+- `proAlgEngine.ts` → `evaluateProSignals()` חישב את כל האותות והביטחון
+- 7 אינדיקטורים (MACD, EMA, RSI, Bollinger, Volume, Supertrend, Stochastic)
+
+**אחרי:**
+- `proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()` מחשב את כל האינדיקטורים וההמלצה מהאתר
+- אותו אלגוריתם של ניתוח מתקדם שמוצג בדף Advanced Analysis
+- `proAlgEngine.ts` משמש רק לניתוב, סיכון ויציאה (Layer 0, 1.5, 2, 3, 4)
+
 ### מקסימום פוזיציות
 
 המקסימום פוזיציות קבוע על **7 פוזיציות פתוחות** (עד 2 ממתינות בתור):
@@ -396,20 +413,23 @@ maxPositions = 7
 | Legacy | 58 | `legacySimExecution.ts` |
 | Pro | 58 | `proSimExecution.ts` |
 
-### סף ביטחון סטטי (Static Confidence Threshold)
+### סף ביטחון דינמי (Dynamic Confidence Threshold)
 
-הסף קבוע — לא משתנה לפי ATR%:
+הסף משתנה לפי ATR% — בטווח שבין 2% ל-8% ATR, הסף עולה לינארית עד +15 נקודות:
 
 ```typescript
 function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
-  return baseThreshold; // סף סטטי ללא דינמיות
+  if (atrPercent <= 2) return baseThreshold;
+  if (atrPercent >= 8) return baseThreshold + 15;
+  return baseThreshold + ((atrPercent - 2) / 6) * 15;
 }
 ```
 
-| סוג עסקה | סף מינימלי |
-|----------|-----------|
-| Futures | 70 |
-| Spot | 60 (65 ב-SOFT_TREND) |
+| סוג עסקה | סף מינימלי (ATR% <= 2) | סף מקסימלי (ATR% >= 8) |
+|----------|------------------------|------------------------|
+| Futures | 70 | 85 |
+| Spot | 60 | 75 |
+| Spot (SOFT_TREND) | 65 | 80 |
 
 ### פוגה אחרי רצף הפסדים (Streak Cooldown)
 
@@ -475,6 +495,24 @@ reason: `confidence ${signal.confidence} מתחת לסף המינימלי (${req
 - `server/package.json` נפרד עם תלויות מינימליות (dotenv, esbuild, tsx, typescript)
 - `render.yaml` מוגדר עם Root Directory = `server`
 - ה-build רץ ישירות מתוך `server/`
+
+### שינויי לוגיקה בבוט פרו (Pro Bot)
+
+בוט פרו עבר שינוי משמעותי: **מקור האותות שונה** מ-internal signal engine ל-**Advanced Analysis engine** של האתר (`proAdvancedAnalysis.ts`).
+
+| רכיב | קודם | עכשיו |
+|------|------|-------|
+| מקור אותות | `proAlgEngine.ts` → `evaluateProSignals()` | `proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()` |
+| ניתוב/סיכון/יציאה | `proAlgEngine.ts` | `proAlgEngine.ts` (ללא שינוי) |
+| ביצוע | `proSimExecution.ts` | `proSimExecution.ts` (ללא שינוי) |
+
+**זרימת החלטה החדשה:**
+1. `computeProAdvancedAnalysis()` — מחשב את כל האינדיקטורים וההמלצה מהאתר
+2. `detectProRegime()` — זיהוי משטר שוק (Layer 0)
+3. `routeProTradeType()` — ניתוב סוג עסקה (Layer 2)
+4. `calculateProOptimalEntry()` — תזמון כניסה (Layer 1.5)
+5. `calculateProRisk()` — ניהול סיכונים (Layer 3)
+6. `evaluateProExit()` — לוגיקת יציאה (Layer 4)
 
 ---
 

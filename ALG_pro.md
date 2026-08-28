@@ -1,12 +1,12 @@
 # ALG_pro.md — אלגוריתם בוט פרו (Bot Pro — alg.md)
 
-> מסמך זה מתאר בפירוט את אלגוריתם ההחלטה של בוט פרו, כולל כל השלבים, השערולים, והחישובים. בוט זה הוא יישום מדויק של מפרט ASSETS/alg.md.
+> מסמך זה מתאר בפירוט את אלגוריתם ההחלטה של בוט פרו, כולל כל השלבים, השערולים, והחישובים. בוט פרו מיישם את מפרט ASSETS/alg.md לניתוב, ניהול סיכונים ויציאה, אך **מקור האותות שונה** — הוא משתמש במנוע הניתוח המתקדם של האתר (`proAdvancedAnalysis.ts`) כדי לקבל המלצה, ולאחר מכן עובר את אותות alg.md דרך שלבי הניתוב והסיכון.
 
 ---
 
 ## 1. סקירה כללית
 
-בוט פרו הוא יישום **מדויק ונאמן** של מפרט ASSETS/alg.md, ללא סטיות. האלגוריתם מחולק ל-5 שלבים (Layers) עם שערול קשיחים ברורים.
+בוט פרו מיישם את מפרט **ASSETS/alg.md** לניתוב, ניהול סיכונים ויציאה, אך **מקור האותות שונה** מהאלגוריתם המקורי — הוא משתמש במנוע הניתוח המתקדם של האתר (`proAdvancedAnalysis.ts`) כדי לקבל המלצה, ולאחר מכן עובר את אותות alg.md דרך שלבי הניתוב והסיכון.
 
 **מקורות מידע:**
 - **Bybit** — נתוני שוק (candles, ticker, instruments-info) עם גיבוי מ-Binance
@@ -16,7 +16,8 @@
 **קבצים מרכזיים:**
 | קובץ | תפקיד |
 |------|-------|
-| `src/services/proAlgEngine.ts` | מנוע החלטות Pro (alg.md) |
+| `src/services/proAdvancedAnalysis.ts` | מנוע אותות Pro (מקור אמת — Advanced Analysis) |
+| `src/services/proAlgEngine.ts` | מנוע החלטות Pro — ניתוב/סיכון/יציאה (alg.md) |
 | `src/services/proSimExecution.ts` | לוגיקת ביצוע סימולציה Pro |
 | `server/proSimEngine.ts` | מנוע סימולציה 24/7 בשרת |
 
@@ -27,7 +28,7 @@
 ```
 Layer 0: Market Regime Detection (זיהוי משטר שוק)
     ↓
-Layer 1: Signal Engine (חישוב ציון ביטחון)
+Layer 1: Advanced Analysis Signal (מנוע הניתוח המתקדם של האתר)
     ↓
 Layer 1.5: Entry Timing (תזמון כניסה)
     ↓
@@ -76,46 +77,32 @@ Layer 4: Exit Logic (לוגיקת יציאה)
 
 ---
 
-### LAYER 1: Signal Engine — חישוב ציון ביטחון
+### LAYER 1: Advanced Analysis Signal — אותות מנוע הניתוח המתקדם
 
-**מקור:** `src/services/proAlgEngine.ts` → `evaluateProSignals()`
+**מקור:** `src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
+
+**תיאור:** במקום חישוב ציון ביטחון פנימי (כפי שהיה בקוד הקודם), בוט פרו משתמש כעת במנוע הניתוח המתקדם של האתר (`generateSmartRecommendation`) כדי לקבל המלצה וציון ביטחון. האלגוריתם מחשב אינדיקטורים טכניים (RSI, MACD, Bollinger Bands, Stochastic, Williams %R) ומשקל אותות לפי עוצמתם.
 
 **אינדיקטורים ומשקלות (סה"כ 100):**
 | אינדיקטור | משקל | תנאי BUY | תנאי SELL |
 |-----------|------|----------|-----------|
-| **MACD(12/26/9)** | 20 | MACD > Signal | MACD < Signal |
-| **EMA 20/50** | 18 | EMA20 > EMA50 | EMA20 < EMA50 |
-| **RSI(14)** | 12 | < 30 (מכירת יתר) | > 70 (קניית יתר) |
-| **Bollinger Bands** | 12 | מחיר מתחת לתחתית | מחיר מעל לעליון |
-| **Volume Surge** | 18 | נפח גבוה מממוצע | - |
-| **Supertrend** | 12 | כיוון BULL | כיוון BEAR |
-| **Stochastic(14/3)** | 8 | K < 20 && D < 25 | K > 80 && D > 75 |
+| **Advanced Analysis** | 50 | recommendation = buy | recommendation = sell |
+| **RSI** | 15 | < 30 (מכירת יתר) | > 70 (קניית יתר) |
+| **MACD** | 18 | MACD חיובי | MACD שלילי |
+| **Stochastic** | 10 | oversold | overbought |
+| **Williams %R** | 7 | < -80 | > -20 |
 
-**חישוב Scores:**
-```
-buyScore = Σ(weight × strength) עבור אותות BUY
-sellScore = Σ(weight × strength) עבור אותות SELL
-```
-
-**החלת פעולה:**
+**חישוב Confidence:**
 ```typescript
-if (buyScore > sellScore) → action = BUY, rawConfidence = buyScore
-else if (sellScore > buyScore) → action = SELL, rawConfidence = sellScore
-else → action = HOLD, rawConfidence = max(buyScore, sellScore)
+// confidence = הציון מהמנוע המתקדם (0-100)
+// rawConfidence = confidence (ללא קנסות בפרו)
 ```
 
 **קנסות (Penalties):**
 | קנס | תנאי | השפעה |
 |-----|------|-------|
-| חוסר נפח | Volume Surge NEUTRAL | Confidence × 0.6 |
-| שוק דשדוש | Regime = RANGING (ADX < 20) | Confidence × 0.7 |
-
-**חישוב Confidence:**
-```typescript
-let confidence = rawConfidence;
-if (volumeSignal === 'NEUTRAL') confidence *= 0.6;
-if (regime === 'RANGING') confidence *= 0.7;
-```
+| פחד קיצוני | Fear & Greed < 25 | הוספת הערת סנטימנט |
+| חמדנות קיצונית | Fear & Greed > 75 | הוספת הערת סנטימנט |
 
 ---
 
@@ -155,6 +142,8 @@ else if (action === 'SELL') {
 
 **מקור:** `src/services/proAlgEngine.ts` → `routeProTradeType()`
 
+**קלט:** אות מהמנוע המתקדם (`action`, `rawConfidence`) + משטר שוק מ-Layer 0.
+
 **שערול קשיחים (Hard Gates):**
 | # | שערול | תנאי |
 |---|-------|------|
@@ -168,27 +157,30 @@ else if (action === 'SELL') {
 |------|-----|
 | Regime | TRENDING (ADX > 25) |
 | Volatility | LOW או NORMAL (ATR% <= 5%) |
-| rawConfidence | >= 70 (סף סטטי) |
-| Same-Asset | ללא פוזיציית Futures קיימת |
+ | rawConfidence | >= dynamic(72) (סף דינמי לפי ATR%) |
+ | Same-Asset | ללא פוזיציית Futures קיימת |
 
-**ניתוב Spot:**
-| תנאי | ערך |
-|------|-----|
-| Regime | TRENDING, RANGING, או SOFT_TREND |
-| rawConfidence | >= 60 (סף סטטי, 65 ב-SOFT_TREND) |
+ **ניתוב Spot:**
+ | תנאי | ערך |
+ |------|-----|
+ | Regime | TRENDING, RANGING, או SOFT_TREND |
+ | rawConfidence | >= dynamic(60) (סף דינמי לפי ATR%, 65 ב-SOFT_TREND) |
 
-**סף ביטחון סטטי:**
+**סף ביטחון דינמי:**
 ```typescript
-// הסף קבוע — לא משתנה לפי ATR%
+// הסף משתנה לפי ATR% — בטווח שבין 2% ל-8% ATR, הסף עולה לינארית עד +15 נקודות
 function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
-  return baseThreshold; // סף סטטי ללא דינמיות
+  if (atrPercent <= 2) return baseThreshold;
+  if (atrPercent >= 8) return baseThreshold + 15;
+  return baseThreshold + ((atrPercent - 2) / 6) * 15;
 }
 ```
 
-| סוג עסקה | סף מינימלי |
-|----------|-----------|
-| Futures | 70 |
-| Spot | 60 (65 ב-SOFT_TREND) |
+| סוג עסקה | סף מינימלי (ATR% <= 2) | סף מקסימלי (ATR% >= 8) |
+|----------|------------------------|------------------------|
+| Futures | 70 | 85 |
+| Spot | 60 | 75 |
+| Spot (SOFT_TREND) | 65 | 80 |
 
 ---
 
@@ -206,8 +198,8 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 | סוג | SL | TP1 | TP2 |
 |-----|----|----|-----|
 | **SPOT** | entry - ATR × 1.8 | - | entry + ATR × 2.7 |
-| **FUTURES LONG** | entry - ATR × 1.5 | entry + ATR × 2.0 | entry + ATR × 3.5 |
-| **FUTURES SHORT** | entry + ATR × 1.5 | entry - ATR × 2.0 | entry - ATR × 3.5 |
+ | **FUTURES LONG** | entry - ATR × 1.5 | entry + ATR × 2.3 | entry + ATR × 3.5 |
+ | **FUTURES SHORT** | entry + ATR × 1.5 | entry - ATR × 2.3 | entry - ATR × 3.5 |
 
 **מינוף:**
 | תנודתיות | מינוף בסיסי | מינוף עם Confidence >= 80 |
@@ -246,8 +238,17 @@ betFraction *= adaptiveFactor (drawdown/streak/winRate)
 
 **קנס זמן (Time Exit):**
 ```typescript
-// 24 שעות ללא TP1 — סגירה חלקית של 50%
-if (hoursHeld >= 24 && !tp1Hit) → PARTIAL_50
+// 24 שעות ללא TP1 — בדיקת התקדמות
+// אם הפוזיציה התקדמה ב-30% ממרחק ה-SL — הרחבה ל-36 שעות
+// אחרת — סגירה חלקית של 50%
+if (hoursHeld >= 24 && !tp1Hit) {
+  const progressR = (currentPrice - entryPrice) / stopDistance;
+  if (progressR > 0.3 && hoursHeld < 36) {
+    → ממשיכים עד 36 שעות
+  } else {
+    → PARTIAL_50 (סגירת 50%)
+  }
+}
 ```
 
 **היפוך אותות:**
@@ -261,15 +262,12 @@ if (isShort && buyConfidence >= 65) → FULL (reversal)
 
 ## 4. חישוב Confidence
 
-**מקור:** `src/services/proSimExecution.ts`
+**מקור:** `src/services/proAdvancedAnalysis.ts` → `generateSmartRecommendation()`
 
 ```typescript
-// rawConfidence = ציון גומרי מ-Layer 1 (לפני קנסות)
-// confidence = ציון סופי (אחרי קנסות)
-
-// קנסות
-if (volumeSignal === 'NEUTRAL') confidence *= 0.6;
-if (regime === 'RANGING') confidence *= 0.7;
+// confidence = הציון מהמנוע המתקדם (0-100)
+// rawConfidence = confidence (ללא קנסות בפרו)
+// הערות סנטימנט מצורפות אם Fear & Greed בקיצוניות
 ```
 
 **סינון בסימולציה:**
@@ -392,15 +390,15 @@ const fee = notional * feePercent / 100;
 
 | תכונה | Legacy | Pro |
 |-------|--------|-----|
-| מקור אלגוריתם | tradeEngine.ts (סטה) | proAlgEngine.ts (מדויק ל-alg.md) |
-| SPOT threshold | 58 (סטטי) | 58 (סטטי) |
-| FUTURES threshold | 70 (סטטי) | 70 (סטטי) |
+| מקור אותות | tradeEngine.ts (סטה) | proAdvancedAnalysis.ts (מנוע האתר) |
+| SPOT threshold | 58 (סטטי) | 60 (דינמי לפי ATR%) |
+| FUTURES threshold | 70 (סטטי) | 72 (דינמי לפי ATR%) |
 | Daily circuit breaker | 8% | 8% |
 | Weekly circuit breaker | 15% | 15% |
 | Supertrend match | נדרש ל-Futures | לא נדרש (לא ב-alg.md) |
 | Position sizing | risk-first + Kelly (6%) | Kelly ישיר (6%) |
-| קנסות Layer 1 | לא מיושמים | מיושמים (×0.6, ×0.7) |
-| Time exit | סגירה מלאה אחרי 48 שעות | 50% סגירה |
+| קנסות Layer 1 | לא מיושמים | לא מיושמים (מקור אותות חדש) |
+| Time exit | סגירה מלאה אחרי 48 שעות | 50% סגירה + הרחבה ל-36 שעות |
 
 ---
 
@@ -412,8 +410,8 @@ const fee = notional * feePercent / 100;
 | `action` | `buy` / `sell` / `hold` |
 | `tradeType` | `SPOT` / `FUTURES` / `HOLD` |
 | `tradeSide` | `LONG` / `SHORT` / `BUY` / `SELL` / `NONE` |
-| `confidence` | ציון ביטחון (0-100) |
-| `price` | מחיר כניסה |
+| `confidence` | ציון ביטחון (0-100) ממנוע הניתוח המתקדם |
+| `price` | מחיר כניסה (Limit Order) |
 | `priceChange24h` | שינוי 24 שעות |
 | `reasoning` | הסבר החלטה |
 | `status` | סטטוס (מוכן/חסום) |
@@ -423,3 +421,9 @@ const fee = notional * feePercent / 100;
 | `leverage` | מינוף |
 | `stopLoss` | Stop Loss |
 | `takeProfit1` | Take Profit ראשון |
+| `takeProfit2` | Take Profit שני |
+| `advancedPredictions` | תחזיות (24h/7d/30d) |
+| `advancedReason` | ניתוח מתקדם |
+| `advancedSupport` | רמת תמיכה |
+| `advancedResistance` | רמת התנגדות |
+| `advancedRiskLevel` | רמת סיכון |
