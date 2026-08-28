@@ -29,7 +29,7 @@ import {
   ProActivePosition,
 } from './proAlgEngine';
 import { summarizeRecentPerformance, sizingMultiplierFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT } from './adaptiveRisk';
-import { getCachedHistory, saveCachedHistory } from '../server/historicalCandleCache';
+import { getCachedHistory, saveCachedHistory } from '../../server/historicalCandleCache';
 
 const BINANCE = 'https://api.binance.com/api/v3';
 

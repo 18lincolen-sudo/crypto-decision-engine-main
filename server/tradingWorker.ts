@@ -589,6 +589,8 @@ async function runBacktestInBackground(): Promise<void> {
     await persistBacktest();
   }
 }
+
+function serializeState(): string {
   return JSON.stringify({
     running: state.running, lastScanAt: state.lastScanAt, lastError: state.lastError,
     scans: state.scans, startedAt: state.startedAt, decisions: state.decisions,
