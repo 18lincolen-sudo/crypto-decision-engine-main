@@ -239,9 +239,14 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     }
   }, []);
 
+  // Normalize symbol to base asset for lookups — positions store suffixed symbols
+  // (e.g. "LITUSDT") but cryptoData/mtfData are keyed by base asset (e.g. "LIT").
+  // Without this normalization, priceFor() returns undefined for every open position
+  // and mark-to-market prices freeze at the entry fill price.
   const priceFor = useCallback(
     (symbol: string) => {
-      const match = cryptoData?.find((c) => c.symbol.toUpperCase() === symbol.toUpperCase());
+      const base = toBaseAsset(symbol);
+      const match = cryptoData?.find((c) => c.symbol.toUpperCase() === base.toUpperCase());
       return match?.current_price;
     },
     [cryptoData]
@@ -251,7 +256,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
   // Build 5M candles from the LIVE multi-timeframe cache (no mock / random data)
   const buildCandlesForSymbol = useCallback((symbol: string): Candle[] => {
-    const snap = mtfdRef.current[symbol.toUpperCase()];
+    const snap = mtfdRef.current[toBaseAsset(symbol).toUpperCase()];
     return snap && snap.m5 && snap.m5.length > 0 ? snap.m5 : [];
   }, []);
 
@@ -285,6 +290,8 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   }, [positions, priceFor]);
 
   // Compute Drawdowns (Daily and Weekly)
+  // Use hourlyHistory for longer time windows — history only covers ~1 hour
+  // (720 points × 5s), which is insufficient for daily/weekly drawdown calculation.
   const { dailyDrawdownPercent, weeklyDrawdownPercent } = useMemo(() => {
     const now = Date.now();
     const oneDayAgo = now - 24 * 60 * 60 * 1000;
@@ -293,7 +300,9 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     let peakDay = equity;
     let peakWeek = equity;
 
-    for (const pt of history) {
+    // Combine hourlyHistory (up to 168 hours = 7 days) with recent history
+    const allPoints = [...hourlyHistory, ...history];
+    for (const pt of allPoints) {
       if (pt.at >= oneDayAgo && pt.portfolio > peakDay) peakDay = pt.portfolio;
       if (pt.at >= oneWeekAgo && pt.portfolio > peakWeek) peakWeek = pt.portfolio;
     }
@@ -312,8 +321,10 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   // each record so adaptiveRisk.ts orders it itself rather than trusting the
   // array order (reading it backwards is how the streak used to be computed
   // from the OLDEST trades in the window).
+  // `symbol` is normalized to base asset (e.g. "BTCUSDT" → "BTC") for per-symbol
+  // cooldown tracking — matching the bare symbol used in evaluations.
   const closedTradeRecords = useMemo<ClosedTradeRecord[]>(
-    () => trades.filter((t) => typeof t.pnl === 'number').map((t) => ({ pnl: t.pnl ?? 0, at: t.at })),
+    () => trades.filter((t) => typeof t.pnl === 'number').map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol) })),
     [trades]
   );
 
@@ -522,7 +533,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     lastEvaluation,
     evaluations,
     reset,
-    minConfidence: 40,
+    minConfidence: 52,
     hasSavedSession,
     nextTickAt,
     totalLeveragedExposureUsd,

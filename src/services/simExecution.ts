@@ -340,7 +340,14 @@ export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
 
     // Per-symbol streak cooldown: only block entries on symbols that have
     // had consecutive losses, and only if the loss was <= 5% of portfolio.
-    const symbolStreakCooldownUntil = streakCooldownFromHistory(closedTrades || [], equity, symbol);
+    // Normalize trade symbols to base assets (e.g. "BTCUSDT" → "BTC") to match
+    // the bare `symbol` from cryptoData — otherwise the per-symbol filter never
+    // matches and the cooldown silently dies.
+    const normalizedClosedTrades = (closedTrades || []).map((t) => ({
+      ...t,
+      symbol: t.symbol ? toBase(t.symbol) : undefined,
+    }));
+    const symbolStreakCooldownUntil = streakCooldownFromHistory(normalizedClosedTrades, equity, symbol);
     const symbolStreakCooldownActive = isInStreakCooldown(symbolStreakCooldownUntil);
 
     let status = ev.status;

@@ -11,7 +11,7 @@
  *      - SPOT threshold: code 58 (62 in HIGH vol) vs spec's flat 60.
  *      - FUTURES threshold: code 70 vs spec's 72.
  *      - Daily circuit breaker: code 6% vs spec's 8%.
- *      - Weekly circuit breaker: code 13% vs spec's 15%.
+  *      - Weekly circuit breaker: code 15% (aligned with spec).
  *      - FUTURES requires a Supertrend-direction match — an extra condition
  *        not present anywhere in alg.md's 5-condition FUTURES list.
  *      - Position sizing: code uses risk-first sizing (risk 0.75% of equity
@@ -490,13 +490,19 @@ export function calculateProRisk(
    *  tests) the drawdown-only behaviour is preserved. */
   sizingMultiplier?: number,
   /** Optional SL clamp override for backtesting. Defaults to MIN_STOP_PERCENT/MAX_STOP_PERCENT. */
-  slConfig?: { minStop: number; maxStop: number }
+  slConfig?: { minStop: number; maxStop: number },
+  /** Optional max positions override. Defaults to 7. */
+  maxPositions: number = 7,
+  /** Optional max futures positions override. Defaults to 2. */
+  maxOpenFutures: number = 2
 ): ProRiskResult | null {
   if (entryPrice <= 0 || atr <= 0 || portfolioValue <= 0) return null;
 
   // §Layer3.4 — portfolio capacity gates
-  if (openPositionsCount >= 7) return null;
-  if (tradeType === 'FUTURES' && openFuturesCount >= 2) return null;
+  // Max total open positions = maxPositions (default 7)
+  // Max Futures positions = maxOpenFutures (default 2)
+  if (openPositionsCount >= maxPositions) return null;
+  if (tradeType === 'FUTURES' && openFuturesCount >= maxOpenFutures) return null;
 
   // Resolve SL clamp (allows backtest sweep)
   const slMin = slConfig?.minStop ?? MIN_STOP_PERCENT;
@@ -548,7 +554,7 @@ export function calculateProRisk(
 
   // §Layer3.3 — Kelly Criterion DIRECTLY sizes the bet (not a risk multiplier
   // like tradeEngine.ts's approach): BetSize = Portfolio × clamp(Kelly×0.5, 0, 0.10),
-  // default 3% without >=30 closed trades.
+  // default 6% without >=30 closed trades.
   // Drawdown adjustment: reduce bet size when the portfolio is in drawdown to
   // avoid compounding losses during a losing streak.
   let kellyFraction = 0;
@@ -563,7 +569,7 @@ export function calculateProRisk(
     kellyFraction = R > 0 ? winRate - (1 - winRate) / R : 0;
     betFraction = Math.min(Math.max(0, kellyFraction * 0.5), 0.10);
   }
-  // Adaptive sizing, applied to BOTH branches: the pre-Kelly 3% default used
+  // Adaptive sizing, applied to BOTH branches: the pre-Kelly 6% default used
   // to ignore the drawdown entirely, so the first 30 trades — the ones taken
   // with the least evidence of an edge — were the only ones never de-risked.
   const adaptiveFactor = sizingMultiplier !== undefined

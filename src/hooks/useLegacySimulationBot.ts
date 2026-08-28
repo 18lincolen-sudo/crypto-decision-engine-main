@@ -221,9 +221,12 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     const now = Date.now();
     const oneDayAgo = now - 24 * 60 * 60 * 1000;
     const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
+    // Use hourlyHistory for longer time windows — history only covers ~1 hour
+    // (720 points × 5s), which is insufficient for daily/weekly drawdown calculation.
+    const allPoints = [...hourlyHistory, ...history];
     let peakDay = equity;
     let peakWeek = equity;
-    for (const pt of history) {
+    for (const pt of allPoints) {
       if (pt.at >= oneDayAgo && pt.portfolio > peakDay) peakDay = pt.portfolio;
       if (pt.at >= oneWeekAgo && pt.portfolio > peakWeek) peakWeek = pt.portfolio;
     }
@@ -233,14 +236,15 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
       dailyDrawdownPercent: Math.max(0, Number(dailyDD.toFixed(2))),
       weeklyDrawdownPercent: Math.max(0, Number(weeklyDD.toFixed(2)))
     };
-  }, [equity, history]);
+  }, [equity, history, hourlyHistory]);
 
   // Memoized on `trades` (not re-filtered every render) — evaluations below
   // depends on closedTradeMetrics, and an unstable reference here fed a
   // setState-in-useEffect loop (activeMarketRegimes) into an infinite render.
+  // `symbol` is normalized to base asset for per-symbol cooldown tracking.
   const closedTrades = useMemo(() => trades.filter((t) => typeof t.pnl === 'number'), [trades]);
   const closedTradeMetrics = useMemo(
-    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at })),
+    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol) })),
     [closedTrades]
   );
 

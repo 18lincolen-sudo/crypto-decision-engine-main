@@ -777,7 +777,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'WEEKLY_DRAWDOWN_LOCK',
-      reason: 'נעילת מערכת שבועית (הפסד >= 13%) — נדרש שחרור ידני'
+      reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני'
     };
   }
 
@@ -1212,15 +1212,19 @@ export function calculateRiskParameters(
    *  ceiling, so the adaptation only ever de-risks. */
   sizingMultiplier: number = 1,
   /** Optional SL clamp override for backtesting. Defaults to MIN_STOP_PERCENT/MAX_STOP_PERCENT. */
-  slConfig?: { minStop: number; maxStop: number }
+  slConfig?: { minStop: number; maxStop: number },
+  /** Optional max positions override. Defaults to 7. */
+  maxPositions: number = 7,
+  /** Optional max futures positions override. Defaults to 2. */
+  maxOpenFutures: number = 2
 ): RiskParametersResult | null {
   if (tradeType === 'HOLD' || entryPrice <= 0 || atr <= 0 || portfolioValue <= 0) return null;
 
   // Portfolio Level Capacity Gates:
-  // Max total open positions = 7
-  // Max Futures positions = 2
-  if (openPositionsCount >= 7) return null;
-  if (tradeType === 'FUTURES' && openFuturesCount >= 2) return null;
+  // Max total open positions = maxPositions (default 7)
+  // Max Futures positions = maxOpenFutures (default 2)
+  if (openPositionsCount >= maxPositions) return null;
+  if (tradeType === 'FUTURES' && openFuturesCount >= maxOpenFutures) return null;
 
   // Resolve SL clamp (allows backtest sweep)
   const slMin = slConfig?.minStop ?? MIN_STOP_PERCENT;
@@ -1281,7 +1285,7 @@ export function calculateRiskParameters(
   }
 
   // 3. Position Sizing — Direct Kelly Criterion (§Layer3.3)
-  // BetSize = Portfolio × clamp(Kelly×0.5, 0, 0.10), default 3% without >=30 closed trades.
+  // BetSize = Portfolio × clamp(Kelly×0.5, 0, 0.10), default 6% without >=30 closed trades.
   // This is a materially different formula from the previous risk-first approach
   // (risk 0.75% of equity / stop distance scaled by half-Kelly) — the spec
   // defines Kelly as DIRECTLY setting the bet size as a fraction of portfolio.
@@ -1301,7 +1305,7 @@ export function calculateRiskParameters(
     }
     betFraction = Math.min(Math.max(0, kellyFraction * 0.5), 0.10);
   }
-  // Applied to BOTH branches — the pre-Kelly 3% default was previously the
+  // Applied to BOTH branches — the pre-Kelly 6% default was previously the
   // one path where a losing streak or an open drawdown changed nothing at
   // all, which is exactly the phase (first 30 trades) where it matters most.
   betFraction = Math.min(Math.max(0, betFraction * Math.max(0, sizingMultiplier)), 0.10);
@@ -1370,12 +1374,12 @@ export function evaluateExit(
   const isShort = pos.side === 'SHORT';
 
   // 1. Drawdown Circuit Breakers (Weekly lock / Daily block)
-  // Legacy thresholds: 13% weekly (not Pro's 15%)
-  if (portfolioStats.weeklyDrawdownPercent >= 13 || portfolioStats.systemLocked) {
+  // Legacy thresholds: 15% weekly (aligned with entry gate), 8% daily
+  if (portfolioStats.weeklyDrawdownPercent >= 15 || portfolioStats.systemLocked) {
     return {
       shouldExit: true,
       exitType: 'FULL',
-      reason: `הגנת תיק שבועית הופעלה (Drawdown ${portfolioStats.weeklyDrawdownPercent.toFixed(1)}% >= 13%) — סגירת פוזיציה להגנת הון`
+      reason: `הגנת תיק שבועית הופעלה (Drawdown ${portfolioStats.weeklyDrawdownPercent.toFixed(1)}% >= 15%) — סגירת פוזיציה להגנת הון`
     };
   }
 

@@ -192,9 +192,11 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     return positions.reduce((sum, p) => {
       const live = priceFor(p.symbol) ?? p.currentPrice;
       if (p.type === 'SPOT') return sum + p.quantity * live;
+      // Futures PnL: quantity already includes leverage (quantity = budget * leverage / fillPrice),
+      // so we must NOT multiply by leverage again — doing so overstates PnL by leverage times.
       const pnl = p.side === 'LONG'
-        ? (live - p.entryPrice) * p.quantity * p.leverage
-        : (p.entryPrice - live) * p.quantity * p.leverage;
+        ? (live - p.entryPrice) * p.quantity
+        : (p.entryPrice - live) * p.quantity;
       return sum + Math.max(0, p.marginUsd + pnl);
     }, 0);
   }
@@ -209,6 +211,19 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     const oneWeek = now - 7 * 24 * 60 * 60 * 1000;
     let peakDay = eq;
     let peakWeek = eq;
+    // Use hourlyHistory for longer time windows (up to 30 days) — history only
+    // covers ~48 minutes (720 points × 4s), which is insufficient for daily/weekly
+    // drawdown calculation. Without this, circuit breakers only react to drawdowns
+    // occurring within the last hour.
+    const dayPoints = hourlyHistory.filter((pt) => pt.at >= oneDay);
+    const weekPoints = hourlyHistory.filter((pt) => pt.at >= oneWeek);
+    for (const pt of dayPoints) {
+      if (pt.portfolio > peakDay) peakDay = pt.portfolio;
+    }
+    for (const pt of weekPoints) {
+      if (pt.portfolio > peakWeek) peakWeek = pt.portfolio;
+    }
+    // Also check the most recent tick history for intra-hour precision
     for (const pt of history) {
       if (pt.at >= oneDay && pt.portfolio > peakDay) peakDay = pt.portfolio;
       if (pt.at >= oneWeek && pt.portfolio > peakWeek) peakWeek = pt.portfolio;
@@ -224,7 +239,8 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
   function leveragedExposure(): number {
     return positions.reduce((sum, p) => {
       const live = priceFor(p.symbol) ?? p.currentPrice;
-      if (p.type === 'FUTURES') return sum + p.quantity * live * p.leverage;
+      // quantity already includes leverage for Futures, so notional = quantity * live
+      if (p.type === 'FUTURES') return sum + p.quantity * live;
       return sum;
     }, 0);
   }

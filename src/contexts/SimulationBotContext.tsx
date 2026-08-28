@@ -186,7 +186,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     closedTrades: activeSource.closedTrades ?? 0,
     lastEvaluation: activeSource.lastEvaluation ?? '',
     evaluations: (activeSource.evaluations ?? []) as SignalEvaluation[],
-    minConfidence: activeSource.minConfidence ?? 40,
+    minConfidence: activeSource.minConfidence ?? 52,
     hasSavedSession: activeSource.hasSavedSession ?? false,
     nextTickAt: activeSource.nextTickAt ?? 0,
     totalLeveragedExposureUsd: activeSource.totalLeveragedExposureUsd ?? 0,

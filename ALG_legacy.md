@@ -334,7 +334,7 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | `initialAmount` | 10,000$ |
 | `stopLoss` | 4.2% |
 | `takeProfit` | 3% |
-| `maxPositions` | 7 (קבוע: עד 7 פוזיציות פתוחות, 2 ממתינות בתור) |
+| `maxPositions` | 7 (ניתן להגדרה: עד 7 פוזיציות פתוחות כברירת מחדל, ניתן לשנות ב-UI) |
 | `maxFuturesPositions` | 2 |
 | `feePercent` | 0.1% |
 | `slippagePercent` | 0.05% |
