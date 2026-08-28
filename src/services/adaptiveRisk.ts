@@ -17,6 +17,8 @@
 //      shrinking it. A confidence threshold cannot do this: the signals that
 //      lose in a chop are frequently the high-confidence ones.
 
+import { toBaseAsset } from './assetUniverse';
+
 /** A closed trade as the engines record it. `at` is the fill timestamp —
  *  supply it whenever available: it is what lets this module order the
  *  history itself instead of trusting the caller's array order.
@@ -309,7 +311,7 @@ export function streakCooldownFromHistory(
   // Check if any trades have symbols — if not, use portfolio-level behavior
   const hasSymbolData = closed.some((t) => t.symbol !== undefined);
   const filtered = (hasSymbolData && symbol)
-    ? closed.filter((t) => t.symbol === symbol)
+    ? closed.filter((t) => t.symbol && toBaseAsset(t.symbol) === toBaseAsset(symbol))
     : closed;
   return computeSymbolStreakCooldownUntil(
     summarizeRecentPerformance(filtered, PERFORMANCE_WINDOW_SIZE, portfolioValue),

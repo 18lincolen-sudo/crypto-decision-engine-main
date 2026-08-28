@@ -246,7 +246,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   const priceFor = useCallback(
     (symbol: string) => {
       const base = toBaseAsset(symbol);
-      const match = cryptoData?.find((c) => c.symbol.toUpperCase() === base.toUpperCase());
+      const match = cryptoData?.find((c) => toBaseAsset(c.symbol) === base);
       return match?.current_price;
     },
     [cryptoData]
@@ -256,7 +256,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
 
   // Build 5M candles from the LIVE multi-timeframe cache (no mock / random data)
   const buildCandlesForSymbol = useCallback((symbol: string): Candle[] => {
-    const snap = mtfdRef.current[toBaseAsset(symbol).toUpperCase()];
+    const snap = mtfdRef.current[toBaseAsset(symbol)];
     return snap && snap.m5 && snap.m5.length > 0 ? snap.m5 : [];
   }, []);
 
@@ -314,7 +314,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       dailyDrawdownPercent: Math.max(0, Number(dailyDD.toFixed(2))),
       weeklyDrawdownPercent: Math.max(0, Number(weeklyDD.toFixed(2)))
     };
-  }, [equity, history]);
+  }, [equity, history, hourlyHistory]);
 
   // Closed-trade history feeding adaptive sizing and the losing-streak
   // cooldown. `trades` is kept NEWEST-FIRST for display; `at` travels with

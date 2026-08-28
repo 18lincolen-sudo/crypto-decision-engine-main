@@ -441,6 +441,16 @@ function calcMaxPositions(_initialAmount: number): number {
   return 7;
 }
 
+/** Sanitize a sim config loaded from an external source.
+ *  minConfidenceOverride: 0 is treated as "not set" because the ?? operator
+ *  would otherwise pass 0 through and fully disable the confidence floor. */
+function sanitizeSimConfig(cfg: Record<string, unknown>): Record<string, unknown> {
+  if (cfg.minConfidenceOverride !== undefined && (cfg.minConfidenceOverride as number) < 1) {
+    cfg.minConfidenceOverride = undefined;
+  }
+  return cfg;
+}
+
 const DEFAULT_SIM_CONFIG = {
   riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
   maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
@@ -459,7 +469,7 @@ async function hydrateSim() {
   if (!saved) return;
   const s = JSON.parse(saved) as Record<string, unknown>;
   simState.running = typeof s.running === 'boolean' ? s.running : false;
-  simState.config = { ...DEFAULT_SIM_CONFIG, ...(typeof s.config === 'object' && s.config !== null ? s.config as Record<string, unknown> : {}) };
+  simState.config = { ...DEFAULT_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
   simState.snapshot = s.snapshot ?? null;
   simState.leaderId = typeof s.leaderId === 'string' ? s.leaderId : null;
   simState.leaderHeartbeat = typeof s.leaderHeartbeat === 'number' ? s.leaderHeartbeat : 0;
@@ -489,7 +499,7 @@ async function hydrateLegacySim() {
   if (!saved) return;
   const s = JSON.parse(saved) as Record<string, unknown>;
   legacySimState.running = typeof s.running === 'boolean' ? s.running : false;
-  legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...(typeof s.config === 'object' && s.config !== null ? s.config as Record<string, unknown> : {}) };
+  legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
   legacySimState.snapshot = s.snapshot ?? null;
   legacySimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
 }
@@ -515,7 +525,7 @@ async function hydrateProSim() {
   if (!saved) return;
   const s = JSON.parse(saved) as Record<string, unknown>;
   proSimState.running = typeof s.running === 'boolean' ? s.running : false;
-  proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...(typeof s.config === 'object' && s.config !== null ? s.config as Record<string, unknown> : {}) };
+  proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
   proSimState.snapshot = s.snapshot ?? null;
   proSimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
 }
@@ -1157,7 +1167,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      simState.config = { ...DEFAULT_SIM_CONFIG, ...simState.config, ...(body.config as Record<string, unknown>) };
+      simState.config = { ...DEFAULT_SIM_CONFIG, ...simState.config, ...sanitizeSimConfig({ ...(body.config as Record<string, unknown>) }) };
       // maxPositions is fixed at 7 — no recalculation needed
     }
     await persistSim();
@@ -1192,7 +1202,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/legacy-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...legacySimState.config, ...(body.config as Record<string, unknown>) };
+      legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...legacySimState.config, ...sanitizeSimConfig({ ...(body.config as Record<string, unknown>) }) };
       // maxPositions is fixed at 7 — no recalculation needed
     }
     await persistLegacySim();
@@ -1227,7 +1237,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/pro-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...proSimState.config, ...(body.config as Record<string, unknown>) };
+      proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...proSimState.config, ...sanitizeSimConfig({ ...(body.config as Record<string, unknown>) }) };
       // maxPositions is fixed at 7 — no recalculation needed
     }
     await persistProSim();

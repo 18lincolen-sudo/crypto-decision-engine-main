@@ -141,7 +141,8 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       ? calculateProRisk(
         entryPrice, router.type, router.side, regime.atr, regime.volatility,
         signal.rawConfidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
-        dailyDrawdownPercent, sizingMultiplier
+        dailyDrawdownPercent, sizingMultiplier,
+        config.maxPositions, config.maxFuturesPositions
       )
       : null;
 
