@@ -116,8 +116,8 @@ if (regime === 'RANGING') confidence *= 0.7;
 **שערול קשיחים (Hard Gates):**
 | # | שערול | תנאי |
 |---|-------|------|
-| 1 | Weekly Drawdown Lock | הפסד שבועי >= 13% |
-| 2 | Daily Drawdown Block | הפסד יומי >= 6% |
+| 1 | Weekly Drawdown Lock | הפסד שבועי >= 15% |
+| 2 | Daily Drawdown Block | הפסד יומי >= 8% |
 | 3 | Transitional Regime | 20 <= ADX <= 25 (ללא SOFT_TREND) |
 | 4 | Same-Asset Exposure | כבר פתוח Spot או Futures על נכס זה |
 | 5 | High Volatility Futures | ATR% > 5% |
@@ -127,30 +127,27 @@ if (regime === 'RANGING') confidence *= 0.7;
 |------|-----|
 | Regime | TRENDING (ADX > 25) |
 | Volatility | LOW או NORMAL (ATR% <= 5%) |
-| SignalScore | >= dynamic threshold (base 70) |
+| SignalScore | >= 70 (סף סטטי) |
 | Same-Asset | ללא פוזיציית Futures קיימת |
 
 **ניתוב Spot:**
 | תנאי | ערך |
 |------|-----|
 | Regime | TRENDING, RANGING, או SOFT_TREND |
-| SignalScore | >= dynamic threshold (base 60, 65 ב-SOFT_TREND) |
+| SignalScore | >= 60 (סף סטטי, 65 ב-SOFT_TREND) |
 
-**Dynamic Confidence Threshold:**
+**סף ביטחון סטטי:**
 ```typescript
+// הסף קבוע — לא משתנה לפי ATR%
 function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
-  if (atrPercent <= 2) return baseThreshold;
-  const ramp = Math.min(1, (atrPercent - 2) / 6);
-  return baseThreshold + ramp * 15;
+  return baseThreshold; // סף סטטי ללא דינמיות
 }
 ```
 
-| ATR% | Futures Threshold | Spot Threshold |
-|------|-------------------|----------------|
-| <= 2% | 70 | 60 |
-| 4% | 75 | 65 |
-| 6% | 80 | 70 |
-| >= 8% | 85 | 75 |
+| סוג עסקה | סף מינימלי |
+|----------|-----------|
+| Futures | 70 |
+| Spot | 60 (65 ב-SOFT_TREND) |
 
 ---
 
@@ -176,7 +173,7 @@ kellyFraction = winRate - (1 - winRate) / R
 betFraction = clamp(kellyFraction × 0.5, 0, 0.10)
 
 // ללא 30 עסקאות — ברירת מחדל
-betFraction = 0.03 (3%)
+betFraction = 0.06 (6%)
 ```
 
 הערה: זהה לנוסחת Pro — Legacy התיישר איתה (§Layer3.3), לא נוסחת half-Kelly ישנה יותר.
@@ -251,7 +248,7 @@ multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2�
 ### Correlation Gate — מניעת קורלציה
 
 ```typescript
-// מקסימום 3 פוזיציות מקורלציות
+// מקסימום 12 פוזיציות מקורלציות
 if (correlatedPositions >= maxCorrelated) → BLOCK
 ```
 
@@ -319,7 +316,13 @@ const fee = notional * feePercent / 100;
 | `PARTIAL_50` | 50% סגירה ב-TP1 |
 | `TRAILING` | עקיבת סטופ |
 | `REVERSAL` | היפוך אותות |
-| `TIME_STOP` | סגירה לפי זמן |
+| `TIME_STOP` | סגירה לפי זמן — Spot לאחר 48 שעות |
+
+**קנס זמן (Time Exit):**
+```typescript
+// Spot: סגירה מלאה לאחר 48 שעות
+if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
+```
 
 ---
 

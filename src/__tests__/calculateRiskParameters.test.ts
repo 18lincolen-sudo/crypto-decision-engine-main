@@ -30,7 +30,8 @@ describe('calculateRiskParameters', () => {
   it('calculates SPOT risk parameters with direct Kelly (6% default)', () => {
     const result = calculateRiskParameters(100, 'SPOT', 'BUY', 4, 'NORMAL', 65, 20000);
     expect(result).not.toBeNull();
-    expect(result!.stopLoss).toBeCloseTo(100 - 4 * 1.8, 4);
+    // SL clamped to MAX_STOP_PERCENT=6%: 100 - 6 = 94 (ATR*1.8=7.2 would be 92.8, but clamped to 6%)
+    expect(result!.stopLoss).toBeCloseTo(94, 4);
     expect(result!.takeProfit).toBeCloseTo(100 + 4 * 2.7, 4);
     expect(result!.leverage).toBe(1);
     expect(result!.maxRiskAmountUsd).toBeCloseTo(1200, 1); // 20000 * 0.06 = 1200
@@ -39,7 +40,8 @@ describe('calculateRiskParameters', () => {
   it('calculates FUTURES LONG risk parameters correctly', () => {
     const result = calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 75, 20000);
     expect(result).not.toBeNull();
-    expect(result!.stopLoss).toBeCloseTo(100 - 4 * 1.5, 4);
+    // SL distance = ATR*1.5 = 6, which equals MAX_STOP_PERCENT=6%, so no clamp
+    expect(result!.stopLoss).toBeCloseTo(94, 4);
     expect(result!.takeProfit1).toBeCloseTo(100 + 4 * 2.0, 4);
     expect(result!.takeProfit2).toBeCloseTo(100 + 4 * 3.5, 4);
     expect(result!.leverage).toBe(3);
@@ -48,7 +50,8 @@ describe('calculateRiskParameters', () => {
   it('calculates FUTURES SHORT risk parameters correctly', () => {
     const result = calculateRiskParameters(100, 'FUTURES', 'SHORT', 4, 'NORMAL', 75, 20000);
     expect(result).not.toBeNull();
-    expect(result!.stopLoss).toBeCloseTo(100 + 4 * 1.5, 4);
+    // SL distance = ATR*1.5 = 6, which equals MAX_STOP_PERCENT=6%, so no clamp
+    expect(result!.stopLoss).toBeCloseTo(106, 4);
     expect(result!.takeProfit1).toBeCloseTo(100 - 4 * 2.0, 4);
     expect(result!.takeProfit2).toBeCloseTo(100 - 4 * 3.5, 4);
   });

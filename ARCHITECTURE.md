@@ -259,7 +259,7 @@ crypto-decision-engine-main/
 |------|------|-----------|--------|---------------|
 | **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 52 |
 | **מקורי** | `legacySimEngine.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | סימולציה | 58 |
-| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 60 |
+| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 58 |
 
 **מקורות מידע לכל המנועים:**
 - **Bybit** — נתוני שוק (candles, ticker, instruments-info)
@@ -394,14 +394,22 @@ maxPositions = 7
 |-----|-----------|-----------|
 | חדש | 52 | `simExecution.ts` |
 | Legacy | 58 | `legacySimExecution.ts` |
-| Pro | 60 | `proSimExecution.ts` |
+| Pro | 58 | `proSimExecution.ts` |
 
-### סף Futures דינמי
+### סף ביטחון סטטי (Static Confidence Threshold)
 
-הסף ל-Futures הופחת מ-72 ל-70:
+הסף קבוע — לא משתנה לפי ATR%:
+
 ```typescript
-const futuresThreshold = dynamicConfidenceThreshold(70, atrPercent);
+function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
+  return baseThreshold; // סף סטטי ללא דינמיות
+}
 ```
+
+| סוג עסקה | סף מינימלי |
+|----------|-----------|
+| Futures | 70 |
+| Spot | 60 (65 ב-SOFT_TREND) |
 
 ### פוגה אחרי רצף הפסדים (Streak Cooldown)
 
@@ -422,26 +430,45 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 | ביטול הפוגה | הפסד > 5% מסך השווי התיק |
 | טווח | לפי מטבע (לא פורטפוליו) |
 
-### הצגת סף דינמי בהודעות HOLD
+### הצגת סף בהודעות HOLD
 
-הודעות HOLD מציגות כעת את הסף הדינמי המחושב (לא ליטרל קשיח):
+הודעות HOLD מציגות כעת את הסף הסטטי המחושב:
 
 ```typescript
 // tradeEngine.ts — routeTradeType
-reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (${requiredSpotScore.toFixed(1)})`
+reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (${requiredSpotScore})`
 
 // proAlgEngine.ts — routeProTradeType
-reason: `confidence ${signal.confidence} מתחת לסף המינימלי (${requiredSpotScore.toFixed(1)})`
+reason: `confidence ${signal.confidence} מתחת לסף המינימלי (${requiredSpotScore})`
 ```
-
-הסף מחושב דינמית לפי ATR% (בסיס 60, רמפה עד 75 ב-EXTREME vol).
 
 ### מעגלי הגנה (Circuit Breakers)
 
 | בוט | הפסד יומי (Daily) | הפסד שבועי (Weekly) |
 |-----|-------------------|---------------------|
-| Legacy | 6% | 13% |
+| Legacy | 8% | 15% |
 | Pro | 8% | 15% |
+
+### חישוב גודל פוזיציה (Kelly Criterion)
+
+| פרמטר | ערך |
+|-------|-----|
+| ברירת מחדל (Legacy + Pro) | 6% |
+| מקסימום | 10% |
+| התאמה אדפטיבית | streak/drawdown/winRate |
+
+### מניעת קורלציה (Correlation Gate)
+
+| פרמטר | ערך |
+|-------|-----|
+| מקסימום פוזיציות מקורלציות | 12 |
+
+### יציאה לפי זמן (Time Exit)
+
+| בוט | תנאי |
+|-----|------|
+| Legacy Spot | סגירה מלאה לאחר 48 שעות |
+| Pro | 50% סגירה לאחר 24 שעות ללא TP1 |
 
 ### הפרדת Frontend/Backend
 

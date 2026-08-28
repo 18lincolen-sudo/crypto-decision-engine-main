@@ -168,30 +168,27 @@ else if (action === 'SELL') {
 |------|-----|
 | Regime | TRENDING (ADX > 25) |
 | Volatility | LOW או NORMAL (ATR% <= 5%) |
-| rawConfidence | >= dynamic threshold (base 70) |
+| rawConfidence | >= 70 (סף סטטי) |
 | Same-Asset | ללא פוזיציית Futures קיימת |
 
 **ניתוב Spot:**
 | תנאי | ערך |
 |------|-----|
 | Regime | TRENDING, RANGING, או SOFT_TREND |
-| rawConfidence | >= dynamic threshold (base 60, 65 ב-SOFT_TREND) |
+| rawConfidence | >= 60 (סף סטטי, 65 ב-SOFT_TREND) |
 
-**Dynamic Confidence Threshold:**
+**סף ביטחון סטטי:**
 ```typescript
+// הסף קבוע — לא משתנה לפי ATR%
 function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
-  if (atrPercent <= 2) return baseThreshold;
-  const ramp = Math.min(1, (atrPercent - 2) / 6);
-  return baseThreshold + ramp * 15;
+  return baseThreshold; // סף סטטי ללא דינמיות
 }
 ```
 
-| ATR% | Futures Threshold | Spot Threshold |
-|------|-------------------|----------------|
-| <= 2% | 70 | 60 |
-| 4% | 75 | 65 |
-| 6% | 80 | 70 |
-| >= 8% | 85 | 75 |
+| סוג עסקה | סף מינימלי |
+|----------|-----------|
+| Futures | 70 |
+| Spot | 60 (65 ב-SOFT_TREND) |
 
 ---
 
@@ -226,7 +223,7 @@ kellyFraction = winRate - (1 - winRate) / R
 betFraction = clamp(kellyFraction × 0.5, 0, 0.10)
 
 // ללא 30 עסקאות — ברירת מחדל
-betFraction = 0.03 (3%)
+betFraction = 0.06 (6%)
 
 // התאמה אדפטיבית
 betFraction *= adaptiveFactor (drawdown/streak/winRate)
@@ -316,7 +313,7 @@ multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2�
 ### Correlation Gate — מניעת קורלציה
 
 ```typescript
-// מקסימום 3 פוזיציות מקורלציות
+// מקסימום 12 פוזיציות מקורלציות
 if (correlatedPositions >= maxCorrelated) → BLOCK
 ```
 
@@ -396,14 +393,14 @@ const fee = notional * feePercent / 100;
 | תכונה | Legacy | Pro |
 |-------|--------|-----|
 | מקור אלגוריתם | tradeEngine.ts (סטה) | proAlgEngine.ts (מדויק ל-alg.md) |
-| SPOT threshold | 58 (62 ב-HIGH vol) | 58 (דינמי) |
-| FUTURES threshold | 70 | 70 (דינמי) |
-| Daily circuit breaker | 6% | 8% |
-| Weekly circuit breaker | 13% | 15% |
+| SPOT threshold | 58 (סטטי) | 58 (סטטי) |
+| FUTURES threshold | 70 (סטטי) | 70 (סטטי) |
+| Daily circuit breaker | 8% | 8% |
+| Weekly circuit breaker | 15% | 15% |
 | Supertrend match | נדרש ל-Futures | לא נדרש (לא ב-alg.md) |
-| Position sizing | risk-first + Kelly | Kelly ישיר |
+| Position sizing | risk-first + Kelly (6%) | Kelly ישיר (6%) |
 | קנסות Layer 1 | לא מיושמים | מיושמים (×0.6, ×0.7) |
-| Time exit | סגירה מלאה | 50% סגירה |
+| Time exit | סגירה מלאה אחרי 48 שעות | 50% סגירה |
 
 ---
 

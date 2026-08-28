@@ -57,6 +57,15 @@ export const MIN_PERFORMANCE_SAMPLE = 5;
 /** Rolling window of closed trades used for the win-rate term. */
 export const PERFORMANCE_WINDOW_SIZE = 20;
 
+// ── Stop Loss floor / ceiling (shared by Legacy + Pro) ─────────────────────
+// Prevents ATR-based SL from collapsing onto the entry (a sub-1.5% stop on a
+// low-vol coin like TRUMPUSDT gets blown through by normal noise) or from
+// ballooning in a high-vol regime into a stop so wide it commits far more
+// capital than intended. Applied as a clamp on the SL distance in
+// tradeEngine.calculateRiskParameters and proAlgEngine.calculateProRisk.
+export const MIN_STOP_PERCENT = 1.5;  // floor — minimum SL distance (% of entry)
+export const MAX_STOP_PERCENT = 6;    // ceiling — maximum SL distance (% of entry)
+
 /**
  * Summarizes recent closed trades into the streak/win-rate figures the
  * sizing rules below consume.

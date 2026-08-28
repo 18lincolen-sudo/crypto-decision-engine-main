@@ -20,6 +20,7 @@ import {
   RiskParametersResult,
   ActivePosition
 } from '../types/crypto';
+import { MIN_STOP_PERCENT, MAX_STOP_PERCENT } from './adaptiveRisk';
 
 export interface Candle {
   timestamp: number;
@@ -1203,7 +1204,9 @@ export function calculateRiskParameters(
    *  from a risk percentage, so this is where recent-performance feedback
    *  belongs. Capped at 1 upstream: half-Kelly is already the growth-optimal
    *  ceiling, so the adaptation only ever de-risks. */
-  sizingMultiplier: number = 1
+  sizingMultiplier: number = 1,
+  /** Optional SL clamp override for backtesting. Defaults to MIN_STOP_PERCENT/MAX_STOP_PERCENT. */
+  slConfig?: { minStop: number; maxStop: number }
 ): RiskParametersResult | null {
   if (tradeType === 'HOLD' || entryPrice <= 0 || atr <= 0 || portfolioValue <= 0) return null;
 
@@ -1212,6 +1215,10 @@ export function calculateRiskParameters(
   // Max Futures positions = 2
   if (openPositionsCount >= 7) return null;
   if (tradeType === 'FUTURES' && openFuturesCount >= 2) return null;
+
+  // Resolve SL clamp (allows backtest sweep)
+  const slMin = slConfig?.minStop ?? MIN_STOP_PERCENT;
+  const slMax = slConfig?.maxStop ?? MAX_STOP_PERCENT;
 
   // 1. Dynamic ATR-based TP/SL
   let stopLoss: number;
@@ -1222,20 +1229,28 @@ export function calculateRiskParameters(
 
   if (tradeType === 'SPOT') {
     // Spot: SL = Entry - ATR * 1.8, TP = Entry + ATR * 2.7
-    stopLoss = Math.max(0.00000001, entryPrice - atr * 1.8);
+    // Clamp SL distance to [slMin, slMax] of entry to prevent
+    // ATR-based stops from collapsing onto entry (low-vol) or ballooning (high-vol)
+    let slDistance = atr * 1.8;
+    slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
+    stopLoss = Math.max(0.00000001, entryPrice - slDistance);
     takeProfit = entryPrice + atr * 2.7;
     const stopDist = entryPrice - stopLoss;
     riskRewardRatio = stopDist > 0 ? (takeProfit - entryPrice) / stopDist : 1.5;
   } else if (side === 'LONG') {
     // Futures Long: SL = Entry - ATR * 1.5, TP1 = Entry + ATR * 2.0, TP2 = Entry + ATR * 3.5
-    stopLoss = Math.max(0.00000001, entryPrice - atr * 1.5);
+    let slDistance = atr * 1.5;
+    slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
+    stopLoss = Math.max(0.00000001, entryPrice - slDistance);
     takeProfit1 = entryPrice + atr * 2.0;
     takeProfit2 = entryPrice + atr * 3.5;
     const stopDist = entryPrice - stopLoss;
     riskRewardRatio = stopDist > 0 ? (takeProfit1 - entryPrice) / stopDist : 1.33;
   } else {
     // Futures Short: SL = Entry + ATR * 1.5, TP1 = Entry - ATR * 2.0, TP2 = Entry - ATR * 3.5
-    stopLoss = entryPrice + atr * 1.5;
+    let slDistance = atr * 1.5;
+    slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
+    stopLoss = entryPrice + slDistance;
     takeProfit1 = Math.max(0.00000001, entryPrice - atr * 2.0);
     takeProfit2 = Math.max(0.00000001, entryPrice - atr * 3.5);
     const stopDist = stopLoss - entryPrice;

@@ -291,7 +291,7 @@ multiplier = streakFactor × drawdownFactor × winRateFactor
 ### Correlation Gate — מניעת קורלציה
 
 ```typescript
-// מקסימום 3 פוזיציות מקורלציות
+// מקסימום 12 פוזיציות מקורלציות
 if (correlatedPositions >= maxCorrelated) → BLOCK
 ```
 
