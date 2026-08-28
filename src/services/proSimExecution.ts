@@ -11,13 +11,15 @@
 import { CryptoData, MarketRegimeResult } from '../types/crypto';
 import {
   detectProRegime,
-  evaluateProSignals,
   routeProTradeType,
   calculateProRisk,
   evaluateProExit,
   calculateProOptimalEntry,
-  ProActivePosition
+  ProActivePosition,
+  ProSignalResult,
+  ProIndicatorSignal
 } from './proAlgEngine';
+import { computeProAdvancedAnalysis } from './proAdvancedAnalysis';
 import { Candle, formatDynamicPrice } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import { computeEntryBudget, isInEntryCooldown } from './simExecution';
@@ -122,7 +124,28 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
     const symbolStreakCooldownActive = isInStreakCooldown(symbolStreakCooldownUntil);
 
     const regime = detectProRegime(candles, currentPrice);
-    const signal = evaluateProSignals(candles, currentPrice, priceChange24h, regime, fearGreedIndex);
+    // FULL replacement (approved product decision): the entry signal is driven
+    // by the site's Advanced Analysis / smart-recommendation engine (same pure
+    // functions the Advanced Analysis page uses), NOT the internal pro signal
+    // engine. `detectProRegime` is still needed below for Futures routing and
+    // risk sizing (leverage / SL / R:R / Kelly).
+    const adv = computeProAdvancedAnalysis({
+      candles,
+      currentPrice,
+      priceChange24h,
+      fearGreedIndex,
+      marketCap: crypto.market_cap || 0,
+      volume24h: crypto.total_volume || 0,
+    });
+    const signal: ProSignalResult = {
+      action: adv.action,
+      buyScore: adv.action === 'BUY' ? adv.confidence : adv.action === 'SELL' ? 0 : 50,
+      sellScore: adv.action === 'SELL' ? adv.confidence : adv.action === 'BUY' ? 0 : 50,
+      rawConfidence: adv.confidence,
+      confidence: adv.confidence,
+      signals: adv.signals as ProIndicatorSignal[],
+      penalties: adv.penalties,
+    };
     const hasExistingFutures = openPos.some((p) => p.symbol === symbol && p.type === 'FUTURES');
     const router = routeProTradeType(signal, regime, { hasExistingFutures, isDailyBlocked, isWeeklyLocked });
 
@@ -142,7 +165,8 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
         entryPrice, router.type, router.side, regime.atr, regime.volatility,
         signal.rawConfidence, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
         dailyDrawdownPercent, sizingMultiplier,
-        config.maxPositions, config.maxFuturesPositions
+        undefined, // slConfig
+        config.maxPositions ?? 7, config.maxFuturesPositions ?? 2
       )
       : null;
 
@@ -242,7 +266,7 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       confidence: signal.confidence,
       price: entryPrice,
       priceChange24h,
-      reasoning: router.reason,
+      reasoning: `${adv.reasoning} | ${router.reason}`,
       status,
       willExecute,
       factors,
@@ -252,7 +276,12 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       stopLoss: risk?.stopLoss,
       takeProfit1: risk?.takeProfit1,
       takeProfit2: risk?.takeProfit2,
-      takeProfit: risk?.takeProfit
+      takeProfit: risk?.takeProfit,
+      advancedPredictions: adv.predictions,
+      advancedReason: adv.reasoning,
+      advancedSupport: adv.supportLevel,
+      advancedResistance: adv.resistanceLevel,
+      advancedRiskLevel: adv.riskLevel
     });
   }
 

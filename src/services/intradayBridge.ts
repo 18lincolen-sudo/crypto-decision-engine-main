@@ -71,6 +71,15 @@ export interface SignalEvaluation {
   takeProfit?: number;
   /** Raw engine decision — used by the order generator for exact levels */
   decision?: IntradayDecision;
+  /** Advanced Analysis (Bot Pro): 24h/week/month price projections + helper
+   *  levels — surfaced as auxiliary data alongside the signal. */
+  advancedPredictions?: {
+    h24: number; h24pct: number; w: number; wpct: number; m: number; mpct: number; confidence: number;
+  };
+  advancedReason?: string;
+  advancedSupport?: number;
+  advancedResistance?: number;
+  advancedRiskLevel?: 'low' | 'medium' | 'high';
 }
 
 export interface PortfolioInput {

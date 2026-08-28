@@ -138,7 +138,8 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
         entryPrice, layer2.type, layer2.side, layer0.atr, layer0.volatility,
         layer1.signalScore, equity, closedTradeMetrics, openPos.length, futuresCount, totalLeveragedExposureUsd,
         undefined, sizingMultiplier,
-        config.maxPositions, config.maxFuturesPositions
+        undefined, // slConfig
+        config.maxPositions ?? 7, config.maxFuturesPositions ?? 2
       )
       : null;
 

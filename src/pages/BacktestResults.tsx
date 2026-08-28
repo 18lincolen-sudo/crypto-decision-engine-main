@@ -4,6 +4,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Loader2, Play, RefreshCw, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
 import Navigation from '../components/Navigation';
+import { resolveWorkerBaseUrl } from '../services/workerConfig';
+
+const ADMIN_TOKEN_KEY = 'workerAdminToken';
 
 interface SweepResult {
   engine: 'legacy' | 'pro';
@@ -30,7 +33,23 @@ interface BacktestState {
   days: number | null;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_BASE = resolveWorkerBaseUrl() || '';
+const adminToken = (() => {
+  try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch { return ''; }
+})();
+const authHeaders: Record<string, string> = adminToken ? { Authorization: `Bearer ${adminToken}` } : {};
+
+/** Guard: the SPA host returns index.html for unknown /api paths — return a
+ *  clear error instead of crashing on JSON.parse of an HTML document. */
+async function parseJsonOrThrow(res: Response): Promise<any> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`תגובה לא-תקינה מהשרת (${res.status} — ${res.url}). בדוק שכתובת ה-Worker נכונה (הגדרות → כתובת Worker), ושדף זה עומד מול ה-Worker ולא מול אחסון ה-SPA.`);
+  }
+}
 
 export default function BacktestResults() {
   const [state, setState] = useState<BacktestState>({
@@ -40,10 +59,10 @@ export default function BacktestResults() {
 
   const fetchResults = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/backtest/results`);
+      const res = await fetch(`${API_BASE}/api/backtest/results`, { headers: authHeaders });
       if (res.ok) {
-        const data = await res.json();
-        setState(data);
+        const data = await parseJsonOrThrow(res);
+        if (data) setState(data);
       }
     } catch (e) {
       console.error('Failed to fetch backtest results:', e);
@@ -64,9 +83,12 @@ export default function BacktestResults() {
   const handleRun = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/api/backtest/run`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/backtest/run`, { method: 'POST', headers: authHeaders });
       if (res.ok) {
         await fetchResults();
+      } else {
+        const body = await res.text().catch(() => '');
+        console.error(`Failed to start backtest: ${res.status} ${body.slice(0, 300)}`);
       }
     } catch (e) {
       console.error('Failed to start backtest:', e);
