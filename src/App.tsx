@@ -17,6 +17,7 @@ import Alerts from "./pages/Alerts";
 import SimulationBot from "./pages/SimulationBot";
 import RealTradingBot from "./pages/RealTradingBot";
 import AdvancedAnalysis from "./pages/AdvancedAnalysis";
+import BacktestResults from "./pages/BacktestResults";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient({
@@ -51,6 +52,7 @@ const App = () => {
                 <Route path="/real-trading" element={<RealTradingBot />} />
                 <Route path="/real-trading-bot" element={<RealTradingBot />} />
                 <Route path="/advanced-analysis" element={<AdvancedAnalysis />} />
+                <Route path="/backtest-results" element={<BacktestResults />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
               </ProSimulationBotProvider>

@@ -733,6 +733,8 @@ export interface TradeRouterOptions {
   hasExistingSpot?: boolean;
   isDailyBlocked?: boolean;
   isWeeklyLocked?: boolean;
+  /** Override for SOFT_TREND confidence base threshold (default 65). Used by backtest sweep. */
+  softTrendBaseOverride?: number;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -763,6 +765,7 @@ export function routeTradeType(
     : hasExistingFuturesOrOptions;
 
   const { action, signalScore } = signalResult;
+  const softTrendBase = options.softTrendBaseOverride ?? 65;
 
   // 1. Hard Gate: Weekly Circuit Breaker (Lock)
   if (options.isWeeklyLocked) {
@@ -879,13 +882,13 @@ export function routeTradeType(
   const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING' || (layer0.regime === 'TRANSITIONAL' && layer0.adx > 22);
   const softTrendSpot = layer0.regime === 'TRANSITIONAL' && layer0.adx > 22;
   const spotThreshold = dynamicConfidenceThreshold(60, layer0.atrPercent);
-  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(65, layer0.atrPercent) : spotThreshold;
+  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(softTrendBase, layer0.atrPercent) : spotThreshold;
   const isSpotScorePassed = signalScore >= requiredSpotScore;
 
   if (isSpotRegimeValid && isSpotScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'BUY' : 'SELL';
     let reason = `עסקת Spot מאושרת: SignalScore ${signalScore} >= ${requiredSpotScore} במצב ${layer0.regime} (${layer0.volatility} VOL)`;
-    if (softTrendSpot) reason += ' [SOFT_TREND: סף מוגבר 65]';
+    if (softTrendSpot) reason += ` [SOFT_TREND: סף מוגבר ${softTrendBase}]`;
     else if (layer0.volatility === 'HIGH') {
       reason += ' [HIGH VOL: Futures חסום, Spot מאושר]';
     } else if (!isTrending) {

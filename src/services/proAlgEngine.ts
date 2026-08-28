@@ -372,6 +372,8 @@ export interface ProRouterOptions {
   hasExistingFutures?: boolean;
   isDailyBlocked?: boolean;
   isWeeklyLocked?: boolean;
+  /** Override for SOFT_TREND confidence base threshold (default 65). Used by backtest sweep. */
+  softTrendBaseOverride?: number;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -390,6 +392,7 @@ export function dynamicConfidenceThreshold(baseThreshold: number, _atrPercent: n
 // ═══════════════════════════════════════════════════════
 
 export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegimeResult, options: ProRouterOptions = {}): ProRouterResult {
+  const softTrendBase = options.softTrendBaseOverride ?? 65;
   if (options.isWeeklyLocked) {
     return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'WEEKLY_DRAWDOWN_LOCK', reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני' };
   }
@@ -434,7 +437,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   const isSpotRegimeOk = regime.regime === 'TRENDING' || regime.regime === 'RANGING' || (regime.regime === 'TRANSITIONAL' && regime.adx > 22);
   const softTrendSpot = regime.regime === 'TRANSITIONAL' && regime.adx > 22;
   const spotThreshold = dynamicConfidenceThreshold(60, regime.atrPercent);
-  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(65, regime.atrPercent) : spotThreshold;
+  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(softTrendBase, regime.atrPercent) : spotThreshold;
   if (isSpotRegimeOk && signal.rawConfidence >= requiredSpotScore) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'BUY' : 'SELL';
     const reason = softTrendSpot

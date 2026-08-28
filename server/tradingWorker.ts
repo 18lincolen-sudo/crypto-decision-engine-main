@@ -31,6 +31,7 @@ import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TI
 import { toBybitSymbol } from '../src/services/assetUniverse';
 import { TARGET_SYMBOLS } from '../src/shared/targetSymbols';
 import { createKVStore } from './kvStore';
+import { runBacktestSweep } from '../src/services/backtestRunner';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Local development reads the repository .env; Render variables retain precedence.
@@ -430,6 +431,7 @@ const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
 const legacySimStore = createKVStore('legacy-sim-state', join(DATA_DIR, 'legacy-sim-state.json'));
 const proSimStore = createKVStore('pro-sim-state', join(DATA_DIR, 'pro-sim-state.json'));
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
+const backtestStore = createKVStore('backtest-results', join(DATA_DIR, 'backtest-results.json'));
 
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_LEADER_TIMEOUT_MS = 8000;
@@ -525,7 +527,68 @@ async function persistProSim() {
   }));
 }
 
-function serializeState(): string {
+// ── Backtest state ──────────────────────────────────────────────────────────
+import type { SweepResult } from '../src/services/backtestRunner';
+
+interface BacktestState {
+  status: 'idle' | 'running' | 'done' | 'error';
+  startedAt: number | null;
+  finishedAt: number | null;
+  results: SweepResult[];
+  error: string | null;
+  engine: string | null;
+  days: number | null;
+}
+
+const backtestState: BacktestState = {
+  status: 'idle', startedAt: null, finishedAt: null, results: [], error: null, engine: null, days: null
+};
+
+async function hydrateBacktest(): Promise<void> {
+  const saved = await backtestStore.get('state');
+  if (!saved) return;
+  const s = JSON.parse(saved) as BacktestState;
+  backtestState.status = s.status ?? 'idle';
+  backtestState.startedAt = s.startedAt ?? null;
+  backtestState.finishedAt = s.finishedAt ?? null;
+  backtestState.results = Array.isArray(s.results) ? s.results : [];
+  backtestState.error = s.error ?? null;
+  backtestState.engine = s.engine ?? null;
+  backtestState.days = s.days ?? null;
+}
+
+async function persistBacktest(): Promise<void> {
+  await backtestStore.set('state', JSON.stringify(backtestState));
+}
+
+// Run backtest for both engines in background
+async function runBacktestInBackground(): Promise<void> {
+  const DAYS = 120;
+  const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'AVAXUSDT', 'AAVEUSDT'];
+  try {
+    // Run legacy first, then pro
+    const legacyResults = await runBacktestSweep({
+      engine: 'legacy', days: DAYS, symbols: SYMBOLS, concurrency: 4,
+      onProgress: (msg) => console.log(`[backtest] legacy: ${msg}`),
+    });
+    const proResults = await runBacktestSweep({
+      engine: 'pro', days: DAYS, symbols: SYMBOLS, concurrency: 4,
+      onProgress: (msg) => console.log(`[backtest] pro: ${msg}`),
+    });
+    backtestState.status = 'done';
+    backtestState.finishedAt = Date.now();
+    backtestState.results = [...legacyResults, ...proResults];
+    backtestState.engine = 'legacy+pro';
+    backtestState.days = DAYS;
+    backtestState.error = null;
+  } catch (e: unknown) {
+    backtestState.status = 'error';
+    backtestState.finishedAt = Date.now();
+    backtestState.error = e instanceof Error ? e.message : String(e);
+  } finally {
+    await persistBacktest();
+  }
+}
   return JSON.stringify({
     running: state.running, lastScanAt: state.lastScanAt, lastError: state.lastError,
     scans: state.scans, startedAt: state.startedAt, decisions: state.decisions,
@@ -1169,6 +1232,26 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, proSimState);
   }
 
+  // ── Backtest endpoints ───────────────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/backtest/results') {
+    return json(res, 200, backtestState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/backtest/run') {
+    if (backtestState.status === 'running') {
+      return json(res, 409, { error: 'Backtest already running', startedAt: backtestState.startedAt });
+    }
+    backtestState.status = 'running';
+    backtestState.startedAt = Date.now();
+    backtestState.finishedAt = null;
+    backtestState.results = [];
+    backtestState.error = null;
+    await persistBacktest();
+    // Run in background — return immediately
+    void runBacktestInBackground();
+    return json(res, 202, { status: 'running', startedAt: backtestState.startedAt });
+  }
+
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
   await refreshUniverseIfStale();
@@ -1180,6 +1263,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (legacySimState.snapshot) legacySimEngine.hydrate(legacySimState.snapshot as LegacySimSnapshot);
   await hydrateProSim();
   if (proSimState.snapshot) proSimEngine.hydrate(proSimState.snapshot as ProSimSnapshot);
+  await hydrateBacktest();
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
   if (state.running) void scan();
   setInterval(() => void scan(), intervalMs);
@@ -1197,6 +1281,25 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       console.warn('[self-ping] failed:', e instanceof Error ? e.message : String(e));
     }
   }, SELF_PING_INTERVAL_MS);
+
+  // Weekly auto-run backtest: check every hour if 7 days have passed since last run
+  const WEEKLY_BACKTEST_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  const WEEKLY_BACKTEST_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  setInterval(async () => {
+    if (backtestState.status === 'running') return;
+    const lastFinished = backtestState.finishedAt;
+    const shouldRun = !lastFinished || (Date.now() - lastFinished > WEEKLY_BACKTEST_INTERVAL_MS);
+    if (shouldRun) {
+      console.log('[backtest] weekly auto-run triggered');
+      backtestState.status = 'running';
+      backtestState.startedAt = Date.now();
+      backtestState.finishedAt = null;
+      backtestState.results = [];
+      backtestState.error = null;
+      await persistBacktest();
+      void runBacktestInBackground();
+    }
+  }, WEEKLY_BACKTEST_CHECK_INTERVAL_MS);
 
   // Each sim engine still TICKS every 4s (evaluation + mark-to-market + order
   // fills need that cadence to stay responsive), but the snapshot it produces
