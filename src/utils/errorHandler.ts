@@ -59,7 +59,7 @@ export const handleError = (error: unknown): string => {
   return 'אירעה שגיאה לא צפויה. אנא נסה שוב.';
 };
 
-export const withErrorHandling = <T extends (...args: any[]) => Promise<any>>(
+export const withErrorHandling = <T extends (...args: unknown[]) => Promise<unknown>>(
   fn: T
 ): T => {
   return (async (...args: Parameters<T>) => {

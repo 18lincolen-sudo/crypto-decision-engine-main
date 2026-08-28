@@ -217,7 +217,7 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
   const minDistance = Math.max(minStopAtrMult * atr5, (entry * minStopPercent) / 100);
   const maxDistance = Math.min(params.maxStopAtrMult * atr5, (entry * params.maxStopPercent) / 100);
 
-  let stopDistance = Math.max(structuralDistance, minDistance);
+  const stopDistance = Math.max(structuralDistance, minDistance);
   if (stopDistance > maxDistance) {
     // A stop this wide is a swing trade, not a 5-60 minute trade.
     return rejected(

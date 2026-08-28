@@ -7,22 +7,22 @@ export const isDevelopment = import.meta.env.DEV;
 
 // Logger that only logs in development
 export const logger = {
-  log: (...args: any[]) => {
+  log: (...args: unknown[]) => {
     if (isDevelopment) {
       console.log(...args);
     }
   },
-  error: (...args: any[]) => {
+  error: (...args: unknown[]) => {
     if (isDevelopment) {
       console.error(...args);
     }
   },
-  warn: (...args: any[]) => {
+  warn: (...args: unknown[]) => {
     if (isDevelopment) {
       console.warn(...args);
     }
   },
-  info: (...args: any[]) => {
+  info: (...args: unknown[]) => {
     if (isDevelopment) {
       console.info(...args);
     }
@@ -45,7 +45,7 @@ export const performanceMonitor = {
 
 // Error reporting (you can integrate with services like Sentry)
 export const errorReporter = {
-  captureException: (error: Error, context?: any) => {
+  captureException: (error: Error, context?: Record<string, unknown>) => {
     if (isProduction) {
       // In production, you might want to send to an error tracking service
       // For now, we'll just log to console

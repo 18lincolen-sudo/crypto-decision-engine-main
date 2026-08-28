@@ -174,7 +174,7 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
 
     // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
     if (willExecute && router.type !== 'HOLD' && router.side !== 'NONE') {
-      const minConf = config.minConfidenceOverride ?? 58;
+      const minConf = config.minConfidenceOverride ?? 60;
       if (signal.rawConfidence < minConf) { status = `Confidence נמוך מדי (${signal.rawConfidence} < ${minConf})`; willExecute = false; }
     }
 

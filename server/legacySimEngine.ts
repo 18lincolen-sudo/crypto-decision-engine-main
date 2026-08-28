@@ -47,6 +47,7 @@ const legacyStrategy: SimEngineStrategy = {
       positions: input.positions,
       pending: input.pending,
       evaluations,
+      equity: input.equity,
       executionDelaySec: input.config.executionDelaySec,
       dailyDrawdownPercent: input.dailyDrawdownPercent,
       weeklyDrawdownPercent: input.weeklyDrawdownPercent,

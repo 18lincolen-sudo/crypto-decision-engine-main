@@ -257,9 +257,9 @@ crypto-decision-engine-main/
 
 | מנוע | קובץ | אלגוריתם | שימוש | minConfidence |
 |------|------|-----------|--------|---------------|
-| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 58 |
+| **חדש** | `simEngine.ts` + `intradayEngine.ts` | Multi-Timeframe (1H/15M/5M) | סימולציה + Backtest | 52 |
 | **מקורי** | `legacySimEngine.ts` + `tradeEngine.ts` | ציון ביטחון משוקלל | סימולציה | 58 |
-| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 58 |
+| **פרו** | `proSimEngine.ts` + `proAlgEngine.ts` | alg.md מדויק | סימולציה | 60 |
 
 **מקורות מידע לכל המנועים:**
 - **Bybit** — נתוני שוק (candles, ticker, instruments-info)
@@ -392,9 +392,9 @@ maxPositions = 7
 
 | בוט | סף מינימלי | מקור בקוד |
 |-----|-----------|-----------|
-| חדש | 58 | `simExecution.ts` |
+| חדש | 52 | `simExecution.ts` |
 | Legacy | 58 | `legacySimExecution.ts` |
-| Pro | 58 | `proSimExecution.ts` |
+| Pro | 60 | `proSimExecution.ts` |
 
 ### סף Futures דינמי
 

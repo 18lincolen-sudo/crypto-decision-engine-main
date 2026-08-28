@@ -140,7 +140,7 @@ class ContentSanitizer {
   /**
    * Create safe CSS-in-JS styles instead of dangerouslySetInnerHTML
    */
-  createSafeStyles(styleConfig: any): React.CSSProperties {
+  createSafeStyles(styleConfig: Record<string, unknown>): React.CSSProperties {
     const safeStyles: React.CSSProperties = {};
     
     if (!styleConfig || typeof styleConfig !== 'object') {
@@ -161,9 +161,9 @@ class ContentSanitizer {
         
         // Validate CSS values
         if (typeof value === 'string' && this.isValidCSSValue(value)) {
-          (safeStyles as any)[property] = value;
+          (safeStyles as Record<string, string | number>)[property] = value;
         } else if (typeof value === 'number') {
-          (safeStyles as any)[property] = value;
+          (safeStyles as Record<string, string | number>)[property] = value;
         }
       }
     });
@@ -191,7 +191,7 @@ class ContentSanitizer {
   /**
    * Sanitize object for safe JSON serialization
    */
-  sanitizeObject(obj: any): any {
+  sanitizeObject(obj: unknown): unknown {
     if (obj === null || obj === undefined) {
       return obj;
     }
@@ -209,11 +209,11 @@ class ContentSanitizer {
     }
 
     if (typeof obj === 'object') {
-      const sanitized: any = {};
+      const sanitized: Record<string, unknown> = {};
       Object.keys(obj).forEach(key => {
         const sanitizedKey = this.sanitizeText(key);
         if (sanitizedKey) {
-          sanitized[sanitizedKey] = this.sanitizeObject(obj[key]);
+          sanitized[sanitizedKey] = this.sanitizeObject((obj as Record<string, unknown>)[key]);
         }
       });
       return sanitized;

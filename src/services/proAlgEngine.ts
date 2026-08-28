@@ -381,10 +381,8 @@ export interface ProRouterOptions {
 // volatility but become dangerously loose as ATR rises. Ramps by up to
 // +15 points from 2% ATR to 8% ATR.
 
-export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
-  if (atrPercent <= 2) return baseThreshold;
-  const ramp = Math.min(1, (atrPercent - 2) / 6);
-  return baseThreshold + ramp * 15;
+export function dynamicConfidenceThreshold(baseThreshold: number, _atrPercent: number): number {
+  return baseThreshold;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -529,7 +527,7 @@ export function calculateProRisk(
   // Drawdown adjustment: reduce bet size when the portfolio is in drawdown to
   // avoid compounding losses during a losing streak.
   let kellyFraction = 0;
-  let betFraction = 0.03;
+  let betFraction = 0.06;
   if (closedTrades.length >= 30) {
     const winning = closedTrades.filter((t) => t.pnl > 0);
     const losing = closedTrades.filter((t) => t.pnl < 0);

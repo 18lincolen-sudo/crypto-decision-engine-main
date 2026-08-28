@@ -36,7 +36,7 @@ const DEFAULT_PRO_CONFIG: SimBotConfig = {
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
-  minConfidenceOverride: 58,
+  minConfidenceOverride: 60,
 };
 
 export interface ProSimulationBotContextValue {

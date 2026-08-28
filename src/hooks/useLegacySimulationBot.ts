@@ -287,6 +287,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
       cash: cashRef.current,
+      equity,
       exitCooldown: exitCooldownRef.current,
       priceFor: priceForRef.current,
       candlesBySymbol: candlesRef.current,
@@ -298,7 +299,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
     if (newOrders.length) setPending((prev) => [...prev, ...newOrders]);
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, config, closedTradeMetrics]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, config, closedTradeMetrics, equity]);
 
   useEffect(() => {
     if (!isRunning) return;

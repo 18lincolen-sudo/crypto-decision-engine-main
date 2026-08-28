@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -26,7 +26,7 @@ interface SmartTip {
   content: string;
   type: 'timing' | 'risk' | 'opportunity' | 'warning';
   priority: 'high' | 'medium' | 'low';
-  icon: any;
+  icon: React.ComponentType<{ className?: string }>;
   color: string;
   timestamp: Date;
 }
@@ -41,21 +41,7 @@ const SmartTipsPanel = () => {
   const [tips, setTips] = useState<SmartTip[]>([]);
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-      analyzeRealMarketConditions();
-    }, 30000);
-
-    analyzeRealMarketConditions();
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    generateRealTimeTips();
-  }, [marketCondition, currentTime, cryptoData, fearGreedData]);
-
-  const analyzeRealMarketConditions = () => {
+  const analyzeRealMarketConditions = useCallback(() => {
     if (!cryptoData || cryptoData.length === 0) {
       return;
     }
@@ -64,7 +50,7 @@ const SmartTipsPanel = () => {
     const dayOfWeek = new Date().getDay();
     
     // Real market analysis based on actual crypto data
-    let newCondition: MarketCondition = {
+    const newCondition: MarketCondition = {
       type: 'stable',
       intensity: 'medium',
       volume: 'normal'
@@ -101,9 +87,9 @@ const SmartTipsPanel = () => {
     }
 
     setMarketCondition(newCondition);
-  };
+  }, [cryptoData]);
 
-  const generateRealTimeTips = () => {
+  const generateRealTimeTips = useCallback(() => {
     if (!cryptoData || cryptoData.length === 0) {
       return;
     }
@@ -184,39 +170,43 @@ const SmartTipsPanel = () => {
       });
     }
 
-    if (hour >= 22 || hour <= 6) {
-      newTips.push({
-        id: 'low-volume',
-        title: '😴 שעות נפח נמוך',
-        content: 'הימנע ממסחר בשעות 22:00-06:00',
-        type: 'warning',
-        priority: 'medium',
-        icon: AlertTriangle,
-        color: 'border-orange-500/40 bg-orange-500/20',
-        timestamp: new Date()
-      });
-    }
-
-    // Market volatility tips
-    if (marketCondition.type === 'volatile') {
-      newTips.push({
-        id: 'volatile-market',
-        title: '⚡ שוק תנודתי',
-        content: 'תנודתיות גבוהה! השתמש בסטופ לוס צמודים',
-        type: 'risk',
-        priority: 'high',
-        icon: Shield,
-        color: 'border-orange-500/40 bg-orange-500/20',
-        timestamp: new Date()
-      });
-    }
-
-    // Weekend tips
+    // Weekend tip
     if (dayOfWeek === 0 || dayOfWeek === 6) {
       newTips.push({
-        id: 'weekend-planning',
-        title: '📅 סוף שבוע - זמן תכנון',
-        content: 'זמן טוב לניתוח ותכנון אסטרטגיה',
+        id: 'weekend-low',
+        title: '🏖️ סוף שבוע',
+        content: 'נפח מסחר נמוך בסופי שבוע — הימנע מעסקאות גדולות',
+        type: 'risk',
+        priority: 'low',
+        icon: Clock,
+        color: 'border-primary/30 bg-primary/10',
+        timestamp: new Date()
+      });
+    }
+
+    // Volatility tip
+    const avgVolatility = cryptoData.reduce((sum, c) => 
+      sum + Math.abs(c.price_change_percentage_24h || 0), 0) / cryptoData.length;
+    
+    if (avgVolatility > 8) {
+      newTips.push({
+        id: 'high-volatility',
+        title: '⚡ תנודתיות גבוהה',
+        content: 'השוק תנודתי — הקטן גודל פוזיציות',
+        type: 'risk',
+        priority: 'high',
+        icon: AlertTriangle,
+        color: 'border-red-500/40 bg-red-500/20',
+        timestamp: new Date()
+      });
+    }
+
+    // AI recommendation tip
+    if (btcData && ethData) {
+      newTips.push({
+        id: 'ai-analysis',
+        title: '🤖 ניתוח AI',
+        content: `BTC: ${btcData.price_change_percentage_24h > 0 ? '📈' : '📉'} ${btcData.price_change_percentage_24h.toFixed(2)}% | ETH: ${ethData.price_change_percentage_24h > 0 ? '📈' : '📉'} ${ethData.price_change_percentage_24h.toFixed(2)}%`,
         type: 'timing',
         priority: 'low',
         icon: Brain,
@@ -226,7 +216,21 @@ const SmartTipsPanel = () => {
     }
 
     setTips(newTips.slice(0, 3));
-  };
+  }, [cryptoData, currentTime, fearGreedData]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+      analyzeRealMarketConditions();
+    }, 30000);
+
+    analyzeRealMarketConditions();
+    return () => clearInterval(timer);
+  }, [analyzeRealMarketConditions]);
+
+  useEffect(() => {
+    generateRealTimeTips();
+  }, [generateRealTimeTips]);
 
   const getPriorityBadge = (priority: string) => {
     const colors = {

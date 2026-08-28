@@ -24,6 +24,31 @@ interface WeightedSignal {
   reason: string;
 }
 
+interface BollingerBandsData {
+  lower: number;
+  upper: number;
+  position: string;
+}
+
+interface MacdData {
+  macd: number;
+  signal: number;
+  histogram: number;
+  trend: string;
+}
+
+interface StochasticData {
+  k: number;
+  d: number;
+  signal: string;
+}
+
+interface SupportResistanceData {
+  currentLevel: string;
+  support: number[];
+  resistance: number[];
+}
+
 export function generateSmartRecommendation({
   cryptoData,
   indicators,
@@ -144,7 +169,7 @@ function analyzeRSI(rsi: number, signals: WeightedSignal[]): void {
   }
 }
 
-function analyzeBollingerBands(bb: any, currentPrice: number, signals: WeightedSignal[]): void {
+function analyzeBollingerBands(bb: BollingerBandsData, currentPrice: number, signals: WeightedSignal[]): void {
   const priceToBandRatio = (currentPrice - bb.lower) / (bb.upper - bb.lower);
   
   if (bb.position === 'below') {
@@ -178,7 +203,7 @@ function analyzeBollingerBands(bb: any, currentPrice: number, signals: WeightedS
   }
 }
 
-function analyzeMacd(macd: any, signals: WeightedSignal[]): void {
+function analyzeMacd(macd: MacdData, signals: WeightedSignal[]): void {
   if (macd.trend === 'bullish' && macd.histogram > 0) {
     const confidence = Math.min(95, 70 + Math.abs(macd.histogram) * 10);
     signals.push({
@@ -198,7 +223,7 @@ function analyzeMacd(macd: any, signals: WeightedSignal[]): void {
   }
 }
 
-function analyzeStochastic(stoch: any, signals: WeightedSignal[]): void {
+function analyzeStochastic(stoch: StochasticData, signals: WeightedSignal[]): void {
   if (stoch.signal === 'oversold' && stoch.k < 25) {
     signals.push({
       signal: 'buy',
@@ -216,7 +241,7 @@ function analyzeStochastic(stoch: any, signals: WeightedSignal[]): void {
   }
 }
 
-function analyzeSupportResistance(sr: any, currentPrice: number, signals: WeightedSignal[]): void {
+function analyzeSupportResistance(sr: SupportResistanceData, currentPrice: number, signals: WeightedSignal[]): void {
   if (sr.currentLevel === 'support') {
     signals.push({
       signal: 'buy',
@@ -454,7 +479,7 @@ function calculateRiskAdjustedAmounts(
   marketCap: number,
   riskLevel: 'low' | 'medium' | 'high'
 ): { usd: number; crypto: number } {
-  let baseAmount = 1000;
+  const baseAmount = 1000;
   
   // Risk adjustment
   const riskMultiplier = {

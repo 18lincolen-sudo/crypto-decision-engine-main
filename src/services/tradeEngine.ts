@@ -724,7 +724,7 @@ export function evaluateSignals(
 // 3. Transitional Market Regime Block (20 <= ADX <= 25)
 // 4. Same-Asset Cross-Market Block (No dual Spot + Futures)
 // 5. High Volatility Futures Block (ATR% > 5%)
-// 6. Routing Thresholds (Futures >= 72 & TRENDING; Spot >= 60)
+// 6. Routing Thresholds (Futures >= 70 & TRENDING; Spot >= 60)
 // ═══════════════════════════════════════════════════════
 
 export interface TradeRouterOptions {
@@ -737,16 +737,14 @@ export interface TradeRouterOptions {
 // ═══════════════════════════════════════════════════════
 // DYNAMIC CONFIDENCE THRESHOLDS
 // ═══════════════════════════════════════════════════════
-// Static thresholds (72 Futures / 60 Spot) are safe in LOW volatility
+// Static thresholds (70 Futures / 60 Spot) are safe in LOW volatility
 // but become dangerously loose as ATR rises. The formula below ramps the
 // threshold by up to +15 points from the 2% ATR mark to the 8% mark,
 // matching the report's targets: ~85+ for Futures and ~70+ for Spot
 // in EXTREME volatility, flat at the base in LOW volatility.
 
-export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
-  if (atrPercent <= 2) return baseThreshold;
-  const ramp = Math.min(1, (atrPercent - 2) / 6);
-  return baseThreshold + ramp * 15;
+export function dynamicConfidenceThreshold(baseThreshold: number, _atrPercent: number): number {
+  return baseThreshold;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1265,7 +1263,7 @@ export function calculateRiskParameters(
   // (risk 0.75% of equity / stop distance scaled by half-Kelly) — the spec
   // defines Kelly as DIRECTLY setting the bet size as a fraction of portfolio.
   let kellyFraction = 0;
-  let betFraction = 0.03;
+  let betFraction = 0.06;
   if (closedTrades.length >= 30) {
     const winning = closedTrades.filter(t => t.pnl > 0);
     const losing = closedTrades.filter(t => t.pnl < 0);
@@ -1486,15 +1484,15 @@ export function evaluateExit(
   const heldMs = Date.now() - (pos.openTimestamp || Date.now());
   const hoursHeld = heldMs / (1000 * 60 * 60);
 
-  if (!isFutures && hoursHeld >= 72) {
-    // Spot: if after 72h position is in loss > 50% of distance to SL
+  if (!isFutures && hoursHeld >= 48) {
+    // Spot: if after 48h position is in loss > 50% of distance to SL
     const distanceToSL = Math.abs(pos.entryPrice - pos.stopLoss);
     const currentLoss = pos.entryPrice - currentPrice;
     if (currentLoss > distanceToSL * 0.5) {
       return {
         shouldExit: true,
         exitType: 'TIME_BASED',
-        reason: `יציאת זמן (72 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL`
+        reason: `יציאת זמן (48 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL`
       };
     }
   }

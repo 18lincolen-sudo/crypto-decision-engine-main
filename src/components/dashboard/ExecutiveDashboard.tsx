@@ -44,7 +44,15 @@ export const ExecutiveDashboard: React.FC = () => {
   const legacy = useLegacySimulationBotContextSafe();
   const pro = useProSimulationBotContextSafe();
 
-  const deriveSimState = (source: any, fallbackKey: string, fallbackStatusKey: string) => {
+  interface SimSource {
+    cash?: number;
+    positions?: SimPosition[];
+    trades?: SimTrade[];
+    config?: { initialAmount?: number };
+    isRunning?: boolean;
+  }
+
+  const deriveSimState = (source: SimSource | null, fallbackKey: string, fallbackStatusKey: string) => {
     const derive = (cash: number, positions: SimPosition[], trades: SimTrade[], initial: number, isRunning: boolean) => {
       let currentVal = cash;
       const activeMapped = positions.map((p) => {

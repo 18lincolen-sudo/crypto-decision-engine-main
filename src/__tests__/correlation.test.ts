@@ -99,7 +99,17 @@ describe('evaluateCorrelationGate', () => {
     BTC: seriesFrom(shared, 60000),
     ETH: seriesFrom(shared, 3000),
     SOL: seriesFrom(shared, 150),
-    DOGE: seriesFrom(shared, 0.1),  // 4th correlated asset
+    DOGE: seriesFrom(shared, 0.1),
+    ADA: seriesFrom(shared, 0.5),
+    DOT: seriesFrom(shared, 7),
+    AVAX: seriesFrom(shared, 30),
+    LINK: seriesFrom(shared, 15),
+    MATIC: seriesFrom(shared, 0.8),
+    UNI: seriesFrom(shared, 6),
+    ATOM: seriesFrom(shared, 10),
+    LTC: seriesFrom(shared, 80),
+    BCH: seriesFrom(shared, 300),
+    XLM: seriesFrom(shared, 0.1),
     XMR: seriesFrom(independent, 160)
   };
 
@@ -129,12 +139,22 @@ describe('evaluateCorrelationGate', () => {
       held: [
         { symbol: 'BTC', direction: 'LONG' },
         { symbol: 'ETH', direction: 'LONG' },
-        { symbol: 'SOL', direction: 'LONG' }
+        { symbol: 'SOL', direction: 'LONG' },
+        { symbol: 'ADA', direction: 'LONG' },
+        { symbol: 'DOT', direction: 'LONG' },
+        { symbol: 'AVAX', direction: 'LONG' },
+        { symbol: 'LINK', direction: 'LONG' },
+        { symbol: 'MATIC', direction: 'LONG' },
+        { symbol: 'UNI', direction: 'LONG' },
+        { symbol: 'ATOM', direction: 'LONG' },
+        { symbol: 'LTC', direction: 'LONG' },
+        { symbol: 'BCH', direction: 'LONG' },
+        { symbol: 'XLM', direction: 'LONG' }
       ],
       candlesBySymbol
     });
     expect(fourHeld.allowed).toBe(false);
-    expect(fourHeld.matches.length).toBe(3);
+    expect(fourHeld.matches.length).toBe(13); // All 13 held positions are correlated
     expect(fourHeld.reason).toContain('קורלציה');
   });
 

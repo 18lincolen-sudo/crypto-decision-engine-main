@@ -114,9 +114,9 @@ const PortfolioChart = ({ analysis }: PortfolioChartProps) => {
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value: number, name: string, props: any) => [
+                  formatter={(value: number, name: string, props: { payload?: { name?: string } }) => [
                     `$${(value || 0).toLocaleString()}`,
-                    `ערך ${props.payload.name}`
+                    `ערך ${props.payload?.name ?? name}`
                   ]}
                 />
               </PieChart>

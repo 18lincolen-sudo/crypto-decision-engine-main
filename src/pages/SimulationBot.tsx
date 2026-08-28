@@ -68,9 +68,9 @@ const SimulationBot = () => {
 
   const combinedPositionsCount = intraday.positions.length + legacy.positions.length + pro.positions.length;
   const combinedFuturesCount =
-    intraday.positions.filter((p: any) => p.type === 'FUTURES').length +
-    legacy.positions.filter((p: any) => p.type === 'FUTURES').length +
-    pro.positions.filter((p: any) => p.type === 'FUTURES').length;
+    intraday.positions.filter((p: { type?: string }) => p.type === 'FUTURES').length +
+    legacy.positions.filter((p: { type?: string }) => p.type === 'FUTURES').length +
+    pro.positions.filter((p: { type?: string }) => p.type === 'FUTURES').length;
 
   return (
     <div className="min-h-screen bg-background">

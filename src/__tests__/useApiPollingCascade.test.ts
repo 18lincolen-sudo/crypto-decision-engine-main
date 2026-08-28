@@ -66,7 +66,7 @@ function createHarness(opts: { baseInterval: number; maxInterval: number }): Har
   };
 
   // ── hook state (mirrors the useState / useRef values) ────────────────────
-  let pollFnRef: { current: PollFn | null } = { current: null };
+  const pollFnRef: { current: PollFn | null } = { current: null };
   const cancelledRef = { current: false };
   const failuresRef = { current: 0 };
   let currentInterval = baseInterval;

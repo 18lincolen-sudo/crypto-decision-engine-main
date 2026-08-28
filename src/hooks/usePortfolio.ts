@@ -13,9 +13,9 @@ export function usePortfolio() {
       const parsed = JSON.parse(savedPortfolio);
       // Migrate old portfolios that don't have quantity
       if (parsed.items) {
-        parsed.items = parsed.items.map((item: any) => ({
+        parsed.items = parsed.items.map((item: Record<string, unknown>) => ({
           ...item,
-          quantity: item.quantity || (item.investmentAmount / item.purchasePrice) || 0
+          quantity: Number(item.quantity) || (Number(item.investmentAmount) / Number(item.purchasePrice)) || 0
         }));
       }
       setPortfolio(parsed);

@@ -89,11 +89,16 @@ const baseCtx = {
 };
 
 describe('correlation gate is wired into legacy order generation', () => {
-  it('refuses the fourth position in a correlated cluster', () => {
+  it('refuses the 13th position in a correlated cluster', () => {
     const orders = generateLegacyOrders({
       ...baseCtx,
-      positions: [position('BTC'), position('ETH'), position('SOL')],
-      evaluations: [evaluation('DOGE')]
+      positions: [
+        position('BTC'), position('ETH'), position('SOL'),
+        position('ADA'), position('DOT'), position('AVAX'),
+        position('LINK'), position('MATIC'), position('UNI'),
+        position('ATOM'), position('LTC'), position('BCH')
+      ],
+      evaluations: [evaluation('XLM')]
     });
     expect(orders.filter((o) => o.side === 'buy')).toHaveLength(0);
   });
@@ -108,14 +113,22 @@ describe('correlation gate is wired into legacy order generation', () => {
   });
 
   it('caps a whole cluster that fires within a single tick', () => {
-    // Nothing open: without a within-batch check all four would queue,
+    // Nothing open: without a within-batch check all 13 would queue,
     // because each evaluation was judged against the same empty book.
+    // maxPositions is set to 12 to test the correlation gate cap
     const orders = generateLegacyOrders({
       ...baseCtx,
       positions: [],
-      evaluations: [evaluation('BTC'), evaluation('ETH'), evaluation('SOL'), evaluation('DOGE')]
+      maxPositions: 12,
+      evaluations: [
+        evaluation('BTC'), evaluation('ETH'), evaluation('SOL'),
+        evaluation('ADA'), evaluation('DOT'), evaluation('AVAX'),
+        evaluation('LINK'), evaluation('MATIC'), evaluation('UNI'),
+        evaluation('ATOM'), evaluation('LTC'), evaluation('BCH'),
+        evaluation('XLM')
+      ]
     });
-    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(3);
+    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(12);
   });
 });
 

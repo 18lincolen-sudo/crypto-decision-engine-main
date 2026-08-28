@@ -73,7 +73,7 @@ const loadPersisted = (): PersistedSimState | null => {
     if (typeof parsed?.cash !== 'number') return null;
     
     // Backward compatibility formatting for old positions
-    const migratedPositions = (parsed.positions || []).map((p: any) => ({
+    const migratedPositions = (parsed.positions || []).map((p: SimPosition) => ({
       id: p.id || uid(p.symbol),
       symbol: p.symbol,
       type: p.type || 'SPOT',
@@ -388,7 +388,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     }
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec, closedTradeRecords, correlationCandles]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec, config.maxPositions, config.maxFuturesPositions, closedTradeRecords, correlationCandles]);
 
   // Heartbeat — reset countdown timer when bot starts/stops.
   // Equity recording is handled exclusively by the background worker below to avoid duplicates.

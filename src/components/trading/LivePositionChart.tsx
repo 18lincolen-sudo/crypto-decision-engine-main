@@ -147,7 +147,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
     : 0;
 
   // Custom SVG Buy Tag label on the Reference Line
-  const renderBuyTagLabel = (props: any) => {
+  const renderBuyTagLabel = (props: { viewBox?: { x?: number; y?: number } }) => {
     const { viewBox } = props;
     const x = viewBox?.x || 10;
     const y = viewBox?.y || 20;
@@ -247,7 +247,7 @@ export const LivePositionChart: React.FC<LivePositionChartProps> = ({
                 <YAxis stroke="#71717a" fontSize={10} domain={['auto', 'auto']} tickLine={false} />
                 <Tooltip
                   contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.95)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '8px', fontSize: '11px' }}
-                  formatter={(val: any) => [`$${formatFullPrice(Number(val))}`, 'מחיר']}
+                  formatter={(val: number | string) => [`$${formatFullPrice(Number(val))}`, 'מחיר']}
                 />
                 <Area type="monotone" dataKey="price" stroke={isProfitable ? '#10b981' : '#f43f5e'} strokeWidth={2} fill={`url(#grad-${symbol})`} />
 

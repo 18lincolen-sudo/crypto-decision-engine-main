@@ -194,16 +194,16 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('HOLD');
-    // Dynamic threshold with ATR% = 3: base 60 + ramp * 15 = 60 + (1/6)*15 = 62.5
-    expect(result.reason).toContain('62.5');
+    // Static threshold: base 60 (no dynamic ramp)
+    expect(result.reason).toContain('60');
   });
 
   // ─────────────────────────────────────────────────────────────
-  // Test 7 — Score between SPOT and FUTURES thresholds
+  // Test 7 — Score at Futures threshold
   // ADX = 32, ATR = 3%, SignalScore = 70, BUY, Supertrend = BEAR
-  // Expected: FUTURES = BLOCKED (70 < 72), SPOT BUY eligible (70 >= 60)
+  // Expected: FUTURES (70 >= 70, all conditions met)
   // ─────────────────────────────────────────────────────────────
-  it('Test 7: Score below Futures threshold (70 < 72) — Routes to SPOT BUY', () => {
+  it('Test 7: Score at Futures threshold (70 >= 70) — Routes to FUTURES', () => {
     const regime = makeRegime({
       adx: 32,
       atr: 3,
@@ -215,8 +215,8 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     const signal = makeSignal({ action: 'BUY', signalScore: 70 });
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
-    expect(result.type).toBe('SPOT');
-    expect(result.side).toBe('BUY');
+    expect(result.type).toBe('FUTURES');
+    expect(result.side).toBe('LONG');
   });
 
   // ─────────────────────────────────────────────────────────────

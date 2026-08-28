@@ -108,7 +108,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     cryptoData: cryptoData || [],
     fearGreedIndex,
     persist: (state) => {
-      pushSimState('browser-leader', state as any, baseUrl).catch(() => {});
+      pushSimState('browser-leader', state as unknown as SimBotSnapshot, baseUrl).catch(() => {});
     }
   });
 
@@ -169,23 +169,23 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     (serverSnapshot.trades && (serverSnapshot.trades as unknown[]).length > 0)
   );
 
-  const activeSource: any = useServer ? serverSnapshot : localSim;
+  const activeSource: SimBotSnapshot = useServer ? serverSnapshot : localSim;
 
   const value: SimulationBotContextValue = {
     cash: activeSource.cash ?? 10000,
-    positions: activeSource.positions ?? [],
+    positions: (activeSource.positions ?? []) as SimPosition[],
     positionsValue: activeSource.positionsValue ?? 0,
     equity: activeSource.equity ?? 10000,
-    trades: activeSource.trades ?? [],
-    history: activeSource.history ?? [],
-    pending: activeSource.pending ?? [],
+    trades: (activeSource.trades ?? []) as SimTrade[],
+    history: (activeSource.history ?? []) as SimPoint[],
+    pending: (activeSource.pending ?? []) as PendingOrder[],
     totalFees: activeSource.totalFees ?? 0,
     totalSlippageCost: activeSource.totalSlippageCost ?? 0,
     winRate: activeSource.winRate ?? 0,
     totalTrades: activeSource.totalTrades ?? 0,
     closedTrades: activeSource.closedTrades ?? 0,
     lastEvaluation: activeSource.lastEvaluation ?? '',
-    evaluations: activeSource.evaluations ?? [],
+    evaluations: (activeSource.evaluations ?? []) as SignalEvaluation[],
     minConfidence: activeSource.minConfidence ?? 40,
     hasSavedSession: activeSource.hasSavedSession ?? false,
     nextTickAt: activeSource.nextTickAt ?? 0,

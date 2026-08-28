@@ -280,7 +280,11 @@ streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ 
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
 winRateFactor:  ±10% לפי win-rate (רק מעל 10 עסקאות בחלון)
 
-multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2–1.0
+**שונה משני הבוטים האחרים:** אצל Intraday ה-streakFactor לא נחסם ב-1 — רצף ניצחונות (3+/5+) מגדיל את risk-per-trade עד פי 1.25/1.5, בעוד רצף הפסדים מקטין אותו (כמו בשני הבוטים האחרים).
+
+multiplier = streakFactor × drawdownFactor × winRateFactor
+
+התוצאה הסופית (baseRiskPercent × multiplier) מוגבלת ל-0.05%-2% — לא ה-multiplier עצמו ל-0.2–1.0.
 
 מוכפל ב-riskPerTradePercent הבסיסי, מוגבל לטווח 0.05%-2%, דרך adaptiveRiskPercentFromHistory.
 
