@@ -11,7 +11,8 @@ import {
   TrendingUp, 
   Menu, 
   X,
-  Shield
+  Shield,
+  Activity
 } from 'lucide-react';
 
 const Navigation = () => {
@@ -23,6 +24,7 @@ const Navigation = () => {
     { to: '/real-trading', icon: Shield, label: 'בוט מסחר אמיתי', color: 'text-red-400' },
     { to: '/portfolio', icon: Briefcase, label: 'תיק השקעות', color: 'text-blue-400' },
     { to: '/advanced-analysis', icon: TrendingUp, label: 'ניתוח מתקדם', color: 'text-cyan-400' },
+    { to: '/backtest-results', icon: Activity, label: 'Backtest', color: 'text-orange-400' },
     { to: '/alerts', icon: Bell, label: 'התראות והגדרות', color: 'text-yellow-400' },
   ];
 
