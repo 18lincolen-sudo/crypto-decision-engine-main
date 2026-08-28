@@ -178,14 +178,14 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
 
   // ─────────────────────────────────────────────────────────────
   // Test 6 — Below Spot threshold
-  // ADX = 32, ATR = 3, SignalScore = 55
-  // Expected: HOLD (55 < 60)
+  // ADX = 32, ATR = 1% (below 2% ramp threshold), SignalScore = 55
+  // Expected: HOLD (55 < 60, static threshold)
   // ─────────────────────────────────────────────────────────────
   it('Test 6: Below Spot threshold (55 < 60) — Returns HOLD', () => {
     const regime = makeRegime({
       adx: 32,
-      atr: 3,
-      atrPercent: 3,
+      atr: 1,
+      atrPercent: 1,
       volatility: 'NORMAL',
       regime: 'TRENDING',
       supertrend: { value: 95, direction: 'BULL' }
@@ -194,20 +194,20 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('HOLD');
-    // Static threshold: base 60 (no dynamic ramp)
+    // Static threshold: base 60 (ATR% < 2, no dynamic ramp)
     expect(result.reason).toContain('60');
   });
 
   // ─────────────────────────────────────────────────────────────
   // Test 7 — Score at Futures threshold
-  // ADX = 32, ATR = 3%, SignalScore = 72, BUY, Supertrend = BEAR
-  // Expected: FUTURES (72 >= 72, all conditions met)
+  // ADX = 32, ATR = 1% (below 2% ramp threshold), SignalScore = 72, BUY
+  // Expected: FUTURES (72 >= 72, all conditions met, static threshold)
   // ─────────────────────────────────────────────────────────────
   it('Test 7: Score at Futures threshold (72 >= 72) — Routes to FUTURES', () => {
     const regime = makeRegime({
       adx: 32,
-      atr: 3,
-      atrPercent: 3,
+      atr: 1,
+      atrPercent: 1,
       volatility: 'NORMAL',
       regime: 'TRENDING',
       supertrend: { value: 105, direction: 'BEAR' }

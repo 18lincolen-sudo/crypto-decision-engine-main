@@ -382,9 +382,12 @@ export interface ProRouterOptions {
 // Same formula as tradeEngine.ts: static base thresholds are safe in LOW
 // volatility but become dangerously loose as ATR rises. Ramps by up to
 // +15 points from 2% ATR to 8% ATR.
+// Formula: base + ((atrPercent - 2) / 6) * 15, clamped to [base, base+15]
 
-export function dynamicConfidenceThreshold(baseThreshold: number, _atrPercent: number): number {
-  return baseThreshold;
+export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
+  if (atrPercent <= 2) return baseThreshold;
+  if (atrPercent >= 8) return baseThreshold + 15;
+  return baseThreshold + ((atrPercent - 2) / 6) * 15;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -513,23 +516,25 @@ export function calculateProRisk(
     const stopDist = entryPrice - stopLoss;
     riskRewardRatio = stopDist > 0 ? (takeProfit - entryPrice) / stopDist : 1.5;
   } else if (side === 'LONG') {
-    // Futures Long: SL = Entry - ATR * 1.5, TP1 = Entry + ATR * 2.0, TP2 = Entry + ATR * 3.5
+    // Futures Long: SL = Entry - ATR * 1.5, TP1 = Entry + ATR * 2.3, TP2 = Entry + ATR * 3.5
+    // R:R = 2.3/1.5 = 1.53 (passes MIN_RISK_REWARD_RATIO = 1.5)
     let slDistance = atr * 1.5;
     slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
     stopLoss = Math.max(1e-8, entryPrice - slDistance);
-    takeProfit1 = entryPrice + atr * 2.0;
+    takeProfit1 = entryPrice + atr * 2.3;
     takeProfit2 = entryPrice + atr * 3.5;
     const stopDist = entryPrice - stopLoss;
-    riskRewardRatio = stopDist > 0 ? (takeProfit1 - entryPrice) / stopDist : 1.33;
+    riskRewardRatio = stopDist > 0 ? (takeProfit1 - entryPrice) / stopDist : 1.53;
   } else {
-    // Futures Short: SL = Entry + ATR * 1.5, TP1 = Entry - ATR * 2.0, TP2 = Entry - ATR * 3.5
+    // Futures Short: SL = Entry + ATR * 1.5, TP1 = Entry - ATR * 2.3, TP2 = Entry - ATR * 3.5
+    // R:R = 2.3/1.5 = 1.53 (passes MIN_RISK_REWARD_RATIO = 1.5)
     let slDistance = atr * 1.5;
     slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
     stopLoss = entryPrice + slDistance;
-    takeProfit1 = Math.max(1e-8, entryPrice - atr * 2.0);
+    takeProfit1 = Math.max(1e-8, entryPrice - atr * 2.3);
     takeProfit2 = Math.max(1e-8, entryPrice - atr * 3.5);
     const stopDist = stopLoss - entryPrice;
-    riskRewardRatio = stopDist > 0 ? (entryPrice - takeProfit1) / stopDist : 1.33;
+    riskRewardRatio = stopDist > 0 ? (entryPrice - takeProfit1) / stopDist : 1.53;
   }
 
   // §Layer3.2 — leverage

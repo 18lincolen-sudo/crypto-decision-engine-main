@@ -42,7 +42,7 @@ describe('calculateRiskParameters', () => {
     expect(result).not.toBeNull();
     // SL distance = ATR*1.5 = 6, which equals MAX_STOP_PERCENT=6%, so no clamp
     expect(result!.stopLoss).toBeCloseTo(94, 4);
-    expect(result!.takeProfit1).toBeCloseTo(100 + 4 * 2.0, 4);
+    expect(result!.takeProfit1).toBeCloseTo(100 + 4 * 2.3, 4);
     expect(result!.takeProfit2).toBeCloseTo(100 + 4 * 3.5, 4);
     expect(result!.leverage).toBe(3);
   });
@@ -52,7 +52,7 @@ describe('calculateRiskParameters', () => {
     expect(result).not.toBeNull();
     // SL distance = ATR*1.5 = 6, which equals MAX_STOP_PERCENT=6%, so no clamp
     expect(result!.stopLoss).toBeCloseTo(106, 4);
-    expect(result!.takeProfit1).toBeCloseTo(100 - 4 * 2.0, 4);
+    expect(result!.takeProfit1).toBeCloseTo(100 - 4 * 2.3, 4);
     expect(result!.takeProfit2).toBeCloseTo(100 - 4 * 3.5, 4);
   });
 

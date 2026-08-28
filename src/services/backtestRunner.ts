@@ -16,6 +16,7 @@ import {
   calculateATR,
   calculateADX,
   calculateSupertrend,
+  calculateTradingFee,
   ClosedTradeMetric,
   ActivePosition,
   TradeSide,
@@ -149,8 +150,9 @@ function equity(state: SimState, prices: Record<string, number>): number {
     if (p.type === 'SPOT') {
       eq += p.quantity * price;
     } else {
+      // Futures: PnL includes leverage multiplier
       const dir = p.side === 'LONG' ? 1 : -1;
-      eq += p.quantity * (price - p.entryPrice) * dir;
+      eq += p.quantity * (price - p.entryPrice) * dir * p.leverage;
     }
   }
   return eq;
@@ -222,7 +224,11 @@ function checkExitLegacy(pos: SimPosition, candle: Candle, candles: Candle[], id
   const currentAtr = getAtr(candles, idx);
   const eq = equity(state, { [pos.symbol]: candle.close });
   const dailyDD = state.peakEquity > 0 ? Math.max(0, (state.peakEquity - eq) / state.peakEquity * 100) : 0;
-  const exitResult = evaluateExit(activePos, candle.close, currentAtr, { buy: 50, sell: 50 }, { dailyDrawdownPercent: dailyDD, weeklyDrawdownPercent: dailyDD, systemLocked: false, adx: getAdx(candles, idx) });
+  // Compute actual signal scores for reversal exit detection
+  const slice = candles.slice(0, idx + 1);
+  const signalResult = evaluateSignals(slice, candle.close, pos.symbol);
+  const signalScores = { buy: signalResult.action === 'BUY' ? signalResult.signalScore : 0, sell: signalResult.action === 'SELL' ? signalResult.signalScore : 0 };
+  const exitResult = evaluateExit(activePos, candle.close, currentAtr, signalScores, { dailyDrawdownPercent: dailyDD, weeklyDrawdownPercent: dailyDD, systemLocked: false, adx: getAdx(candles, idx) });
   if (!exitResult.shouldExit) return { shouldExit: false, exitType: 'NONE', pnl: 0 };
   let pnl = 0;
   if (pos.type === 'SPOT') {
@@ -244,7 +250,11 @@ function checkExitPro(pos: SimPosition, candle: Candle, candles: Candle[], idx: 
   const currentAtr = getAtr(candles, idx);
   const eq = equity(state, { [pos.symbol]: candle.close });
   const dailyDD = state.peakEquity > 0 ? Math.max(0, (state.peakEquity - eq) / state.peakEquity * 100) : 0;
-  const exitResult = evaluateProExit(activePos, candle.close, currentAtr, { buy: 50, sell: 50 }, { dailyDrawdownPercent: dailyDD, weeklyDrawdownPercent: dailyDD, systemLocked: false });
+  // Compute actual signal scores for reversal exit detection
+  const slice = candles.slice(0, idx + 1);
+  const signalResult = evaluateProSignals(slice, candle.close, pos.symbol);
+  const signalScores = { buy: signalResult.action === 'BUY' ? signalResult.rawConfidence : 0, sell: signalResult.action === 'SELL' ? signalResult.rawConfidence : 0 };
+  const exitResult = evaluateProExit(activePos, candle.close, currentAtr, signalScores, { dailyDrawdownPercent: dailyDD, weeklyDrawdownPercent: dailyDD, systemLocked: false });
   if (!exitResult.shouldExit) return { shouldExit: false, exitType: 'NONE', pnl: 0 };
   let pnl = 0;
   if (pos.type === 'SPOT') {
@@ -305,6 +315,7 @@ interface BacktestResult {
 
 function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engine: EngineType): BacktestResult {
   const state = initState();
+  const FEE_PERCENT = 0.001; // 0.1% taker fee (Bybit spot/futures)
   for (let idx = 50; idx < candles.length; idx++) {
     const candle = candles[idx];
     const currentPrice = candle.close;
@@ -314,17 +325,22 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
       const pos = state.positions[i];
       const check = engine === 'legacy' ? checkExitLegacy(pos, candle, candles, idx, state) : checkExitPro(pos, candle, candles, idx, state);
       if (check.shouldExit) {
+        // Apply exit fee
+        const exitValue = pos.type === 'SPOT' ? pos.quantity * currentPrice : pos.sizeUsd + check.pnl;
+        const exitFee = exitValue * FEE_PERCENT;
+        const pnlAfterFee = check.pnl - exitFee;
+        state.totalFees += exitFee;
         if (check.exitType === 'FULL') {
-          state.closedTrades.push({ pnl: check.pnl, symbol, at: candle.timestamp });
-          if (pos.type === 'SPOT') { state.cash += pos.quantity * currentPrice; } else { state.cash += pos.sizeUsd + check.pnl; }
+          state.closedTrades.push({ pnl: pnlAfterFee, symbol, at: candle.timestamp });
+          if (pos.type === 'SPOT') { state.cash += pos.quantity * currentPrice - exitFee; } else { state.cash += pos.sizeUsd + pnlAfterFee; }
           toRemove.push(i);
         } else if (check.exitType === 'PARTIAL_50') {
           const halfQty = pos.quantity / 2;
-          const halfPnl = check.pnl / 2;
+          const halfPnl = pnlAfterFee / 2;
           state.closedTrades.push({ pnl: halfPnl, symbol, at: candle.timestamp });
           pos.quantity = halfQty;
           pos.tp1Hit = true;
-          if (pos.type === 'SPOT') { state.cash += halfQty * currentPrice; } else { state.cash += (pos.sizeUsd / 2) + halfPnl; }
+          if (pos.type === 'SPOT') { state.cash += halfQty * currentPrice - exitFee / 2; } else { state.cash += (pos.sizeUsd / 2) + halfPnl; }
           pos.sizeUsd = pos.sizeUsd / 2;
         }
       } else {
@@ -344,6 +360,11 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
     if (!evalResult.willExecute) continue;
     const pos = engine === 'legacy' ? openPositionLegacy(symbol, candles, idx, state, evalResult.tradeType as 'SPOT' | 'FUTURES', evalResult.side, evalResult.signalScore, slConfig) : openPositionPro(symbol, candles, idx, state, evalResult.tradeType as 'SPOT' | 'FUTURES', evalResult.side, evalResult.signalScore, slConfig);
     if (pos) {
+      // Apply entry fee
+      const entryValue = pos.type === 'SPOT' ? pos.quantity * currentPrice : pos.sizeUsd;
+      const entryFee = entryValue * FEE_PERCENT;
+      state.cash -= entryFee;
+      state.totalFees += entryFee;
       if (pos.type === 'SPOT') { state.cash -= pos.quantity * currentPrice; } else { state.cash -= pos.sizeUsd; }
       state.positions.push(pos);
     }
