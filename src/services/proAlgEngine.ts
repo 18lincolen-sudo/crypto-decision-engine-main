@@ -423,7 +423,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   // 4. ADX>25  5. no existing Futures position on this asset
   const isTrending = regime.regime === 'TRENDING' && regime.adx > 25;
   const isFuturesVolOk = regime.volatility === 'LOW' || regime.volatility === 'NORMAL';
-  const futuresThreshold = dynamicConfidenceThreshold(70, regime.atrPercent);
+  const futuresThreshold = dynamicConfidenceThreshold(72, regime.atrPercent);
   const isFuturesScoreOk = signal.rawConfidence >= futuresThreshold;
   if (isTrending && isFuturesVolOk && isFuturesScoreOk && !options.hasExistingFutures) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'LONG' : 'SHORT';

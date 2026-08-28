@@ -11,6 +11,7 @@
 import { runWalkForward, BacktestHistory } from '../src/services/intradayBacktest';
 import { DEFAULT_INTRADAY_PARAMS, IntradayParams } from '../src/services/intradayParams';
 import type { Candle } from '../src/services/tradeEngine';
+import { getCachedHistory, saveCachedHistory } from '../server/historicalCandleCache';
 
 const BINANCE = 'https://api.binance.com/api/v3';
 const DAYS = Number(process.env.DAYS ?? 120);
@@ -50,13 +51,74 @@ async function fetchKlinesPaged(symbol: string, interval: string, startMs: numbe
 async function fetchHistory(symbol: string, days: number): Promise<BacktestHistory | null> {
   const end = Date.now();
   const start = end - days * 24 * 60 * 60 * 1000;
+
+  // Try cache first for each timeframe
+  const timeframes = ['1h', '15m', '5m'] as const;
+  const cachedResults: Record<string, Candle[] | null> = {};
+  let allCached = true;
+
+  for (const tf of timeframes) {
+    const cached = await getCachedHistory(symbol, tf);
+    if (cached && cached.length > 0) {
+      // Check if cache covers the requested range
+      const oldestCached = cached[0].timestamp;
+      const newestCached = cached[cached.length - 1].timestamp;
+      if (oldestCached <= start + 3600_000 && newestCached >= end - 3600_000) {
+        cachedResults[tf] = cached;
+        continue;
+      }
+      // Partial cache — use what we have and fetch the rest
+      cachedResults[tf] = cached;
+    } else {
+      cachedResults[tf] = null;
+      allCached = false;
+    }
+  }
+
+  // If all timeframes are fully cached, return immediately
+  if (allCached && cachedResults['1h'] && cachedResults['15m'] && cachedResults['5m']) {
+    console.log(`[sweep] ${symbol}: cache hit (full)`);
+    return {
+      symbol,
+      h1: cachedResults['1h']!,
+      m15: cachedResults['15m']!,
+      m5: cachedResults['5m']!,
+    };
+  }
+
+  // Fetch missing/partial data from Binance
   const [h1, m15, m5] = await Promise.all([
-    fetchKlinesPaged(symbol, '1h', start, end),
-    fetchKlinesPaged(symbol, '15m', start, end),
-    fetchKlinesPaged(symbol, '5m', start, end)
+    cachedResults['1h'] ? Promise.resolve(cachedResults['1h']!) : fetchKlinesPaged(symbol, '1h', start, end),
+    cachedResults['15m'] ? Promise.resolve(cachedResults['15m']!) : fetchKlinesPaged(symbol, '15m', start, end),
+    cachedResults['5m'] ? Promise.resolve(cachedResults['5m']!) : fetchKlinesPaged(symbol, '5m', start, end),
   ]);
-  if (m5.length < 500) return null;
-  return { symbol, h1, m15, m5 };
+
+  // Merge partial cache with new data and save
+  const mergeAndSave = async (tf: typeof timeframes[number], cached: Candle[] | null, fresh: Candle[]) => {
+    if (cached && cached.length > 0) {
+      // Merge: use cached data up to where fresh data starts, then append fresh
+      const cachedMax = cached[cached.length - 1].timestamp;
+      const freshMin = fresh.length > 0 ? fresh[0].timestamp : Infinity;
+      if (freshMin > cachedMax) {
+        // No overlap — concatenate
+        const merged = [...cached, ...fresh].sort((a, b) => a.timestamp - b.timestamp);
+        await saveCachedHistory(symbol, tf, merged);
+        return merged;
+      }
+      // Overlap — fresh data is newer, use it
+    }
+    await saveCachedHistory(symbol, tf, fresh);
+    return fresh;
+  };
+
+  const [mergedH1, mergedM15, mergedM5] = await Promise.all([
+    mergeAndSave('1h', cachedResults['1h'], h1),
+    mergeAndSave('15m', cachedResults['15m'], m15),
+    mergeAndSave('5m', cachedResults['5m'], m5),
+  ]);
+
+  if (mergedM5.length < 500) return null;
+  return { symbol, h1: mergedH1, m15: mergedM15, m5: mergedM5 };
 }
 
 // ── Parameter grid ────────────────────────────────────────────────────────

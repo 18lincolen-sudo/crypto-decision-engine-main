@@ -776,6 +776,34 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
       continue;
     }
 
+    // PERSISTENT CACHE (Firestore / local file): check before network fetch.
+    // This survives deploys and is shared across all engines.
+    // Only available in Node.js environment (not browser).
+    // NOTE: This uses a variable import path to prevent Vite from analyzing
+    // the server-only module during frontend builds.
+    if (!opts.force && typeof process !== 'undefined' && process.versions?.node) {
+      try {
+        const cachePath = '../../server/historicalCandleCache';
+        const cacheModule = await import(/* @vite-ignore */ cachePath);
+        const { getCachedHistory, saveCachedHistory } = cacheModule;
+        const persistentCached = await getCachedHistory(bybitSymbol, tf);
+        if (persistentCached?.length) {
+          const lastTimestamp = persistentCached[persistentCached.length - 1].timestamp;
+          const isFresh = lastTimestamp >= expectedLastClose || (now - lastTimestamp) < spec.refreshMs;
+          if (isFresh && persistentCached.length >= spec.minCandles) {
+            candles[tf] = persistentCached;
+            sources[tf] = 'cache';
+            telemetry[tf] = { received: persistentCached.length, closed: persistentCached.length, valid: persistentCached.length, required: spec.minCandles, source: 'cache' };
+            // Also warm the in-memory cache
+            tfCache.set(key, { candles: persistentCached, source: 'cache', fetchedAt: now, lastTimestamp });
+            continue;
+          }
+        }
+      } catch {
+        // Persistent cache read failure — fall through to network fetch
+      }
+    }
+
     // RULE (warm cache): if we already have a recent cache, fetch ONLY the new
     // candles (delta) instead of re-pulling the full window. This is the core
     // "remember what we already downloaded, check only the new against it" rule.
@@ -789,6 +817,14 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
           sources[tf] = delta.source;
           tfCache.set(key, { candles: merged, source: delta.source, fetchedAt: now, lastTimestamp: merged[merged.length - 1].timestamp });
           telemetry[tf] = { received: delta.received, closed: delta.closed, valid: merged.length, required: spec.minCandles, source: delta.source };
+          // Save to persistent cache after successful network fetch (Node.js only)
+          // Uses variable path to prevent Vite from analyzing server-only import
+          if (typeof process !== 'undefined' && process.versions?.node) {
+            const cachePath = '../../server/historicalCandleCache';
+            import(/* @vite-ignore */ cachePath).then(({ saveCachedHistory }) => {
+              saveCachedHistory(bybitSymbol, tf, merged).catch(() => {});
+            }).catch(() => {});
+          }
           continue;
         }
         issues.push(`${tf}:delta-${gap ? 'gap' : 'insufficient'}-full-refetch`);
@@ -817,6 +853,14 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
         fetchedAt: now,
         lastTimestamp: result.candles[result.candles.length - 1].timestamp
       });
+      // Save to persistent cache after successful network fetch (Node.js only)
+      // Uses variable path to prevent Vite from analyzing server-only import
+      if (typeof process !== 'undefined' && process.versions?.node) {
+        const cachePath = '../../server/historicalCandleCache';
+        import(/* @vite-ignore */ cachePath).then(({ saveCachedHistory }) => {
+          saveCachedHistory(bybitSymbol, tf, result.candles).catch(() => {});
+        }).catch(() => {});
+      }
     } else if (cached) {
       // Transient outage: keep last-known-good rather than dropping the asset.
       candles[tf] = cached.candles;

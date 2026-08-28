@@ -37,6 +37,7 @@ import {
   ProMarketRegimeResult,
 } from '../src/services/proAlgEngine';
 import { summarizeRecentPerformance, sizingMultiplierFromHistory, streakCooldownFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT } from '../src/services/adaptiveRisk';
+import { getCachedHistory, saveCachedHistory } from '../server/historicalCandleCache';
 
 type EngineType = 'legacy' | 'pro';
 
@@ -596,17 +597,49 @@ async function main() {
   console.log(`[backtest] engine=${ENGINE}, days=${DAYS}, symbols=${SYMS.length}`);
   console.log(`[backtest] SL constants: MIN_STOP_PERCENT=${MIN_STOP_PERCENT}, MAX_STOP_PERCENT=${MAX_STOP_PERCENT}`);
 
-  // Fetch history
+  // Fetch history (with cache)
   const histories: { symbol: string; candles: Candle[] }[] = [];
   const queue = [...SYMS];
   async function worker() {
     while (queue.length) {
       const symbol = queue.shift()!;
-      const candles = await fetchKlinesPaged(symbol, '1h', Date.now() - DAYS * 24 * 60 * 60 * 1000, Date.now());
+      const end = Date.now();
+      const start = end - DAYS * 24 * 60 * 60 * 1000;
+
+      let candles: Candle[];
+
+      // Try cache first
+      const cached = await getCachedHistory(symbol, '1h');
+      if (cached && cached.length >= 200) {
+        const oldestCached = cached[0].timestamp;
+        const newestCached = cached[cached.length - 1].timestamp;
+        if (oldestCached <= start + 3600_000 && newestCached >= end - 3600_000) {
+          // Full cache hit
+          console.log(`[backtest] ${symbol}: cache hit (${cached.length} bars)`);
+          histories.push({ symbol, candles: cached });
+          continue;
+        }
+      }
+
+      // Cache miss or partial — fetch from Binance
+      candles = await fetchKlinesPaged(symbol, '1h', start, end);
       if (candles.length < 200) {
         console.log(`[backtest] ${symbol}: insufficient data (${candles.length} bars), skip`);
         continue;
       }
+
+      // Merge with partial cache if available
+      if (cached && cached.length > 0) {
+        const cachedMax = cached[cached.length - 1].timestamp;
+        const freshMin = candles.length > 0 ? candles[0].timestamp : Infinity;
+        if (freshMin > cachedMax) {
+          // No overlap — concatenate
+          candles = [...cached, ...candles].sort((a, b) => a.timestamp - b.timestamp);
+        }
+      }
+
+      // Save to cache
+      await saveCachedHistory(symbol, '1h', candles);
       histories.push({ symbol, candles });
       console.log(`[backtest] ${symbol}: ok (${candles.length} bars)`);
     }

@@ -200,10 +200,10 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
 
   // ─────────────────────────────────────────────────────────────
   // Test 7 — Score at Futures threshold
-  // ADX = 32, ATR = 3%, SignalScore = 70, BUY, Supertrend = BEAR
-  // Expected: FUTURES (70 >= 70, all conditions met)
+  // ADX = 32, ATR = 3%, SignalScore = 72, BUY, Supertrend = BEAR
+  // Expected: FUTURES (72 >= 72, all conditions met)
   // ─────────────────────────────────────────────────────────────
-  it('Test 7: Score at Futures threshold (70 >= 70) — Routes to FUTURES', () => {
+  it('Test 7: Score at Futures threshold (72 >= 72) — Routes to FUTURES', () => {
     const regime = makeRegime({
       adx: 32,
       atr: 3,
@@ -212,7 +212,7 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
       regime: 'TRENDING',
       supertrend: { value: 105, direction: 'BEAR' }
     });
-    const signal = makeSignal({ action: 'BUY', signalScore: 70 });
+    const signal = makeSignal({ action: 'BUY', signalScore: 72 });
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('FUTURES');

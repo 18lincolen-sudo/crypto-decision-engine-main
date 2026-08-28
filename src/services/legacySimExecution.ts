@@ -28,7 +28,8 @@ import {
   streakCooldownFromHistory,
   isInStreakCooldown,
   streakCooldownReason,
-  ClosedTradeRecord
+  ClosedTradeRecord,
+  MIN_RISK_REWARD_RATIO
 } from './adaptiveRisk';
 import {
   evaluateCorrelationGate,
@@ -185,6 +186,14 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
         lookback: correlationLookback
       });
       if (!gate.allowed) { status = gate.reason as string; willExecute = false; }
+    }
+
+    // Cost / Edge gate — refuse trades where the ATR-derived risk-reward
+    // ratio doesn't clear the minimum threshold. layer3.riskRewardRatio
+    // is already computed from the ATR multipliers, so we use it directly.
+    if (willExecute && layer3 && layer3.riskRewardRatio < MIN_RISK_REWARD_RATIO) {
+      status = `יחס סיכון-רווח נמוך מדי (${layer3.riskRewardRatio.toFixed(2)} < ${MIN_RISK_REWARD_RATIO})`;
+      willExecute = false;
     }
 
     const factors: DecisionFactor[] = [
@@ -359,6 +368,10 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
     if (totalPositionCount >= maxPositions) continue;
     if (ev.tradeType === 'FUTURES' && futuresPositionCount >= maxFuturesPositions) continue;
+
+    // Spot cannot open short positions — skip SELL side for SPOT
+    // (Spot accounts don't support shorting without margin)
+    if (ev.tradeType !== 'FUTURES' && ev.tradeSide === 'SELL') continue;
 
     const orderSide = ev.tradeType === 'FUTURES'
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')

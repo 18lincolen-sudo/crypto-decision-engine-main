@@ -66,6 +66,13 @@ export const PERFORMANCE_WINDOW_SIZE = 20;
 export const MIN_STOP_PERCENT = 1.5;  // floor — minimum SL distance (% of entry)
 export const MAX_STOP_PERCENT = 6;    // ceiling — maximum SL distance (% of entry)
 
+// ── Cost / Edge Gate (shared by Legacy + Pro) ──────────────────────────────
+// Minimum risk-reward ratio for a trade to be worth taking. Derived from the
+// ATR multipliers (SL = ATR*1.5/1.8, TP = ATR*2.0/2.7) which produce ratios
+// in the 1.33-1.5 range. Trades below this threshold don't have enough edge
+// to justify the risk. Applied in legacySimExecution and proSimExecution.
+export const MIN_RISK_REWARD_RATIO = 1.5;
+
 /**
  * Summarizes recent closed trades into the streak/win-rate figures the
  * sizing rules below consume.
