@@ -176,7 +176,7 @@ export function mapDecisionToSignalEvaluation(
     : d.setup
     ? Math.round(d.setup.setupScore)
     : 0;
-  const priceOut = price || d.entry?.entryPrice || 0;
+  const priceOut = d.entry?.entryPrice || price || 0;
 
   const factors: DecisionFactor[] = [];
   if (d.regime) {

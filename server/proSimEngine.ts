@@ -33,6 +33,7 @@ const proStrategy: SimEngineStrategy = {
       pending: input.pending,
       config: input.config,
       equity: input.equity,
+      cash: input.cash,
       totalLeveragedExposureUsd: input.totalLeveragedExposureUsd,
       dailyDrawdownPercent: input.dailyDrawdownPercent,
       weeklyDrawdownPercent: input.weeklyDrawdownPercent,

@@ -467,7 +467,14 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   const spotThreshold = dynamicConfidenceThreshold(60, regime.atrPercent);
   const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(softTrendBase, regime.atrPercent) : spotThreshold;
   if (isSpotRegimeOk && signal.rawConfidence >= requiredSpotScore) {
-    const side: ProTradeSide = signal.action === 'BUY' ? 'BUY' : 'SELL';
+    // Spot cannot short (no margin on the spot book): a SELL signal that
+    // fails Futures routing must not surface as a "ready" SPOT SELL only to be
+    // silently dropped by the execution layer (proSimExecution.ts skips
+    // SPOT SELL entries). Block it here with an honest reason instead.
+    if (signal.action === 'SELL') {
+      return { type: 'HOLD', side: 'NONE', blockReason: 'SPOT_SELL_UNSUPPORTED', reason: 'אות SELL לא עמד בסף Futures — Spot SELL אינו נתמך, נחסם' };
+    }
+    const side: ProTradeSide = 'BUY';
     const reason = softTrendSpot
       ? `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} ב-SOFT_TREND (ADX ${regime.adx.toFixed(1)})`
       : `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} במצב ${regime.regime}`;

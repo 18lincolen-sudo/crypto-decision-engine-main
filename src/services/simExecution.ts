@@ -194,8 +194,12 @@ export function computeEntryBudget(cash: number, tradeType: 'SPOT' | 'FUTURES'):
     : Math.min(cash * 0.15, 1000);
 }
 
-/** Safety net against rapid re-entry churn: after a LOSING full exit, skip new entries on that symbol for this cooldown window even if the signal still fires. */
-export const ENTRY_COOLDOWN_MS = 2 * 60 * 1000;
+/** Safety net against rapid re-entry churn: after a LOSING full exit, skip new
+ *  entries on that symbol for this cooldown window even if the signal still
+ *  fires. Raised from 2 to 30 minutes so reversal-churn in choppy markets
+ *  (exit on reversal → immediate re-entry → another reversal) stops bleeding
+ *  double fees/slippage every cycle. */
+export const ENTRY_COOLDOWN_MS = 30 * 60 * 1000;
 
 export function isInEntryCooldown(cooldownAt: number | undefined, now: number = Date.now()): boolean {
   return typeof cooldownAt === 'number' && now - cooldownAt < ENTRY_COOLDOWN_MS;
@@ -660,6 +664,20 @@ export function selectFillableOrders(pending: PendingOrder[], now: number, price
     const isLongSide = o.side === 'buy' || o.side === 'long';
     const crossed = isLongSide ? live <= o.signalPrice : live >= o.signalPrice;
     if (crossed) {
+      // Do not let a resting entry-limit fill into a move that has already
+      // blown through the position's own stop level: the price that crossed
+      // the limit here was reached on the WRONG side of the signal, and an
+      // entry at this price would open underwater with the stop no longer
+      // protecting the original risk plan. Cancel the order instead of
+      // stacking a losing entry precisely where the entry was supposed to be
+      // defended (adverse-selection guard).
+      if (
+        (isLongSide && typeof o.stopLoss === 'number' && live < o.stopLoss) ||
+        (!isLongSide && typeof o.stopLoss === 'number' && live > o.stopLoss)
+      ) {
+        expired.push(o);
+        continue;
+      }
       due.push(o);
     } else if (now - o.createdAt >= LIMIT_ORDER_TTL_MS) {
       expired.push(o);
@@ -723,7 +741,11 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       const isFutures = order.type === 'FUTURES';
       const leverage = order.leverage || 1;
       const notional = budget * leverage;
-      const fee = calculateTradingFee(notional, order.type, true);
+      // Limit-entry fills are Maker-type (the order only fills at or better
+      // than its own limit price — see selectFillableOrders): charging Taker
+      // here inflated entry costs 2.75-5x and contradicted evaluateCostEdge,
+      // which already models Maker entry cost (§25).
+      const fee = calculateTradingFee(notional, order.type, false);
       const totalCost = budget + fee;
       if (totalCost > workingCash) continue;
       const quantity = notional / fillPrice;

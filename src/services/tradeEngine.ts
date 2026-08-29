@@ -768,6 +768,13 @@ export function routeTradeType(
     : hasExistingFuturesOrOptions;
 
   const { action, signalScore } = signalResult;
+  // Route on the POST-PENALTY confidence score. evaluateSignals applies the
+  // §Layer1 penalties (volume-surge NEUTRAL ×0.6, RANGING ×0.7) and documents
+  // them as feeding Layer 2 routing — but routing here read raw signalScore,
+  // so low-quality RANGING/no-volume signals sailed straight through the Spot
+  // and Futures thresholds. `confidence` is undefined on synthetic callers
+  // (tests) that only set signalScore, so we fall back to signalScore.
+  const routingScore = signalResult.confidence ?? signalScore;
   const softTrendBase = options.softTrendBaseOverride ?? 65;
 
   // 1. Hard Gate: Weekly Circuit Breaker (Lock)
@@ -865,7 +872,7 @@ export function routeTradeType(
   const isTrending = layer0.regime === 'TRENDING' && layer0.adx > 25;
   const isVolatilitySafeForFutures = layer0.volatility === 'LOW' || layer0.volatility === 'NORMAL';
   const futuresThreshold = dynamicConfidenceThreshold(72, layer0.atrPercent);
-  const isFuturesScorePassed = signalScore >= futuresThreshold;
+  const isFuturesScorePassed = routingScore >= futuresThreshold;
 
   if (isTrending && isVolatilitySafeForFutures && isFuturesScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'LONG' : 'SHORT';
@@ -886,18 +893,31 @@ export function routeTradeType(
   const softTrendSpot = layer0.regime === 'TRANSITIONAL' && layer0.adx > 22;
   const spotThreshold = dynamicConfidenceThreshold(60, layer0.atrPercent);
   const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(softTrendBase, layer0.atrPercent) : spotThreshold;
-  const isSpotScorePassed = signalScore >= requiredSpotScore;
+  const isSpotScorePassed = routingScore >= requiredSpotScore;
 
   if (isSpotRegimeValid && isSpotScorePassed) {
-    const side: TradeSide = action === 'BUY' ? 'BUY' : 'SELL';
-    let reason = `עסקת Spot מאושרת: SignalScore ${signalScore} >= ${requiredSpotScore} במצב ${layer0.regime} (${layer0.volatility} VOL)`;
+    // Spot cannot short (no margin on the spot book): a sell-side signal that
+    // failed Futures routing must not silently surface as a "ready" SPOT SELL,
+    // only to be dropped later by the order-generation layer (both
+    // legacySimExecution.ts and proSimExecution.ts skip SPOT SELL entries).
+    // Block it here with an honest reason instead of lying in the UI.
+    if (action === 'SELL') {
+      return {
+        type: 'HOLD',
+        side: 'NONE',
+        blockReason: 'SPOT_SELL_UNSUPPORTED',
+        reason: 'אות SELL לא עמד בתנאי Futures — Spot SELL אינו נתמך, נחסם'
+      };
+    }
+    const side: TradeSide = 'BUY';
+    let reason = `עסקת Spot מאושרת: SignalScore ${routingScore} >= ${requiredSpotScore} במצב ${layer0.regime} (${layer0.volatility} VOL)`;
     if (softTrendSpot) reason += ` [SOFT_TREND: סף מוגבר ${softTrendBase}]`;
     else if (layer0.volatility === 'HIGH') {
       reason += ' [HIGH VOL: Futures חסום, Spot מאושר]';
     } else if (!isTrending) {
       reason += ' [Ranging: רק Spot מותר]';
-    } else if (signalScore < futuresThreshold) {
-      reason += ` [ציון ${signalScore} מתחת ל-${futuresThreshold.toFixed(1)} של Futures — Spot מאושר]`;
+    } else if (routingScore < futuresThreshold) {
+      reason += ` [ציון ${routingScore} מתחת ל-${futuresThreshold.toFixed(1)} של Futures — Spot מאושר]`;
     }
     return {
       type: 'SPOT',
@@ -915,15 +935,15 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'SPOT_SCORE_BELOW_HIGH_VOL_THRESHOLD',
-      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${signalScore} < סף נדרש ${requiredSpotScore.toFixed(1)} בתנודתיות גבוהה (${layer0.atrPercent}%)`
+      reason: `SPOT SCORE BELOW HIGH-VOL THRESHOLD: ציון ${routingScore} < סף נדרש ${requiredSpotScore.toFixed(1)} בתנודתיות גבוהה (${layer0.atrPercent}%)`
     };
   }
 
-  if (signalScore < requiredSpotScore) {
+  if (routingScore < requiredSpotScore) {
     return {
       type: 'HOLD',
       side: 'NONE',
-      reason: `SignalScore ${signalScore} מתחת לסף המינימלי לפעולה (${requiredSpotScore.toFixed(1)})`
+      reason: `SignalScore ${routingScore} מתחת לסף המינימלי לפעולה (${requiredSpotScore.toFixed(1)})`
     };
   }
 

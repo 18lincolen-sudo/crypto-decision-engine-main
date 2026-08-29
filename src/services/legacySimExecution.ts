@@ -127,10 +127,24 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
 
     let entryPrice = currentPrice;
     let entryReason = '';
+    let entryAccepted = true;
+    let entryBlockReason = '';
     if (layer2.type !== 'HOLD' && layer2.side !== 'NONE') {
       const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, layer2.side, candles, 0.35, layer0.atrPercent);
-      entryPrice = entryTiming.entryPrice;
-      entryReason = entryTiming.reason;
+      // The entry-timing layer is a REAL gate (matching Pro): when RSI is
+      // overbought / price sits on the Bollinger top / price is extended
+      // beyond 1.5×ATR from EMA20 / volume is too thin, `shouldEnterNow` is
+      // false and the order must NOT be queued at the live price. Previously
+      // only the (pullback-adjusted) PRICE was consumed and the block signal
+      // itself ignored — entries fired straight into exactly the conditions
+      // the layer exists to avoid.
+      if (entryTiming.shouldEnterNow) {
+        entryPrice = entryTiming.entryPrice;
+        entryReason = entryTiming.reason;
+      } else {
+        entryAccepted = false;
+        entryBlockReason = entryTiming.reason;
+      }
     }
 
     const layer3 = layer2.type !== 'HOLD'
@@ -146,11 +160,13 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     const isQueued = queued.some((o) => o.symbol === symbol);
     const isHeld = openPos.some((p) => p.symbol === symbol);
 
-    let willExecute = layer2.type !== 'HOLD' && !layer2.hardGateBlocked && !!layer3;
+    let willExecute = layer2.type !== 'HOLD' && !layer2.hardGateBlocked && !!layer3 && entryAccepted;
     let status = layer2.hardGateBlocked
       ? (layer2.blockReason ?? 'חסום')
       : layer2.type === 'HOLD'
       ? 'אין סיגנל (Layer 1/2)'
+      : !entryAccepted
+      ? `נחסם בתזמון כניסה: ${entryBlockReason}`
       : layer3
       ? 'מוכן לביצוע'
       : 'נפסל בניהול סיכונים (Layer 3)';
@@ -169,10 +185,12 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       status = streakCooldownReason(symbolStreakCooldownUntil as number, symbol); willExecute = false;
     }
 
-    // Confidence floor — minimum signal quality threshold (in addition to Layer 2's dynamic threshold)
+    // Confidence floor — minimum signal quality threshold, evaluated on the
+    // POST-PENALTY score (layer1.confidence), not raw signalScore, so the
+    // volume/RANGING penalties actually gate entries.
     if (willExecute && layer2.type !== 'HOLD' && layer2.side !== 'NONE') {
       const minConf = config.minConfidenceOverride ?? 58;
-      if (layer1.signalScore < minConf) { status = `Confidence נמוך מדי (${layer1.signalScore.toFixed(1)} < ${minConf})`; willExecute = false; }
+      if (layer1.confidence < minConf) { status = `Confidence נמוך מדי (${layer1.confidence.toFixed(1)} < ${minConf})`; willExecute = false; }
     }
 
     // Correlation gate — refuses a candidate that would make the book hold
@@ -207,7 +225,7 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       },
       {
         label: 'ציון ביטחון משוקלל (Layer 1)',
-        value: `${layer1.action} — ${layer1.signalScore.toFixed(1)}%`,
+        value: `${layer1.action} — ${layer1.confidence.toFixed(1)}%`,
         impact: layer1.action === 'HOLD' ? 'neutral' : layer1.action === 'BUY' ? 'positive' : 'negative',
         note: layer1.penalties.join(' | ') || layer1.signals.map((s) => `${s.name}:${s.signal}`).join(', ')
       },
@@ -230,7 +248,7 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       action: layer1.action.toLowerCase() as 'buy' | 'sell' | 'hold',
       tradeType: layer2.type,
       tradeSide: layer2.side,
-      confidence: layer1.signalScore,
+      confidence: layer1.confidence,
       price: entryPrice,
       priceChange24h,
       reasoning: entryReason || layer2.reason,

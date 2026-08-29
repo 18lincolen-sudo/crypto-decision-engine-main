@@ -59,6 +59,8 @@ export interface ProEvaluationContext {
   pending: PendingOrder[];
   config: SimBotConfig;
   equity: number;
+  /** Available cash — used by the budget floor. Falls back to equity when omitted. */
+  cash?: number;
   totalLeveragedExposureUsd: number;
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
@@ -209,7 +211,7 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
     // skips the trade. This makes the UI reason transparent instead of showing
     // "ready" and then never filling.
     if (willExecute && router.type !== 'HOLD' && router.side !== 'NONE') {
-      const budget = computeEntryBudget(ctx.cash, router.type === 'FUTURES' ? 'FUTURES' : 'SPOT');
+      const budget = computeEntryBudget(ctx.cash ?? ctx.equity, router.type === 'FUTURES' ? 'FUTURES' : 'SPOT');
       if (budget < 5) {
         status = `תקציב נמוך מדי ($${budget.toFixed(2)} < $5)`;
         willExecute = false;
