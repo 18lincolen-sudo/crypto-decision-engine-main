@@ -219,13 +219,18 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     params.allowShortDuringHighVolatility &&
     regime.trending &&
     regime.volatility === 'HIGH' &&
-    setup.direction === 'SHORT'
+    (setup.direction === 'SHORT' || setup.direction === 'LONG')
   ) {
-    // Deliberate carve-out (off by default — see allowShortDuringHighVolatility
-    // in intradayParams.ts): regime.futuresAllowed is direction-agnostic and
-    // blocks FUTURES outright in HIGH volatility, which normally disables the
-    // bot's only tool for profiting from a sharp down-move exactly when the
-    // down-move is sharpest. LONG still gets no such carve-out here.
+    // Deliberate carve-out for BOTH directions in HIGH volatility:
+    // - SHORT: regime.futuresAllowed is direction-agnostic and blocks FUTURES
+    //   outright in HIGH volatility, which normally disables the bot's only
+    //   tool for profiting from a sharp down-move exactly when the down-move
+    //   is sharpest (allowShortDuringHighVolatility, off by default).
+    // - LONG: the same blockage in HIGH volatility stops trend-following
+    //   longs on sharp up-moves. Symmetric carve-out: a trending market in
+    //   HIGH volatility may trade the direction the trend points. EXTREME
+    //   volatility stays blocked for both (see below) — liquidation risk at
+    //   EXTREME + leverage is judged too high either way.
     tradeType = 'FUTURES';
   } else {
     tradeType = 'SPOT';

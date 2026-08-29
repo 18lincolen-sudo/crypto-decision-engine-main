@@ -748,9 +748,14 @@ export interface TradeRouterOptions {
 // Formula: base + ((atrPercent - 2) / 6) * 15, clamped to [base, base+15]
 
 export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
-  if (atrPercent <= 2) return baseThreshold;
+  // Aligned with proAlgEngine.ts: the ramp starts at 4% ATR instead of 2%.
+  // Keeping the base threshold flat through the typical 2-4% crypto range
+  // made entries unreachable in exactly the regimes the bots see most of the
+  // day, while the sharp down/up-move regimes (ATR >= 4%) still ramp up to
+  // +15 points by ATR 8%.
+  if (atrPercent <= 4) return baseThreshold;
   if (atrPercent >= 8) return baseThreshold + 15;
-  return baseThreshold + ((atrPercent - 2) / 6) * 15;
+  return baseThreshold + ((atrPercent - 4) / 4) * 15;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -873,13 +878,22 @@ export function routeTradeType(
   const isVolatilitySafeForFutures = layer0.volatility === 'LOW' || layer0.volatility === 'NORMAL';
   const futuresThreshold = dynamicConfidenceThreshold(72, layer0.atrPercent);
   const isFuturesScorePassed = routingScore >= futuresThreshold;
+  // HIGH-volatility carve-out (aligned with intradayEngine.ts): normally
+  // FUTURES is blocked in HIGH vol, which mutes SHORT in sharp down-moves
+  // while LONG still trades via SPOT — a structural BUY-vs-SELL asymmetry.
+  // When the trend is confirmed AND the (already elevated) futures threshold
+  // is met, trade the trend's direction rather than shutting the bot out.
+  const isHighVolCarveOut = layer0.volatility === 'HIGH' && isTrending && isFuturesScorePassed;
 
-  if (isTrending && isVolatilitySafeForFutures && isFuturesScorePassed) {
+  if (isTrending && (isVolatilitySafeForFutures || isHighVolCarveOut) && isFuturesScorePassed) {
     const side: TradeSide = action === 'BUY' ? 'LONG' : 'SHORT';
+    const volNote = isHighVolCarveOut
+      ? `HIGH VOL carve-out (סף ${futuresThreshold.toFixed(1)} הושג)`
+      : `תנודתיות ${layer0.volatility}`;
     return {
       type: 'FUTURES',
       side,
-      reason: `כל תנאי Futures התקיימו: מגמתי (ADX ${layer0.adx}), SignalScore ${signalScore} >= ${futuresThreshold.toFixed(1)}, תנודתיות ${layer0.volatility}`
+      reason: `כל תנאי Futures התקיימו: מגמתי (ADX ${layer0.adx}), SignalScore ${routingScore} >= ${futuresThreshold.toFixed(1)}, ${volNote}`
     };
   }
 

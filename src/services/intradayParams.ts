@@ -240,7 +240,7 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   maxOpenPositions: 7,
   maxOpenFutures: 2,
   minOrderUsd: 5,
-  allowShortDuringHighVolatility: false,
+  allowShortDuringHighVolatility: true,
 
   maxHoldMinutes: { TREND_PULLBACK: 120, BREAKOUT_RETEST: 60, MEAN_REVERSION: 45 },
   timeStopFraction: 0.45,

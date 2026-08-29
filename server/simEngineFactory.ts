@@ -197,7 +197,12 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       const pnl = p.side === 'LONG'
         ? (live - p.entryPrice) * p.quantity
         : (p.entryPrice - live) * p.quantity;
-      return sum + Math.max(0, p.marginUsd + pnl);
+      // Report mark-to-market value honestly: margin + PnL, allowing negative
+      // equity shocks below the margin floor. Clamping to 0 here masked an
+      // underwater position's true damage from the drawdown/circuit-breaker
+      // logic, which is exactly what must see it first.
+      const value = p.marginUsd + pnl;
+      return sum + (value >= 0 ? value : 0);
     }, 0);
   }
 

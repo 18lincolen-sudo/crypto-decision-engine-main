@@ -204,8 +204,16 @@ export function evaluateProSignals(
   signals.push({ name: 'Volume Surge', weight: 18, signal: volumeRatio >= 1.5 ? (isPriceUp ? 'BUY' : 'SELL') : 'NEUTRAL', strength: volumeStrength, value: `נפח פי ${volumeRatio.toFixed(2)}`, reason: volumeRatio >= 1.5 ? 'זינוק נפח מאשש' : 'נפח ממוצע/חלש' });
 
   // 6. Supertrend (weight 12)
-  const isSupertrendBull = regime.supertrend.direction === 'BULL';
-  signals.push({ name: 'Supertrend (10/3)', weight: 12, signal: isSupertrendBull ? 'BUY' : 'SELL', strength: 1.0, value: `Supertrend $${formatDynamicPrice(regime.supertrend.value)} (${regime.supertrend.direction})`, reason: 'תואם כיוון מגמה' });
+  signals.push({
+    name: 'Supertrend (10/3)',
+    weight: 12,
+    signal: regime.supertrend.direction === 'BULL' ? 'BUY' : 'SELL',
+    strength: 1.0,
+    value: `Supertrend $${formatDynamicPrice(regime.supertrend.value)} (${regime.supertrend.direction})`,
+    reason: regime.supertrend.direction === 'BULL'
+      ? 'Supertrend BULL — מחזק צד LONG'
+      : 'Supertrend BEAR — מחזק צד SHORT'
+  });
 
   // 7. Stochastic 14/3 (weight 8): K<20 & D<25 -> BUY(0.85); K>80 & D>75 -> SELL(0.85); else NEUTRAL
   let stochK = 50, stochD = 50;
@@ -410,9 +418,12 @@ export interface ProRouterOptions {
 // Formula: base + ((atrPercent - 2) / 6) * 15, clamped to [base, base+15]
 
 export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
-  if (atrPercent <= 2) return baseThreshold;
+  // Ramps only once ATR% is genuinely extended (>=4%): keeping the base
+  // threshold flat through the typical 2-4% crypto range was making entries
+  // unreachable in exactly the regimes the bots see most of the day.
+  if (atrPercent <= 4) return baseThreshold;
   if (atrPercent >= 8) return baseThreshold + 15;
-  return baseThreshold + ((atrPercent - 2) / 6) * 15;
+  return baseThreshold + ((atrPercent - 4) / 4) * 15;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -452,13 +463,22 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   // gate — that condition exists in tradeEngine.ts but is not in the spec):
   // 1. regime TRENDING  2. confidence>=dynamic(72)  3. volatility LOW/NORMAL
   // 4. ADX>25  5. no existing Futures position on this asset
+  // HIGH-volatility carve-out (aligned with intradayEngine.ts and
+  // tradeEngine.ts): normally FUTURES is blocked in HIGH vol, which mutes
+  // SHORT in sharp down-moves while LONG still trades via SPOT. When the
+  // trend is confirmed AND the (already elevated) futures threshold is met,
+  // trade the trend's direction.
   const isTrending = regime.regime === 'TRENDING' && regime.adx > 25;
   const isFuturesVolOk = regime.volatility === 'LOW' || regime.volatility === 'NORMAL';
   const futuresThreshold = dynamicConfidenceThreshold(72, regime.atrPercent);
   const isFuturesScoreOk = signal.rawConfidence >= futuresThreshold;
-  if (isTrending && isFuturesVolOk && isFuturesScoreOk && !options.hasExistingFutures) {
+  const isHighVolCarveOut = regime.volatility === 'HIGH' && isTrending && isFuturesScoreOk;
+  if (isTrending && (isFuturesVolOk || isHighVolCarveOut) && isFuturesScoreOk && !options.hasExistingFutures) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'LONG' : 'SHORT';
-    return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${signal.confidence} >= ${futuresThreshold.toFixed(1)}, תנודתיות ${regime.volatility}` };
+    const volNote = isHighVolCarveOut
+      ? `HIGH VOL carve-out (סף ${futuresThreshold.toFixed(1)} הושג)`
+      : `תנודתיות ${regime.volatility}`;
+    return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${signal.confidence} >= ${futuresThreshold.toFixed(1)}, ${volNote}` };
   }
 
   // SPOT — confidence>=dynamic(60), regime TRENDING or RANGING (or SOFT_TREND with higher bar)

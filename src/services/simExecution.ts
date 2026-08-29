@@ -626,8 +626,10 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
 
 const EXIT_ORDER_SIDES = new Set(['close_long', 'close_short', 'partial_tp1']);
 
-/** Matches tradingWorker.ts's own LIMIT_ORDER_TTL_MS for the real bot. */
-export const LIMIT_ORDER_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+/** Matches tradingWorker.ts's own LIMIT_ORDER_TTL_MS for the real bot.
+ *  Kept at 2h in the simulation (vs 4h live): a shorter TTL makes the sim's
+ *  entries stale-signal-resistant. */
+export const LIMIT_ORDER_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 export interface FillableOrdersResult {
   due: PendingOrder[];
