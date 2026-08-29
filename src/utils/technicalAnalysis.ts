@@ -96,10 +96,18 @@ export function calculateVolumeProfile(historicalData: HistoricalPrice[], volume
   const priceVolumeMap = new Map<number, number>();
   
   for (let i = 0; i < Math.min(historicalData.length, volumes.length); i++) {
-    const price = Math.round(historicalData[i].price);
+    const price = historicalData[i].price;
+    if (!(price > 0)) continue;
+    // Bucket by price MAGNITUDE, not absolute dollar rounding: Math.round()
+    // buckets every sub-dollar coin (e.g. 0.02667, 0.000003647) into the 0/1
+    // bin, collapsing the profile to poc/VAH/VAL = 0 with a bogus
+    // 'above_vah' position. Bucket scale ≈ 1% of the price's order of
+    // magnitude so BTC (78k) and micro-caps (< 0.0001) both profile normally.
+    const scale = Math.pow(10, Math.floor(Math.log10(price)) - 1);
+    const bucket = Math.round(price / scale) * scale;
     const volume = volumes[i] || 0;
     
-    priceVolumeMap.set(price, (priceVolumeMap.get(price) || 0) + volume);
+    priceVolumeMap.set(bucket, (priceVolumeMap.get(bucket) || 0) + volume);
   }
   
   // מציאת POC (Point of Control) - המחיר עם הנפח הגבוה ביותר

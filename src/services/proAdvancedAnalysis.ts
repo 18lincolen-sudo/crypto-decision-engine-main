@@ -80,6 +80,8 @@ export interface ProAdvancedInput {
   fearGreedIndex: number;
   marketCap: number;
   volume24h: number;
+  /** Used only for diagnostics (the "Smart analysis for X" log). */
+  symbol?: string;
 }
 
 
@@ -119,7 +121,7 @@ export function computeProAdvancedAnalysis(input: ProAdvancedInput): ProAdvanced
   const recommendation = generateSmartRecommendation({
     cryptoData: {
       id: '',
-      symbol: '?',
+      symbol: input.symbol ?? '?',
       name: '',
       current_price: currentPrice,
       price_change_percentage_24h: priceChange24h,

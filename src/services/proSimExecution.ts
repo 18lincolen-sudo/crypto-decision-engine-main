@@ -138,6 +138,7 @@ export function buildProEvaluations(ctx: ProEvaluationContext): SignalEvaluation
       fearGreedIndex,
       marketCap: crypto.market_cap || 0,
       volume24h: crypto.total_volume || 0,
+      symbol,
     });
     const signal: ProSignalResult = {
       action: adv.action,

@@ -195,23 +195,24 @@ export function calculateSupportResistance(prices: number[], period: number = 20
 }
 
 // Helper function to calculate EMA
+// Returns an array ALIGNED with the input prices: ema[i] is the EMA value at
+// price index i (seeded at period-1). The previous version returned a shorter
+// array (length = prices.length - period + 1) that callers kept indexing by
+// the original price index — the final ~(slowPeriod-1) lookups read
+// `undefined`, and `undefined - undefined` produced NaN that then poisoned the
+// MACD signal line for every symbol (observed live: macd: NaN, signal: NaN).
 function calculateEMA(prices: number[], period: number): number[] {
-  const ema: number[] = [];
-  const multiplier = 2 / (period + 1);
-  
-  // First EMA is SMA
+  const ema: number[] = new Array(prices.length).fill(NaN);
+  if (prices.length < period || period <= 0) return ema;
+
   let sum = 0;
-  for (let i = 0; i < period && i < prices.length; i++) {
-    sum += prices[i];
-  }
-  ema.push(sum / Math.min(period, prices.length));
-  
-  // Calculate subsequent EMAs
+  for (let i = 0; i < period; i++) sum += prices[i];
+  ema[period - 1] = sum / period;
+
+  const multiplier = 2 / (period + 1);
   for (let i = period; i < prices.length; i++) {
-    const currentEMA = (prices[i] * multiplier) + (ema[ema.length - 1] * (1 - multiplier));
-    ema.push(currentEMA);
+    ema[i] = prices[i] * multiplier + ema[i - 1] * (1 - multiplier);
   }
-  
   return ema;
 }
 
