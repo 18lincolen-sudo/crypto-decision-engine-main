@@ -50,7 +50,6 @@ const App = () => {
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/simulation-bot" element={<SimulationBot />} />
                 <Route path="/real-trading" element={<RealTradingBot />} />
-                <Route path="/real-trading-bot" element={<RealTradingBot />} />
                 <Route path="/advanced-analysis" element={<AdvancedAnalysis />} />
                 <Route path="/backtest-results" element={<BacktestResults />} />
                 <Route path="*" element={<NotFound />} />

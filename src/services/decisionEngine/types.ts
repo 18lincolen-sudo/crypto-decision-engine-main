@@ -181,9 +181,9 @@ export interface EngineAdapter<C extends DecisionContext> {
 
 // ── Re-export shared infrastructure types ─────────────────────────────────────
 
-export type { ClosedTradeRecord } from './adaptiveRisk';
-export { computeSizingMultiplier, adaptiveRiskPercentFromHistory, sizingMultiplierFromHistory, summarizeRecentPerformance, isInStreakCooldown, streakCooldownFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from './adaptiveRisk';
-export type { CorrelatedHolding, CorrelationGateInput, CorrelationGateResult } from './correlation';
-export { evaluateCorrelationGate, toPositionDirection, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from './correlation';
-export type { Candle, PortfolioRiskStats as SharedPortfolioRiskStats } from './tradeEngine';
-export { calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
+export type { ClosedTradeRecord } from '../adaptiveRisk';
+export { computeSizingMultiplier, adaptiveRiskPercentFromHistory, sizingMultiplierFromHistory, summarizeRecentPerformance, isInStreakCooldown, streakCooldownFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../adaptiveRisk';
+export type { CorrelatedHolding, CorrelationGateInput, CorrelationGateResult } from '../correlation';
+export { evaluateCorrelationGate, toPositionDirection, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../correlation';
+export type { Candle, PortfolioRiskStats as SharedPortfolioRiskStats } from '../tradeEngine';
+export { calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from '../tradeEngine';

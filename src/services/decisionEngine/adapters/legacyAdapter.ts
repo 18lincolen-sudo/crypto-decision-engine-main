@@ -38,9 +38,9 @@ import {
   ExitDecision,
   ClosedTradeMetric,
   MIN_ENTRY_RELATIVE_VOLUME
-} from '../tradeEngine';
-import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../adaptiveRisk';
-import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../correlation';
+} from '../../tradeEngine';
+import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
+import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
 // ── Type Mappings ─────────────────────────────────────────────────────────────
 

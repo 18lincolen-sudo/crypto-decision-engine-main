@@ -166,7 +166,6 @@ crypto-decision-engine-main/
 │   │   ├── binancePublicApi.ts   # לקוח Binance (ציבורי)
 │   │   ├── coinGeckoApi.ts       # לקוח CoinGecko (נטלול)
 │   │   ├── fearGreedApi.ts       # מדד פחד וחמדנות
-│   │   ├── firebaseSync.ts       # סנכרון Firebase
 │   │   ├── symbolUniverse.ts     # ניהול יוניברס סמלים
 │   │   ├── assetUniverse.ts      # מיפוי סמלים
 │   │   └── ...
@@ -204,7 +203,6 @@ crypto-decision-engine-main/
 | **React Router** | ניתוב בין דפים |
 | **shadcn/ui + Tailwind** | עיצוב UI |
 | **React Query** | ניהול state וטעינת נתונים |
-| **Firebase SDK** | סנכרון נתונים (Firestore) |
 | **Capacitor** | אפליקציה מובייל (Android/iOS) |
 
 **דפים עיקריים:**
@@ -325,8 +323,6 @@ services:
 
 **משתני סביבה ב-Netlify:**
 - `VITE_TRADING_API_URL` — כתובת ה-Worker ב-Render
-- `VITE_FIREBASE_PROJECT_ID` — פרויקט Firebase
-- `VITE_FIREBASE_API_KEY` — מפתח Firebase
 
 ---
 

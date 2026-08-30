@@ -36,10 +36,10 @@ import {
   ProExitDecision,
   ProEntryTimingResult,
   dynamicConfidenceThreshold
-} from '../proAlgEngine';
-import { computeProAdvancedAnalysis } from '../proAdvancedAnalysis';
-import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../adaptiveRisk';
-import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../correlation';
+} from '../../proAlgEngine';
+import { computeProAdvancedAnalysis } from '../../proAdvancedAnalysis';
+import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
+import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
 // ── Type Mappings ─────────────────────────────────────────────────────────────
 

@@ -98,6 +98,20 @@ class FirestoreKV {
     return token;
   }
 
+  /** Parse Firestore document response, extracting value and optional expiresAt */
+  private parseDoc(data: { fields?: Record<string, unknown> }): string | null {
+    const fields = data.fields;
+    if (!fields) return null;
+
+    // Check TTL — if expired, treat as null
+    const expiresAt = fields.expiresAt?.integerValue;
+    if (expiresAt && Number(expiresAt) < Date.now()) {
+      return null; // expired
+    }
+
+    return fields.value?.stringValue ?? null;
+  }
+
   async get(key: string): Promise<string | null> {
     const token = await this.ensureToken();
     if (!token) return null;
@@ -106,29 +120,31 @@ class FirestoreKV {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!res.ok) return null;
-      const data = await res.json() as { fields?: { value?: { stringValue?: string } } };
-      return data.fields?.value?.stringValue ?? null;
+      const data = await res.json() as { fields?: Record<string, unknown> };
+      return this.parseDoc(data);
     } catch {
       return null;
     }
   }
 
-  async set(key: string, value: string): Promise<void> {
+  async set(key: string, value: string, ttlMs?: number): Promise<void> {
     const token = await this.ensureToken();
     if (!token) return;
     try {
+      const fields: Record<string, unknown> = {
+        value: { stringValue: value },
+        updatedAt: { integerValue: String(Date.now()) }
+      };
+      if (ttlMs && ttlMs > 0) {
+        fields.expiresAt = { integerValue: String(Date.now() + ttlMs) };
+      }
       await fetch(`${this.baseUrl}/kv/${encodeURIComponent(key)}`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          fields: {
-            value: { stringValue: value },
-            updatedAt: { integerValue: String(Date.now()) }
-          }
-        })
+        body: JSON.stringify({ fields })
       });
     } catch (err) {
       console.warn('[kv] Firestore set failed:', err);
@@ -167,28 +183,36 @@ class LocalKV {
   async get(key: string): Promise<string | null> {
     try {
       const raw = await readFile(this.file, 'utf8');
-      const data = JSON.parse(raw) as Record<string, string>;
-      return data[key] ?? null;
+      const data = JSON.parse(raw) as Record<string, { value: string; expiresAt?: number }>;
+      const entry = data[key];
+      if (!entry) return null;
+      if (entry.expiresAt && entry.expiresAt < Date.now()) {
+        return null; // expired
+      }
+      return entry.value;
     } catch {
       return null;
     }
   }
 
-  private async writeAtomic(full: Record<string, string>): Promise<void> {
+  private async writeAtomic(full: Record<string, { value: string; expiresAt?: number }>): Promise<void> {
     await mkdir(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, JSON.stringify(full, null, 2), 'utf8');
     await rename(tmp, this.file);
   }
 
-  async set(key: string, value: string): Promise<void> {
+  async set(key: string, value: string, ttlMs?: number): Promise<void> {
     return enqueue(this.file, async () => {
       try {
-        let full: Record<string, string> = {};
+        let full: Record<string, { value: string; expiresAt?: number }> = {};
         try {
-          full = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, string>;
+          full = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, { value: string; expiresAt?: number }>;
         } catch { /* ignore */ }
-        full[key] = value;
+        full[key] = {
+          value,
+          ...(ttlMs && ttlMs > 0 ? { expiresAt: Date.now() + ttlMs } : {})
+        };
         await this.writeAtomic(full);
       } catch (err) {
         console.warn('[kv] local set failed:', err);
@@ -199,9 +223,9 @@ class LocalKV {
   async del(key: string): Promise<void> {
     return enqueue(this.file, async () => {
       try {
-        let full: Record<string, string> = {};
+        let full: Record<string, { value: string; expiresAt?: number }> = {};
         try {
-          full = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, string>;
+          full = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, { value: string; expiresAt?: number }>;
         } catch { return; }
         delete full[key];
         await this.writeAtomic(full);
@@ -235,14 +259,14 @@ class KVStore {
     return this.local.get(k);
   }
 
-  async set(key: string, value: string): Promise<void> {
+  async set(key: string, value: string, ttlMs?: number): Promise<void> {
     const k = this.k(key);
     if (process.env.NODE_ENV !== 'production') {
-      await this.local.set(k, value);
+      await this.local.set(k, value, ttlMs);
       return;
     }
-    await this.firestore.set(k, value);
-    await this.local.set(k, value);
+    await this.firestore.set(k, value, ttlMs);
+    await this.local.set(k, value, ttlMs);
   }
 
   async del(key: string): Promise<void> {

@@ -222,7 +222,8 @@ const state = {
   skippedSymbols: [...unsupportedSymbols] as { symbol: string; reason: string }[],
   realizedPnlTotal: 0,
   pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>(),
-  spotHoldings: new Map<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>()
+  spotHoldings: new Map<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>(),
+  engineVersion: ENGINE_VERSIONS.intraday
 };
 
 function json(res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }, status: number, body: unknown): void {
@@ -426,6 +427,16 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
   }
 }
 
+// Engine versions — bumped when the decision algorithm changes.
+// The frontend can use this to warn if the displayed sim/backtest
+// results were produced by a different algorithm than the current one.
+export const ENGINE_VERSIONS = {
+  intraday: '1.0.0',
+  legacy: '1.0.0',
+  pro: '1.0.0',
+  backtest: '1.0.0',
+} as const;
+
 const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
 const legacySimStore = createKVStore('legacy-sim-state', join(DATA_DIR, 'legacy-sim-state.json'));
@@ -459,7 +470,8 @@ const DEFAULT_SIM_CONFIG = {
 const simState = {
   running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
   snapshot: null as unknown | null, leaderId: null as string | null,
-  leaderHeartbeat: 0, updatedAt: 0, epoch: 0
+  leaderHeartbeat: 0, updatedAt: 0, epoch: 0,
+  engineVersion: ENGINE_VERSIONS.intraday
 };
 
 const simEngine = createSimEngine(() => symbols);
@@ -475,13 +487,15 @@ async function hydrateSim() {
   simState.leaderHeartbeat = typeof s.leaderHeartbeat === 'number' ? s.leaderHeartbeat : 0;
   simState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
   simState.epoch = typeof s.epoch === 'number' ? s.epoch : 0;
+  simState.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.intraday;
 }
 
 async function persistSim() {
   await simStore.set('state', JSON.stringify({
     running: simState.running, config: simState.config, snapshot: simState.snapshot,
     leaderId: simState.leaderId, leaderHeartbeat: simState.leaderHeartbeat,
-    updatedAt: simState.updatedAt, epoch: simState.epoch
+    updatedAt: simState.updatedAt, epoch: simState.epoch,
+    engineVersion: simState.engineVersion
   }));
 }
 
@@ -490,7 +504,7 @@ const DEFAULT_LEGACY_SIM_CONFIG = {
   maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
   executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
 };
-const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
+const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.legacy };
 
 const legacySimEngine = createLegacySimEngine(() => symbols);
 
@@ -502,12 +516,14 @@ async function hydrateLegacySim() {
   legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
   legacySimState.snapshot = s.snapshot ?? null;
   legacySimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
+  legacySimState.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.legacy;
 }
 
 async function persistLegacySim() {
   await legacySimStore.set('state', JSON.stringify({
     running: legacySimState.running, config: legacySimState.config,
-    snapshot: legacySimState.snapshot, updatedAt: legacySimState.updatedAt
+    snapshot: legacySimState.snapshot, updatedAt: legacySimState.updatedAt,
+    engineVersion: legacySimState.engineVersion
   }));
 }
 
@@ -516,7 +532,7 @@ const DEFAULT_PRO_SIM_CONFIG = {
   maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
   executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
 };
-const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0 };
+const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.pro };
 
 const proSimEngine = createProSimEngine(() => symbols);
 
@@ -528,12 +544,14 @@ async function hydrateProSim() {
   proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
   proSimState.snapshot = s.snapshot ?? null;
   proSimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
+  proSimState.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.pro;
 }
 
 async function persistProSim() {
   await proSimStore.set('state', JSON.stringify({
     running: proSimState.running, config: proSimState.config,
-    snapshot: proSimState.snapshot, updatedAt: proSimState.updatedAt
+    snapshot: proSimState.snapshot, updatedAt: proSimState.updatedAt,
+    engineVersion: proSimState.engineVersion
   }));
 }
 
@@ -548,10 +566,11 @@ interface BacktestState {
   error: string | null;
   engine: string | null;
   days: number | null;
+  engineVersion: string;
 }
 
 const backtestState: BacktestState = {
-  status: 'idle', startedAt: null, finishedAt: null, results: [], error: null, engine: null, days: null
+  status: 'idle', startedAt: null, finishedAt: null, results: [], error: null, engine: null, days: null, engineVersion: '1.0.0'
 };
 
 async function hydrateBacktest(): Promise<void> {
@@ -565,10 +584,16 @@ async function hydrateBacktest(): Promise<void> {
   backtestState.error = s.error ?? null;
   backtestState.engine = s.engine ?? null;
   backtestState.days = s.days ?? null;
+  backtestState.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.backtest;
 }
 
+const BACKTEST_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 async function persistBacktest(): Promise<void> {
-  await backtestStore.set('state', JSON.stringify(backtestState));
+  await backtestStore.set('state', JSON.stringify({
+    ...backtestState,
+    engineVersion: ENGINE_VERSIONS.backtest,
+  }), BACKTEST_TTL_MS);
 }
 
 // Run backtest for both engines in background
@@ -606,7 +631,8 @@ function serializeState(): string {
     scans: state.scans, startedAt: state.startedAt, decisions: state.decisions,
     orders: state.orders, openedSymbols: Object.fromEntries(state.openedSymbols),
     skippedSymbols: state.skippedSymbols, pendingLimitOrders: Object.fromEntries(state.pendingLimitOrders),
-    spotHoldings: Object.fromEntries(state.spotHoldings), realizedPnlTotal: state.realizedPnlTotal, health
+    spotHoldings: Object.fromEntries(state.spotHoldings), realizedPnlTotal: state.realizedPnlTotal, health,
+    engineVersion: state.engineVersion
   });
 }
 
@@ -630,6 +656,7 @@ async function hydrate(): Promise<void> {
     state.openedSymbols = new Map();
   }
   state.realizedPnlTotal = typeof s.realizedPnlTotal === 'number' ? s.realizedPnlTotal : 0;
+  state.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.intraday;
   state.skippedSymbols = Array.isArray(s.skippedSymbols) ? s.skippedSymbols as { symbol: string; reason: string }[] : [];
   const savedPending = s.pendingLimitOrders;
   if (savedPending && typeof savedPending === 'object') {

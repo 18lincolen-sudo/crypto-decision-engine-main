@@ -31,6 +31,7 @@ interface BacktestState {
   error: string | null;
   engine: string | null;
   days: number | null;
+  engineVersion?: string;
 }
 
 /** Guard: the SPA host returns index.html for unknown /api paths — return a
@@ -203,6 +204,11 @@ export default function BacktestResults() {
           <CardHeader>
             <CardTitle className="text-lg">
               תוצאות סוויפ ({state.results.length} שילובים)
+              {state.engineVersion && (
+                <span className="text-xs font-normal text-muted-foreground mr-2">
+                  גרסת אלגוריתם: {state.engineVersion}
+                </span>
+              )}
               {state.finishedAt && (
                 <span className="text-sm font-normal text-muted-foreground mr-2">
                   — עודכן לאחרונה: {formatDate(state.finishedAt)}
