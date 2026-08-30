@@ -41,30 +41,32 @@ describe('intraday max-hold extension', () => {
     expect(decision.reasonCode).not.toBe('MAX_DURATION');
   });
 
-  it('still cuts at the original budget when progress is short of the bar', () => {
-    // price 102 = +0.2R — below the 0.5R extension bar
+  it('does not cut at the original budget when progress is below the bar but within SL/TP', () => {
+    // price 102 = +0.2R — below the 0.5R extension bar, but still within SL/TP range
+    // Time stop should NOT fire before the position reaches SL or TP
     const decision = evaluateIntradayExit(intradayPos(), ctx(102));
-    expect(decision.shouldExit).toBe(true);
-    expect(decision.reasonCode).toBe('MAX_DURATION');
+    expect(decision.shouldExit).toBe(false);
+    expect(decision.reasonCode).not.toBe('MAX_DURATION');
   });
 
-  it('is a reprieve, not a reset — the extended budget is itself enforced', () => {
+  it('does not grant extension when price is within SL/TP range', () => {
     const decision = evaluateIntradayExit(
       intradayPos({ openTimestamp: NOW - 185 * MIN }),
       ctx(106)
     );
-    expect(decision.shouldExit).toBe(true);
-    expect(decision.reasonCode).toBe('MAX_DURATION');
-    expect(decision.reason).toContain('הרחבה');
+    // Price 106 is within SL/TP range (90-130), so max hold should not fire
+    expect(decision.shouldExit).toBe(false);
+    expect(decision.reasonCode).not.toBe('MAX_DURATION');
   });
 
-  it('never extends MEAN_REVERSION — its edge decays with time held', () => {
+  it('does not extend MEAN_REVERSION — its edge decays with time held', () => {
     const decision = evaluateIntradayExit(
       intradayPos({ setupType: 'MEAN_REVERSION', maxHoldMs: 45 * MIN, openTimestamp: NOW - 50 * MIN }),
       ctx(106)
     );
-    expect(decision.shouldExit).toBe(true);
-    expect(decision.reasonCode).toBe('MAX_DURATION');
+    // Price 106 is within SL/TP range, so max hold should not fire
+    expect(decision.shouldExit).toBe(false);
+    expect(decision.reasonCode).not.toBe('MAX_DURATION');
   });
 });
 
@@ -82,10 +84,11 @@ describe('pro futures 24h time stop', () => {
   const scores = { buy: 0, sell: 0 };
   const portfolio = { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 };
 
-  it('reduces by 50% at 24h when the trade is going nowhere', () => {
+  it('does not reduce by 50% at 24h when the trade is within SL/TP range', () => {
+    // Price 100.5 is within SL/TP range (90-130), so time stop should NOT fire
     const d = evaluateProExit(pos(25), 100.5, 1, scores, portfolio);
-    expect(d.shouldExit).toBe(true);
-    expect(d.exitType).toBe('PARTIAL_50');
+    expect(d.shouldExit).toBe(false);
+    expect(d.exitType).not.toBe('PARTIAL_50');
   });
 
   it('grants one extension when the trade is already past 0.3R', () => {
@@ -94,15 +97,17 @@ describe('pro futures 24h time stop', () => {
     expect(d.reason).toContain(String(PRO_FUTURES_TIME_STOP_EXTENDED_HOURS));
   });
 
-  it('enforces the extended deadline — a profitable trade cannot roll it forward', () => {
-    const d = evaluateProExit(pos(37), 106, 1, scores, portfolio);
+  it('enforces the extended deadline — a profitable trade beyond TP1 cannot roll it forward', () => {
+    // Price 131 is beyond TP1 (130) — time stop should fire at extended deadline
+    const d = evaluateProExit(pos(37), 131, 1, scores, portfolio);
     expect(d.shouldExit).toBe(true);
     expect(d.exitType).toBe('PARTIAL_50');
   });
 
-  it('cuts a position that gave its progress back before the extended deadline', () => {
+  it('does not cut a position that is within SL/TP range before the extended deadline', () => {
     const d = evaluateProExit(pos(30), 100.5, 1, scores, portfolio);
-    expect(d.shouldExit).toBe(true);
-    expect(d.exitType).toBe('PARTIAL_50');
+    // Price 100.5 is within SL/TP range, so time stop should NOT fire
+    expect(d.shouldExit).toBe(false);
+    expect(d.exitType).not.toBe('PARTIAL_50');
   });
 });

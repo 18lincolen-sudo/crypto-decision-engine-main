@@ -27,37 +27,43 @@ describe('calculateRiskParameters', () => {
     expect(result).toBeNull();
   });
 
-  it('calculates SPOT risk parameters with direct Kelly (6% default)', () => {
+  it('calculates SPOT risk parameters with fixed 1.8% SL / 3% TP', () => {
     const result = calculateRiskParameters(100, 'SPOT', 'BUY', 4, 'NORMAL', 65, 20000);
     expect(result).not.toBeNull();
-    // SL clamped to MAX_STOP_PERCENT=6%: 100 - 6 = 94 (ATR*1.8=7.2 would be 92.8, but clamped to 6%)
-    expect(result!.stopLoss).toBeCloseTo(94, 4);
-    expect(result!.takeProfit).toBeCloseTo(100 + 4 * 2.7, 4);
+    // Fixed SL: 100 - 1.8% = 98.2
+    expect(result!.stopLoss).toBeCloseTo(98.2, 4);
+    // Fixed TP: 100 + 3% = 103
+    expect(result!.takeProfit).toBeCloseTo(103, 4);
     expect(result!.leverage).toBe(1);
     expect(result!.maxRiskAmountUsd).toBeCloseTo(1200, 1); // 20000 * 0.06 = 1200
   });
 
-  it('calculates FUTURES LONG risk parameters correctly', () => {
+  it('calculates FUTURES LONG risk parameters with fixed 1.8% SL / 3% TP', () => {
     const result = calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 75, 20000);
     expect(result).not.toBeNull();
-    // SL distance = ATR*1.5 = 6, which equals MAX_STOP_PERCENT=6%, so no clamp
-    expect(result!.stopLoss).toBeCloseTo(94, 4);
-    expect(result!.takeProfit1).toBeCloseTo(100 + 4 * 2.3, 4);
-    expect(result!.takeProfit2).toBeCloseTo(100 + 4 * 3.5, 4);
+    // Fixed SL: 100 - 1.8% = 98.2
+    expect(result!.stopLoss).toBeCloseTo(98.2, 4);
+    // Fixed TP1: 100 + 3% = 103, TP2: 100 + 4.5% = 104.5
+    expect(result!.takeProfit1).toBeCloseTo(103, 4);
+    expect(result!.takeProfit2).toBeCloseTo(104.5, 4);
     expect(result!.leverage).toBe(3);
   });
 
-  it('calculates FUTURES SHORT risk parameters correctly', () => {
+  it('calculates FUTURES SHORT risk parameters with fixed 1.8% SL / 3% TP', () => {
     const result = calculateRiskParameters(100, 'FUTURES', 'SHORT', 4, 'NORMAL', 75, 20000);
     expect(result).not.toBeNull();
-    // SL distance = ATR*1.5 = 6, which equals MAX_STOP_PERCENT=6%, so no clamp
-    expect(result!.stopLoss).toBeCloseTo(106, 4);
-    expect(result!.takeProfit1).toBeCloseTo(100 - 4 * 2.3, 4);
-    expect(result!.takeProfit2).toBeCloseTo(100 - 4 * 3.5, 4);
+    // Fixed SL: 100 + 1.8% = 101.8
+    expect(result!.stopLoss).toBeCloseTo(101.8, 4);
+    // Fixed TP1: 100 - 3% = 97, TP2: 100 - 4.5% = 95.5
+    expect(result!.takeProfit1).toBeCloseTo(97, 4);
+    expect(result!.takeProfit2).toBeCloseTo(95.5, 4);
   });
 
-  it('blocks Futures in HIGH volatility', () => {
-    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'HIGH', 75, 20000)).toBeNull();
+  it('blocks Futures in HIGH volatility for weak signals', () => {
+    // signalScore < 72 should still be blocked in HIGH volatility
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'HIGH', 50, 20000)).toBeNull();
+    // signalScore >= 72 bypasses the HIGH volatility block
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'HIGH', 72, 20000)).not.toBeNull();
   });
 
   it('applies leverage sizing: LOW 5x, NORMAL 3x', () => {
@@ -83,9 +89,11 @@ describe('calculateRiskParameters', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when leveraged exposure exceeds 20% limit', () => {
-    const result = calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 75, 20000, [], 0, 0, 3990);
-    expect(result).toBeNull();
+  it('returns null when leveraged exposure exceeds 20% limit for weak signals', () => {
+    // signalScore < 72 should still be blocked by exposure cap
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 50, 20000, [], 0, 0, 3990)).toBeNull();
+    // signalScore >= 72 bypasses the exposure cap
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 72, 20000, [], 0, 0, 3990)).not.toBeNull();
   });
 
   it('uses Kelly criterion when >= 30 closed trades without exceeding 10% bet fraction', () => {

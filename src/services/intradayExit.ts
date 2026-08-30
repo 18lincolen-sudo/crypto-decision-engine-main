@@ -173,9 +173,13 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   }
 
   // 4 ── Trailing — only after the trade proved itself (§32) ─────────────────
+  // Trailing stop only activates after the position has reached at least the
+  // first take-profit level (3%) — prevents exiting before meaningful profit.
+  const tp1Level = pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
+  const reachedTp1 = isLong ? price >= tp1Level : price <= tp1Level;
   const trailingActive = pos.type === 'FUTURES'
-    ? !!pos.tp1Hit
-    : mfeR >= (params.trailingActivationRBySetup[setupForParams] ?? params.trailingActivationR);
+    ? !!pos.tp1Hit && reachedTp1
+    : reachedTp1 && mfeR >= (params.trailingActivationRBySetup[setupForParams] ?? params.trailingActivationR);
   if (trailingActive) {
     const anchor = pos.type === 'FUTURES'
       ? isLong
@@ -197,7 +201,14 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   }
 
   // 5 ── Reversal — an opposite, CONFIRMED setup, not a single indicator ─────
-  if (ctx.reversalSignal && ctx.reversalSignal.entryConfirmed && ctx.reversalSignal.setupScore >= 70) {
+  // Don't exit on reversal before the position has reached at least the
+  // first take-profit level (3%) or stop-loss level (1.8%) — prevents
+  // closing a winning position too early on a temporary signal flip.
+  const tpLevel = pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
+  const slLevel = pos.stopLoss;
+  const beyondTp = isLong ? price >= tpLevel : price <= tpLevel;
+  const beyondSl = isLong ? price <= slLevel : price >= slLevel;
+  if ((beyondTp || beyondSl) && ctx.reversalSignal && ctx.reversalSignal.entryConfirmed && ctx.reversalSignal.setupScore >= 70) {
     const opposite = isLong ? ctx.reversalSignal.direction === 'SHORT' : ctx.reversalSignal.direction === 'LONG';
     if (opposite) {
       return {
@@ -223,23 +234,41 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   const effectiveMaxHoldMs = extensionEarned ? Math.round(maxHoldMs * extensionFactor) : maxHoldMs;
 
   if (heldMs >= effectiveMaxHoldMs) {
-    return {
-      shouldExit: true,
-      exitType: 'FULL',
-      reasonCode: 'MAX_DURATION',
-      reason: `משך החזקה מקסימלי (${Math.round(effectiveMaxHoldMs / 60_000)} דק'${extensionEarned ? ' — כולל הרחבה' : ''}) — יציאת זמן`,
-      ...base
-    };
+    const tpLevel = pos.takeProfit2 ?? pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
+    const slLevel = pos.stopLoss;
+    const beyondTp = isLong ? price >= tpLevel : price <= tpLevel;
+    const beyondSl = isLong ? price <= slLevel : price >= slLevel;
+    // Only exit on max hold if the position has already moved beyond its
+    // initial SL or TP — prevents cutting a position before 3% profit or
+    // 1.8% loss.
+    if (beyondTp || beyondSl) {
+      return {
+        shouldExit: true,
+        exitType: 'FULL',
+        reasonCode: 'MAX_DURATION',
+        reason: `משך החזקה מקסימלי (${Math.round(effectiveMaxHoldMs / 60_000)} דק'${extensionEarned ? ' — כולל הרחבה' : ''}) — יציאת זמן`,
+        ...base
+      };
+    }
   }
 
   if (heldMs >= timeStopMs && progressR < params.timeStopMinProgressR) {
-    return {
-      shouldExit: true,
-      exitType: 'FULL',
-      reasonCode: 'TIME_STOP',
-      reason: `Time Stop: אחרי ${heldMinutes} דק' התקדמות ${progressR.toFixed(2)}R < ${params.timeStopMinProgressR}R`,
-      ...base
-    };
+    const tpLevel = pos.takeProfit2 ?? pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
+    const slLevel = pos.stopLoss;
+    const beyondTp = isLong ? price >= tpLevel : price <= tpLevel;
+    const beyondSl = isLong ? price <= slLevel : price >= slLevel;
+    // Only exit on time stop if the position has already moved beyond its
+    // initial SL or TP — prevents cutting a position before 3% profit or
+    // 1.8% loss.
+    if (beyondTp || beyondSl) {
+      return {
+        shouldExit: true,
+        exitType: 'FULL',
+        reasonCode: 'TIME_STOP',
+        reason: `Time Stop: אחרי ${heldMinutes} דק' התקדמות ${progressR.toFixed(2)}R < ${params.timeStopMinProgressR}R`,
+        ...base
+      };
+    }
   }
 
   return {

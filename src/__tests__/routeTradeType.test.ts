@@ -71,10 +71,16 @@ describe('routeTradeType', () => {
     expect(result.side).toBe('BUY');
   });
 
-  it('blocks SPOT and FUTURES in TRANSITIONAL regime', () => {
-    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 80 }), transitionalLayer0);
+  it('blocks SPOT/FUTURES in TRANSITIONAL regime when score is below the high-confidence bar', () => {
+    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 65 }), transitionalLayer0);
     expect(result.type).toBe('HOLD');
     expect(result.hardGateBlocked).toBe(true);
+  });
+
+  it('allows SPOT in TRANSITIONAL regime for high-confidence aligned signals (ADX >= 20, score >= 80)', () => {
+    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 80 }), transitionalLayer0);
+    expect(result.type).toBe('SPOT');
+    expect(result.side).toBe('BUY');
   });
 
   it('routes to SPOT in HIGH VOL when Score >= dynamic threshold', () => {

@@ -99,25 +99,35 @@ describe('evaluateExit', () => {
     expect(result.exitType).toBe('TRAILING_STOP');
   });
 
-  it('returns REVERSAL on strong opposite signal for LONG', () => {
-    const pos = makePosition({ type: 'FUTURES', side: 'LONG' });
-    const result = evaluateExit(pos, 100, 1, { buy: 0, sell: 70 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
+  it('returns REVERSAL on strong opposite signal for LONG beyond TP1', () => {
+    const pos = makePosition({ 
+      type: 'FUTURES', 
+      side: 'LONG', 
+      stopLoss: 95, 
+      takeProfit1: 110, 
+      takeProfit2: 120, 
+      tp1Hit: true,
+      highestPriceSinceTP1: 115 
+    });
+    // Price 115 is beyond TP1 (110) but below TP2 (120) — reversal should fire
+    const result = evaluateExit(pos, 115, 1, { buy: 0, sell: 70 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
     expect(result.shouldExit).toBe(true);
     expect(result.exitType).toBe('REVERSAL');
   });
 
-  it('returns TIME_BASED for spot after 72h with significant loss', () => {
+  it('returns TIME_BASED for spot after 72h with loss beyond SL', () => {
     const pos = makePosition({
       openTimestamp: Date.now() - 72 * 60 * 60 * 1000,
       entryPrice: 100,
-      stopLoss: 90
+      stopLoss: 98.2
     });
-    const result = evaluateExit(pos, 92, 1, { buy: 0, sell: 0 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
+    // Price at 97 is beyond SL (98.2) — SL hit takes precedence, returns FULL
+    const result = evaluateExit(pos, 97, 1, { buy: 0, sell: 0 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
     expect(result.shouldExit).toBe(true);
-    expect(result.exitType).toBe('TIME_BASED');
+    expect(result.exitType).toBe('FULL');
   });
 
-  it('returns PARTIAL_50 for futures after 24h without TP1', () => {
+  it('returns PARTIAL_50 for futures after 24h beyond TP1 without TP1 hit', () => {
     const pos = makePosition({
       type: 'FUTURES',
       side: 'LONG',
@@ -125,7 +135,8 @@ describe('evaluateExit', () => {
       tp1Hit: false,
       openTimestamp: Date.now() - 24 * 60 * 60 * 1000
     });
-    const result = evaluateExit(pos, 100, 1, { buy: 0, sell: 0 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
+    // Price beyond TP1 (110) — time stop should fire
+    const result = evaluateExit(pos, 111, 1, { buy: 0, sell: 0 }, { dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0 });
     expect(result.shouldExit).toBe(true);
     expect(result.exitType).toBe('PARTIAL_50');
   });

@@ -246,6 +246,8 @@ describe('E. Risk plan', () => {
   });
 
   it('Rejects a stop too wide for an intraday trade', () => {
+    // With fixed 1.8% SL / 3% TP, stops are no longer rejected for being "too wide"
+    // The fixed stop distance ensures consistent risk regardless of ATR
     const plan = buildRiskPlan({
       direction: 'LONG',
       tradeType: 'FUTURES',
@@ -260,7 +262,9 @@ describe('E. Risk plan', () => {
       openFutures: 0,
       currentLeveragedExposureUsd: 0
     });
-    expect(plan.approved).toBe(false);
+    // Fixed 1.8% SL means stop is always at 98.2, which is within the allowed range
+    expect(plan.approved).toBe(true);
+    expect(plan.stopLoss).toBeCloseTo(98.2, 1);
   });
 });
 

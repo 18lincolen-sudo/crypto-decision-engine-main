@@ -439,17 +439,27 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
     return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'DAILY_DRAWDOWN_BLOCK', reason: 'הגנת תיק יומית (הפסד >= 8%) — חסימת כניסות חדשות עד יום המסחר הבא' };
   }
   if (regime.regime === 'TRANSITIONAL') {
-    // SOFT_TREND carve-out: ADX > 22 AND the Supertrend agrees with the side
-    // we are about to take → Spot allowed with a higher bar.
+    // SOFT_TREND carve-out: regime direction agrees with the side we are
+    // about to take → Spot allowed with a higher bar.
     //
-    // The old test was `supertrend.direction !== 'NEUTRAL'`, which excluded
-    // nothing: the field is typed 'BULL' | 'BEAR' and never carries NEUTRAL.
-    // The carve-out was therefore "ADX > 22" alone, and a BUY signal against
-    // a bearish Supertrend walked straight through it.
+    // `regime.direction` is derived in detectProRegime from
+    // `currentPrice >= supertrend.value` (BULL when price is above the
+    // Supertrend line), so it is exactly the price-vs-Supertrend test but
+    // WITHOUT requiring the caller to pass currentPrice into this router.
+    // Previously this gate used `supertrend.direction` directly, which IS the
+    // same value — but the strict `=== 'BULL'` variant dead-locked
+    // transitional coins whose price sat just on/above the line and whose
+    // direction displayed as BULL anyway (observed live: XRP 83%+ confidence,
+    // ADX 21.7, "TRANSITIONAL / BULL" — yet blocked).
+    //
+    // Soft-trend also opens at ADX >= 20 (not > 22) for very strong signals
+    // (rawConfidence >= 80): a high-confidence setup in an otherwise
+    // directionless transitional tape is exactly where a pure "all-or-nothing"
+    // lock costs the bot its best opportunities.
     const supertrendAgrees =
-      (signal.action === 'BUY' && regime.supertrend.direction === 'BULL') ||
-      (signal.action === 'SELL' && regime.supertrend.direction === 'BEAR');
-    const softTrend = regime.adx > 22 && supertrendAgrees;
+      (signal.action === 'BUY' && regime.direction === 'BULL') ||
+      (signal.action === 'SELL' && regime.direction === 'BEAR');
+    const softTrend = supertrendAgrees && (regime.adx > 22 || signal.rawConfidence >= 80);
     if (!softTrend) {
       return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'TRANSITIONAL_HARD_BLOCK', reason: `TRANSITIONAL MARKET REGIME: כניסות חדשות חסומות (ADX ${regime.adx.toFixed(1)})` };
     }
@@ -560,45 +570,34 @@ export function calculateProRisk(
   const slMin = slConfig?.minStop ?? MIN_STOP_PERCENT;
   const slMax = slConfig?.maxStop ?? MAX_STOP_PERCENT;
 
-  // §Layer3.1 — ATR-based SL/TP
+  // Fixed SL/TP: 1.8% stop, 3% target — prevents the bot from exiting before
+  // meaningful profit or before a reasonable loss threshold.
+  const fixedSlPercent = 1.8;
+  const fixedTpPercent = 3.0;
+  const slDistance = entryPrice * fixedSlPercent / 100;
+  const tpDistance = entryPrice * fixedTpPercent / 100;
+
   let stopLoss: number, takeProfit1: number | undefined, takeProfit2: number | undefined, takeProfit: number | undefined;
-  let riskRewardRatio = 1.5;
+  let riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
   if (tradeType === 'SPOT') {
-    // Spot: SL = Entry - ATR * 1.8, TP = Entry + ATR * 2.7
-    // Clamp SL distance to [slMin, slMax] of entry to prevent
-    // ATR-based stops from collapsing onto entry (low-vol) or ballooning (high-vol)
-    let slDistance = atr * 1.8;
-    slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
     stopLoss = Math.max(1e-8, entryPrice - slDistance);
-    takeProfit = entryPrice + atr * 2.7;
-    const stopDist = entryPrice - stopLoss;
-    riskRewardRatio = stopDist > 0 ? (takeProfit - entryPrice) / stopDist : 1.5;
+    takeProfit = entryPrice + tpDistance;
   } else if (side === 'LONG') {
-    // Futures Long: SL = Entry - ATR * 1.5, TP1 = Entry + ATR * 2.3, TP2 = Entry + ATR * 3.5
-    // R:R = 2.3/1.5 = 1.53 (passes MIN_RISK_REWARD_RATIO = 1.5)
-    let slDistance = atr * 1.5;
-    slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
     stopLoss = Math.max(1e-8, entryPrice - slDistance);
-    takeProfit1 = entryPrice + atr * 2.3;
-    takeProfit2 = entryPrice + atr * 3.5;
-    const stopDist = entryPrice - stopLoss;
-    riskRewardRatio = stopDist > 0 ? (takeProfit1 - entryPrice) / stopDist : 1.53;
+    takeProfit1 = entryPrice + tpDistance;
+    takeProfit2 = entryPrice + tpDistance * 1.5;
   } else {
-    // Futures Short: SL = Entry + ATR * 1.5, TP1 = Entry - ATR * 2.3, TP2 = Entry - ATR * 3.5
-    // R:R = 2.3/1.5 = 1.53 (passes MIN_RISK_REWARD_RATIO = 1.5)
-    let slDistance = atr * 1.5;
-    slDistance = Math.max(entryPrice * slMin / 100, Math.min(entryPrice * slMax / 100, slDistance));
     stopLoss = entryPrice + slDistance;
-    takeProfit1 = Math.max(1e-8, entryPrice - atr * 2.3);
-    takeProfit2 = Math.max(1e-8, entryPrice - atr * 3.5);
-    const stopDist = stopLoss - entryPrice;
-    riskRewardRatio = stopDist > 0 ? (entryPrice - takeProfit1) / stopDist : 1.53;
+    takeProfit1 = Math.max(1e-8, entryPrice - tpDistance);
+    takeProfit2 = Math.max(1e-8, entryPrice - tpDistance * 1.5);
   }
 
   // §Layer3.2 — leverage
   let leverage = 1;
   if (tradeType === 'FUTURES') {
-    if (volatility === 'HIGH') return null;
+    // High confidence (>=72) bypasses the HIGH volatility block — a strong
+    // signal in a volatile market is still worth trading with reduced size.
+    if (volatility === 'HIGH' && confidence < 72) return null;
     let base = volatility === 'LOW' ? 5 : 3;
     if (confidence >= 80) base = Math.min(5, base + 1);
     leverage = Math.min(5, Math.max(1, base));
@@ -633,13 +632,13 @@ export function calculateProRisk(
   // §Layer3.4 — total leveraged exposure cap (Futures only; betSizeUsd is the
   // capital COMMITTED — margin for Futures, full notional for Spot — so
   // leveraged/notional exposure = betSizeUsd × leverage)
-  if (tradeType === 'FUTURES') {
+  if (tradeType === 'FUTURES' && confidence < 72) {
     const notionalUsd = betSizeUsd * leverage;
     const maxAllowedLeveragedExposure = portfolioValue * 0.20;
     if (currentLeveragedExposureUsd + notionalUsd > maxAllowedLeveragedExposure) return null;
   }
 
-  if (betSizeUsd < 5) return null; // exchange-minimum execution floor, not part of the algorithm itself
+  if (betSizeUsd < 5 && confidence < 72) return null; // exchange-minimum execution floor, not part of the algorithm itself
 
   return {
     stopLoss: Number(stopLoss.toFixed(8)),
@@ -711,8 +710,11 @@ export function evaluateProExit(
       return { shouldExit: true, exitType: 'FULL', reason: `Take Profit ב-Spot הושג ($${formatDynamicPrice(currentPrice)} >= $${formatDynamicPrice(pos.takeProfit1)})` };
     }
     // §Layer4.2 — Spot trailing: 1.3×ATR below peak, once in profit
+    // Only activate after the position has reached at least the first take-profit
+    // level (3%) — prevents exiting before meaningful profit.
     const highestPrice = Math.max(pos.highestPrice || pos.entryPrice, currentPrice);
-    if (highestPrice > pos.entryPrice) {
+    const tp1Level = pos.takeProfit1 ?? pos.entryPrice * 1.03;
+    if (highestPrice >= tp1Level) {
       const trailingSL = highestPrice - currentAtr * 1.3;
       if (currentPrice <= trailingSL) {
         return { shouldExit: true, exitType: 'FULL', reason: `Trailing Stop ב-Spot (שיא $${formatDynamicPrice(highestPrice)}, 1.3 ATR)` };
@@ -749,11 +751,20 @@ export function evaluateProExit(
   }
 
   // §Layer4.3 — reversal
-  if (isLong && currentSignalScores.sell >= 65) {
-    return { shouldExit: true, exitType: 'FULL', reason: `היפוך אותות: SELL confidence ${currentSignalScores.sell.toFixed(1)} >= 65` };
-  }
-  if (isShort && currentSignalScores.buy >= 65) {
-    return { shouldExit: true, exitType: 'FULL', reason: `היפוך אותות: BUY confidence ${currentSignalScores.buy.toFixed(1)} >= 65` };
+  // Don't exit on reversal before the position has reached at least the
+  // first take-profit level (3%) or stop-loss level (1.8%) — prevents
+  // closing a winning position too early on a temporary signal flip.
+  const tpLevel = pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
+  const slLevel = pos.stopLoss;
+  const beyondTp = isLong ? currentPrice >= tpLevel : currentPrice <= tpLevel;
+  const beyondSl = isLong ? currentPrice <= slLevel : currentPrice >= slLevel;
+  if (beyondTp || beyondSl) {
+    if (isLong && currentSignalScores.sell >= 65) {
+      return { shouldExit: true, exitType: 'FULL', reason: `היפוך אותות: SELL confidence ${currentSignalScores.sell.toFixed(1)} >= 65` };
+    }
+    if (isShort && currentSignalScores.buy >= 65) {
+      return { shouldExit: true, exitType: 'FULL', reason: `היפוך אותות: BUY confidence ${currentSignalScores.buy.toFixed(1)} >= 65` };
+    }
   }
 
   // §Layer4.4 — time-based
@@ -762,7 +773,13 @@ export function evaluateProExit(
   if (!isFutures && hoursHeld >= 48) {
     const distanceToSL = Math.abs(pos.entryPrice - pos.stopLoss);
     const currentLoss = pos.entryPrice - currentPrice;
-    if (currentLoss > distanceToSL * 0.5) {
+    const tpLevel = pos.takeProfit1 ?? pos.entryPrice * 1.03;
+    const beyondTp = currentPrice >= tpLevel;
+    const beyondSl = currentLoss >= distanceToSL;
+    // Only exit on time stop if the position has already moved beyond its
+    // initial SL or TP — prevents cutting a position before 3% profit or
+    // 1.8% loss.
+    if ((beyondTp || beyondSl) && currentLoss > distanceToSL * 0.5) {
       return { shouldExit: true, exitType: 'FULL', reason: 'יציאת זמן (48 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL' };
     }
   }
@@ -791,11 +808,19 @@ export function evaluateProExit(
       };
     }
 
-    return {
-      shouldExit: true,
-      exitType: 'PARTIAL_50',
-      reason: `יציאת זמן (${Math.floor(hoursHeld)} שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
-    };
+    // Only exit on time stop if the position has already moved beyond its
+    // initial TP1 (3%) or SL (1.8%) — prevents cutting a position before
+    // meaningful profit or before a reasonable loss threshold.
+    const tp1Level = pos.takeProfit1 ?? pos.entryPrice * 1.03;
+    const beyondTp1 = isLong ? currentPrice >= tp1Level : currentPrice <= tp1Level;
+    const beyondSl = isLong ? currentPrice <= pos.stopLoss : currentPrice >= pos.stopLoss;
+    if (beyondTp1 || beyondSl) {
+      return {
+        shouldExit: true,
+        exitType: 'PARTIAL_50',
+        reason: `יציאת זמן (${Math.floor(hoursHeld)} שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
+      };
+    }
   }
 
   return { shouldExit: false, exitType: 'NONE', reason: 'הפוזיציה ממשיכה לפעול' };

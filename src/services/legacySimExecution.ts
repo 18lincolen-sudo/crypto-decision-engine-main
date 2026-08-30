@@ -46,6 +46,12 @@ export const uid = (p: string) => `legacy-${p}-${Date.now()}-${Math.random().toS
 // Minimum candles needed for the legacy indicators (EMA50 warm-up + RSI14 + BB20 + ADX14).
 export const MIN_LEGACY_CANDLES = 60;
 
+// When confidence is at or above this threshold, Layer 3 risk blocks are
+// bypassed: the trade proceeds with minimal fallback parameters instead of
+// being rejected. This prevents high-confidence signals from being lost to
+// portfolio-cap or sizing edge-cases.
+export const HIGH_CONFIDENCE_BYPASS = 72;
+
 // ── 1. Evaluation — Layers 0-3 of the ORIGINAL alg.md algorithm ────────────────
 
 export interface LegacyEvaluationContext {
@@ -160,14 +166,21 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     const isQueued = queued.some((o) => o.symbol === symbol);
     const isHeld = openPos.some((p) => p.symbol === symbol);
 
-    let willExecute = layer2.type !== 'HOLD' && !layer2.hardGateBlocked && !!layer3 && entryAccepted;
+    // High-confidence bypass: when signal confidence >= 72, a null risk plan
+    // should not block the trade — use a minimal fallback with fixed 1.8% SL
+    // and 3% TP instead.
+    const effectiveLayer3 = layer3 ?? (layer1.confidence >= HIGH_CONFIDENCE_BYPASS && layer2.type !== 'HOLD'
+      ? buildFallbackLegacyRisk(entryPrice, layer2.side, layer1.confidence)
+      : null);
+
+    let willExecute = layer2.type !== 'HOLD' && !layer2.hardGateBlocked && !!effectiveLayer3 && entryAccepted;
     let status = layer2.hardGateBlocked
       ? (layer2.blockReason ?? 'חסום')
       : layer2.type === 'HOLD'
       ? 'אין סיגנל (Layer 1/2)'
       : !entryAccepted
       ? `נחסם בתזמון כניסה: ${entryBlockReason}`
-      : layer3
+      : effectiveLayer3
       ? 'מוכן לביצוע'
       : 'נפסל בניהול סיכונים (Layer 3)';
 
@@ -209,10 +222,10 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     }
 
     // Cost / Edge gate — refuse trades where the ATR-derived risk-reward
-    // ratio doesn't clear the minimum threshold. layer3.riskRewardRatio
+    // ratio doesn't clear the minimum threshold. effectiveLayer3.riskRewardRatio
     // is already computed from the ATR multipliers, so we use it directly.
-    if (willExecute && layer3 && layer3.riskRewardRatio < MIN_RISK_REWARD_RATIO) {
-      status = `יחס סיכון-רווח נמוך מדי (${layer3.riskRewardRatio.toFixed(2)} < ${MIN_RISK_REWARD_RATIO})`;
+    if (willExecute && effectiveLayer3 && effectiveLayer3.riskRewardRatio < MIN_RISK_REWARD_RATIO) {
+      status = `יחס סיכון-רווח נמוך מדי (${effectiveLayer3.riskRewardRatio.toFixed(2)} < ${MIN_RISK_REWARD_RATIO})`;
       willExecute = false;
     }
 
@@ -235,11 +248,11 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
         impact: layer2.type === 'HOLD' ? 'neutral' : 'positive',
         note: layer2.reason
       },
-      ...(layer3 ? [{
+      ...(effectiveLayer3 ? [{
         label: 'ניהול סיכונים (Layer 3)',
-        value: `SL ${layer3.stopLoss.toFixed(4)} | R:R ${layer3.riskRewardRatio.toFixed(2)} | ${layer3.leverage}x`,
+        value: `SL ${effectiveLayer3.stopLoss.toFixed(4)} | R:R ${effectiveLayer3.riskRewardRatio.toFixed(2)} | ${effectiveLayer3.leverage}x`,
         impact: 'positive' as const,
-        note: `Kelly ${(layer3.kellyFraction * 100).toFixed(1)}% | גודל $${layer3.betSizeUsd.toFixed(0)}`
+        note: `Kelly ${(effectiveLayer3.kellyFraction * 100).toFixed(1)}% | גודל $${effectiveLayer3.betSizeUsd.toFixed(0)}`
       }] : [])
     ];
 
@@ -257,15 +270,43 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
       factors,
       confidenceGap: 0,
       regime: layer0,
-      leverage: layer3?.leverage,
-      stopLoss: layer3?.stopLoss,
-      takeProfit1: layer3?.takeProfit1,
-      takeProfit2: layer3?.takeProfit2,
-      takeProfit: layer3?.takeProfit
+      leverage: effectiveLayer3?.leverage,
+      stopLoss: effectiveLayer3?.stopLoss,
+      takeProfit1: effectiveLayer3?.takeProfit1,
+      takeProfit2: effectiveLayer3?.takeProfit2,
+      takeProfit: effectiveLayer3?.takeProfit
     });
   }
 
   return results;
+}
+
+/** Builds a minimal fallback risk plan when calculateRiskParameters returns null
+ *  but the signal confidence is high enough (>= HIGH_CONFIDENCE_BYPASS). Uses
+ *  fixed 1.8% SL / 3% TP so the trade has a defined risk profile. */
+export function buildFallbackLegacyRisk(entryPrice: number, side: TradeSide, confidence: number): RiskParametersResult {
+  const slPercent = 1.8;
+  const tpPercent = 3.0;
+  const isLong = side === 'LONG' || side === 'BUY';
+  const stopLoss = isLong ? entryPrice * (1 - slPercent / 100) : entryPrice * (1 + slPercent / 100);
+  const takeProfit = isLong ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
+  const takeProfit1 = takeProfit;
+  const takeProfit2 = isLong ? entryPrice * (1 + tpPercent * 1.5 / 100) : entryPrice * (1 - tpPercent * 1.5 / 100);
+  const stopDist = Math.abs(entryPrice - stopLoss);
+  const riskRewardRatio = stopDist > 0 ? Math.abs(takeProfit - entryPrice) / stopDist : 1.67;
+  return {
+    stopLoss: Number(stopLoss.toFixed(8)),
+    takeProfit1: Number(takeProfit1.toFixed(8)),
+    takeProfit2: Number(takeProfit2.toFixed(8)),
+    takeProfit: Number(takeProfit.toFixed(8)),
+    leverage: 1,
+    betSizeUsd: 5,
+    positionPercentOfPortfolio: 0,
+    riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
+    kellyFraction: 0,
+    maxRiskAmountUsd: 5,
+    stopDistanceUsd: Number(stopDist.toFixed(8))
+  };
 }
 
 export function activeMarketRegimesFrom(evaluations: SignalEvaluation[]): Record<string, MarketRegimeResult> {

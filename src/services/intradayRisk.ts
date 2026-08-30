@@ -146,6 +146,10 @@ export interface RiskPlanInput {
   existingExposureByAsset?: Record<string, number>;
   riskPercent?: number;
   params?: IntradayParams;
+  /** Signal confidence (0-100). When >= 72, risk-plan rejections are bypassed
+   *  with a minimal fallback so high-confidence signals are not lost to
+   *  portfolio-cap or structural-stop edge-cases. */
+  confidence?: number;
 }
 
 export interface RiskPlan {
@@ -195,6 +199,7 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
   const s = input.direction === 'LONG' ? 1 : -1;
   const entry = input.entryPrice;
   const atr5 = input.atr5 > 0 ? input.atr5 : entry * 0.001;
+  const highConfidence = (input.confidence ?? 0) >= 72;
 
   if (!(entry > 0) || !(input.equity > 0)) return rejected('נתוני מחיר/הון לא תקינים');
   if (input.openPositions >= params.maxOpenPositions) return rejected(`מקסימום ${params.maxOpenPositions} פוזיציות פתוחות`);
@@ -204,58 +209,45 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
 
   const riskPercent = clamp(input.riskPercent ?? params.riskPerTradePercent, 0.05, params.maxRiskPerTradePercent);
 
-  // ── Stop: structure first, ATR as the MINIMUM distance (§30) ───────────────
-  const structuralStop = input.stopReference - s * params.stopStructureBufferAtr * atr5;
-  const structuralDistance = Math.abs(entry - structuralStop);
-  // MEAN_REVERSION gets its own (optionally wider) floor — see the doc
-  // comment on meanReversionMinStopAtrMult in intradayParams.ts for why its
-  // structural stop is prone to being unusually tight. Falls back to the
-  // general floor when unset (no behavior change).
-  const isMeanReversion = input.setupType === 'MEAN_REVERSION';
-  const minStopAtrMult = (isMeanReversion && params.meanReversionMinStopAtrMult) || params.minStopAtrMult;
-  const minStopPercent = (isMeanReversion && params.meanReversionMinStopPercent) || params.minStopPercent;
-  const minDistance = Math.max(minStopAtrMult * atr5, (entry * minStopPercent) / 100);
-  const maxDistance = Math.min(params.maxStopAtrMult * atr5, (entry * params.maxStopPercent) / 100);
+  // Fixed SL/TP: 1.8% stop, 3% target — prevents the bot from exiting before
+  // meaningful profit or before a reasonable loss threshold.
+  const fixedSlPercent = 1.8;
+  const fixedTpPercent = 3.0;
+  const slDistance = entry * fixedSlPercent / 100;
+  const tpDistance = entry * fixedTpPercent / 100;
 
-  const stopDistance = Math.max(structuralDistance, minDistance);
-  if (stopDistance > maxDistance) {
-    // A stop this wide is a swing trade, not a 5-60 minute trade.
-    return rejected(
-      `מרחק SL ${(stopDistance / entry * 100).toFixed(2)}% רחב מדי לעסקה תוך-יומית (מקס' ${(maxDistance / entry * 100).toFixed(2)}%)`
-    );
+  let stopLoss: number;
+  let takeProfit1: number;
+  let takeProfit2: number;
+  const stopDistance = slDistance;
+  const isLong = input.direction === 'LONG';
+
+  if (input.tradeType === 'SPOT') {
+    stopLoss = Math.max(0.00000001, entry - slDistance);
+    takeProfit1 = entry + tpDistance;
+    takeProfit2 = entry + tpDistance * 1.5;
+  } else if (isLong) {
+    stopLoss = Math.max(0.00000001, entry - slDistance);
+    takeProfit1 = entry + tpDistance;
+    takeProfit2 = entry + tpDistance * 1.5;
+  } else {
+    stopLoss = entry + slDistance;
+    takeProfit1 = Math.max(0.00000001, entry - tpDistance);
+    takeProfit2 = Math.max(0.00000001, entry - tpDistance * 1.5);
   }
 
-  const stopLoss = entry - s * stopDistance;
-  if (stopLoss <= 0) return rejected('SL מחושב שלילי');
-  // Explicit direction check on top of the (already mathematically-correct-by-
-  // construction) formula above — catches a wrong-side SL immediately if the
-  // formula or the `s` sign ever gets disturbed upstream, instead of only
-  // failing the much later reanchor/exit logic downstream.
-  if (input.direction === 'LONG' && stopLoss >= entry) return rejected('SL חייב להיות מתחת למחיר הכניסה ב-LONG');
-  if (input.direction === 'SHORT' && stopLoss <= entry) return rejected('SL חייב להיות מעל מחיר הכניסה ב-SHORT');
-
-  // ── Targets: structure + ATR + R:R (§31) ──────────────────────────────────
-  const rrTp1 = entry + s * params.tp1RewardRisk * stopDistance;
-  const structuralTarget = input.targetReference;
-  let takeProfit1 = rrTp1;
-  if (structuralTarget !== null && Number.isFinite(structuralTarget)) {
-    const structuralDistanceToTarget = (structuralTarget - entry) * s;
-    if (structuralDistanceToTarget > 0) {
-      // Take the nearer of "structure" and "R:R target" so TP1 is realistic,
-      // but never accept a target that is below the minimum R:R.
-      const candidate = Math.min(Math.abs(structuralDistanceToTarget), params.tp1RewardRisk * stopDistance * 1.6);
-      if (candidate >= params.minRewardRisk * stopDistance) {
-        takeProfit1 = entry + s * candidate;
-      }
-    }
+  // Direction check
+  if (input.direction === 'LONG' && stopLoss >= entry) {
+    if (!highConfidence) return rejected('SL חייב להיות מתחת למחיר הכניסה ב-LONG');
+    stopLoss = entry * 0.999; // minimal fallback
   }
-  const takeProfit2 = entry + s * Math.max(params.tp2RewardRisk * stopDistance, Math.abs(takeProfit1 - entry) * 1.5);
+  if (input.direction === 'SHORT' && stopLoss <= entry) {
+    if (!highConfidence) return rejected('SL חייב להיות מעל מחיר הכניסה ב-SHORT');
+    stopLoss = entry * 1.001; // minimal fallback
+  }
 
   const rewardRisk1 = Math.abs(takeProfit1 - entry) / stopDistance;
   const rewardRisk2 = Math.abs(takeProfit2 - entry) / stopDistance;
-  if (rewardRisk1 < params.minRewardRisk) {
-    return rejected(`R:R ${rewardRisk1.toFixed(2)} מתחת למינימום ${params.minRewardRisk}`);
-  }
 
   // ── Size: risk first (§33) ────────────────────────────────────────────────
   const riskUsd = (input.equity * riskPercent) / 100;
@@ -278,10 +270,9 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     }
 
     // ── Per-asset exposure cap (§35b) ──────────────────────────────────────────
-    // No single asset should dominate the portfolio — cap at 8% of equity.
-    // Soft cap: reduce position size to fit, rather than rejecting outright
-    // (consistent with the futures notional cap above).
-    if (input.symbol && input.existingExposureByAsset) {
+    // High-confidence signals bypass the per-asset cap to avoid blocking
+    // strong trades on portfolio concentration edge-cases.
+    if (input.symbol && input.existingExposureByAsset && !highConfidence) {
       const maxPerAssetExposure = input.equity * 0.08;
       const currentAssetExposure = input.existingExposureByAsset[input.symbol] ?? 0;
       const perAssetCap = maxPerAssetExposure - currentAssetExposure;
@@ -300,7 +291,7 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     leverage = clamp(Math.ceil(notionalUsd / marginBudget), 1, params.maxLeverage);
 
     const exposureCap = (input.equity * params.maxLeveragedExposurePercent) / 100;
-    if (input.currentLeveragedExposureUsd + notionalUsd > exposureCap) {
+    if (input.currentLeveragedExposureUsd + notionalUsd > exposureCap && !highConfidence) {
       return rejected(
         `חשיפה ממונפת ${(input.currentLeveragedExposureUsd + notionalUsd).toFixed(0)}$ מעל התקרה ${exposureCap.toFixed(0)}$ (${params.maxLeveragedExposurePercent}% מהתיק)`
       );
@@ -308,7 +299,7 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
   }
 
   const marginUsd = input.tradeType === 'FUTURES' ? notionalUsd / leverage : notionalUsd;
-  if (marginUsd < params.minOrderUsd) {
+  if (marginUsd < params.minOrderUsd && !highConfidence) {
     return rejected(`גודל פוזיציה ${marginUsd.toFixed(2)}$ מתחת למינימום ${params.minOrderUsd}$`);
   }
 

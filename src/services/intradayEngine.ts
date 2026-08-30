@@ -298,6 +298,10 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
   // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
+  const setupScore = setup.setupScore;
+  const entryScore = entry.entryScore;
+  const confidence = Math.round((setupScore + entryScore) / 2);
+
   const risk = buildRiskPlan({
     symbol,
     direction: setup.direction as Exclude<Direction, 'NONE'>,
@@ -314,18 +318,26 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     currentLeveragedExposureUsd: p.totalLeveragedExposureUsd,
     existingExposureByAsset: input.existingExposureByAsset ?? p.existingExposureByAsset ?? {},
     riskPercent: params.riskPerTradePercent,
+    confidence,
     params
   });
-  if (!risk.approved) {
+
+  // High-confidence bypass: if buildRiskPlan rejected but confidence >= 72,
+  // use a minimal fallback with fixed 1.8% SL / 3% TP.
+  const effectiveRisk = risk.approved ? risk : (confidence >= 72 && tradeType !== null
+    ? buildFallbackIntradayRisk(entry.entryPrice, setup.direction as Exclude<Direction, 'NONE'>, tradeType)
+    : null);
+
+  if (!effectiveRisk) {
     logs.push(`[${symbol}] RISK — ${risk.blockReason ?? 'נפסל'}`);
     return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'NO_SIGNAL', setup, entry), tradeType);
   }
 
   logs.push(
-    `[${symbol}] SIGNAL ${tradeType} ${setup.direction} ${setup.setupType} | SL=${formatDynamicPrice(risk.stopLoss)} TP1=${formatDynamicPrice(risk.takeProfit1)} lev=${risk.leverage}x risk=${risk.riskPercentUsed}% qty=${risk.quantity}`
+    `[${symbol}] SIGNAL ${tradeType} ${setup.direction} ${setup.setupType} | SL=${formatDynamicPrice(effectiveRisk.stopLoss)} TP1=${formatDynamicPrice(effectiveRisk.takeProfit1)} lev=${effectiveRisk.leverage}x risk=${effectiveRisk.riskPercentUsed}% qty=${effectiveRisk.quantity}`
   );
 
-  return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'SIGNAL', setup, entry), tradeType);
+  return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, effectiveRisk, logs, params, now, mkFunnel('RISK', 'SIGNAL', setup, entry), tradeType);
 }
 
 function finalize(
@@ -381,5 +393,39 @@ function finalize(
       volatility: regime?.volatility ?? 'NONE'
     },
     funnel
+  };
+}
+
+/** Builds a minimal fallback risk plan for high-confidence intraday signals
+ *  that were rejected by buildRiskPlan. Uses fixed 1.8% SL / 3% TP. */
+function buildFallbackIntradayRisk(entryPrice: number, direction: Exclude<Direction, 'NONE'>, tradeType: TradeType): RiskPlan {
+  const slPercent = 1.8;
+  const tpPercent = 3.0;
+  const isLong = direction === 'LONG';
+  const stopLoss = isLong ? entryPrice * (1 - slPercent / 100) : entryPrice * (1 + slPercent / 100);
+  const takeProfit1 = isLong ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
+  const takeProfit2 = isLong ? entryPrice * (1 + tpPercent * 1.5 / 100) : entryPrice * (1 - tpPercent * 1.5 / 100);
+  const stopDistance = Math.abs(entryPrice - stopLoss);
+  const rewardRisk1 = Math.abs(takeProfit1 - entryPrice) / stopDistance;
+  const rewardRisk2 = Math.abs(takeProfit2 - entryPrice) / stopDistance;
+  return {
+    approved: true,
+    blockReason: undefined,
+    stopLoss: Number(stopLoss.toFixed(8)),
+    takeProfit1: Number(takeProfit1.toFixed(8)),
+    takeProfit2: Number(takeProfit2.toFixed(8)),
+    stopDistance: Number(stopDistance.toFixed(8)),
+    stopDistancePercent: Number((slPercent).toFixed(4)),
+    riskUsd: 5,
+    quantity: 5 / stopDistance,
+    notionalUsd: (5 / stopDistance) * entryPrice,
+    marginUsd: tradeType === 'FUTURES' ? 5 : (5 / stopDistance) * entryPrice,
+    leverage: 1,
+    rewardRisk1: Number(rewardRisk1.toFixed(2)),
+    rewardRisk2: Number(rewardRisk2.toFixed(2)),
+    maxHoldMs: 60 * 60_000,
+    timeStopMs: Math.round(60 * 60_000 * 0.45),
+    positionPercentOfEquity: 0,
+    riskPercentUsed: 0.5
   };
 }
