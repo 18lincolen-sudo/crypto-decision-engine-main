@@ -1,42 +1,80 @@
 
 import { useState, useEffect } from 'react';
 import { Portfolio, PortfolioItem, PortfolioAnalysis, CryptoRecommendation } from '../types/crypto';
+import { readStoredJSON, writeStoredJSON, sanitizeNumber, sanitizeSymbol } from '../utils/sanitizer';
 
 const PORTFOLIO_STORAGE_KEY = 'crypto-portfolio';
+
+function createDefaultPortfolio(): Portfolio {
+  return {
+    id: 'default',
+    name: 'התיק שלי',
+    items: [],
+    totalInvestment: 0,
+    totalProfit: 0,
+    createdAt: new Date().toISOString()
+  };
+}
+
+/** Rejects a stored value that parsed but is not shaped like a Portfolio —
+ *  caught here rather than as `portfolio.items.some is not a function` deep
+ *  inside a render. */
+function isPortfolioShaped(value: unknown): boolean {
+  return !!value && typeof value === 'object' && Array.isArray((value as Portfolio).items);
+}
+
+/** Normalizes one stored item: symbols and numbers coming back from
+ *  localStorage are untrusted, and a NaN quantity propagates silently through
+ *  every P&L figure on the page. */
+function normalizeItem(item: Partial<PortfolioItem>): PortfolioItem {
+  const investmentAmount = sanitizeNumber(item.investmentAmount, 0);
+  const purchasePrice = sanitizeNumber(item.purchasePrice, 0);
+  const storedQuantity = sanitizeNumber(item.quantity, 0);
+  const derivedQuantity = purchasePrice > 0 ? investmentAmount / purchasePrice : 0;
+
+  return {
+    symbol: sanitizeSymbol(item.symbol),
+    allocation: sanitizeNumber(item.allocation, 0),
+    quantity: storedQuantity > 0 ? storedQuantity : derivedQuantity,
+    investmentAmount,
+    purchasePrice,
+    purchaseDate: typeof item.purchaseDate === 'string' ? item.purchaseDate : new Date().toISOString()
+  };
+}
 
 export function usePortfolio() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
 
   useEffect(() => {
-    const savedPortfolio = localStorage.getItem(PORTFOLIO_STORAGE_KEY);
-    if (savedPortfolio) {
-      const parsed = JSON.parse(savedPortfolio);
-      // Migrate old portfolios that don't have quantity
-      if (parsed.items) {
-        parsed.items = parsed.items.map((item: Record<string, unknown>) => ({
-          ...item,
-          quantity: Number(item.quantity) || (Number(item.investmentAmount) / Number(item.purchasePrice)) || 0
-        }));
+    // localStorage is untrusted input: a bare JSON.parse here used to throw on
+    // any corrupt value, and because the bad value stays on disk the app hit
+    // the ErrorBoundary on every subsequent load too — a permanent white
+    // screen from one truncated write. readStoredJSON never throws.
+    const stored = readStoredJSON<Portfolio>(PORTFOLIO_STORAGE_KEY, createDefaultPortfolio(), isPortfolioShaped);
+
+    if (!stored.ok) {
+      if (stored.reason && stored.reason !== 'empty') {
+        console.warn(`[usePortfolio] discarding stored portfolio (${stored.reason})`);
       }
-      setPortfolio(parsed);
-    } else {
-      // Create default portfolio
-      const defaultPortfolio: Portfolio = {
-        id: 'default',
-        name: 'התיק שלי',
-        items: [],
-        totalInvestment: 0,
-        totalProfit: 0,
-        createdAt: new Date().toISOString()
-      };
-      setPortfolio(defaultPortfolio);
-      localStorage.setItem(PORTFOLIO_STORAGE_KEY, JSON.stringify(defaultPortfolio));
+      const fresh = createDefaultPortfolio();
+      setPortfolio(fresh);
+      writeStoredJSON(PORTFOLIO_STORAGE_KEY, fresh);
+      return;
     }
+
+    // Migration + normalization in one pass: older portfolios have no
+    // `quantity`, and any field may come back as a string or NaN.
+    setPortfolio({
+      ...stored.value,
+      items: (stored.value.items ?? []).map(normalizeItem).filter(item => item.symbol !== ''),
+      totalInvestment: sanitizeNumber(stored.value.totalInvestment, 0),
+      totalProfit: sanitizeNumber(stored.value.totalProfit, 0)
+    });
   }, []);
 
   const updatePortfolio = (newPortfolio: Portfolio) => {
     setPortfolio(newPortfolio);
-    localStorage.setItem(PORTFOLIO_STORAGE_KEY, JSON.stringify(newPortfolio));
+    writeStoredJSON(PORTFOLIO_STORAGE_KEY, newPortfolio);
   };
 
   const addToPortfolio = (symbol: string, allocation: number, investmentAmount: number, purchasePrice: number) => {

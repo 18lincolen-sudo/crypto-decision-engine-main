@@ -17,7 +17,9 @@ import {
   calculateProOptimalEntry,
   ProActivePosition,
   ProSignalResult,
-  ProIndicatorSignal
+  ProIndicatorSignal,
+  ProTradeSide,
+  ProRiskResult
 } from './proAlgEngine';
 import { computeProAdvancedAnalysis } from './proAdvancedAnalysis';
 import { Candle, formatDynamicPrice } from './tradeEngine';

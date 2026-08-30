@@ -11,7 +11,6 @@ import {
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
 import {
-  buildEvaluations,
   generateNewOrders,
   fillDueOrders,
   selectFillableOrders,
@@ -22,9 +21,40 @@ import {
   SimBotConfig
 } from '../services/simExecution';
 import type { ClosedTradeRecord } from '../services/adaptiveRisk';
+import { DecisionEngine, IntradayAdapter } from '../services/decisionEngine';
+import type { DecisionResult, DecisionContext } from '../services/decisionEngine';
 
 export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../services/simExecution';
+
+// Convert DecisionEngine result to SignalEvaluation for backward compatibility
+// with generateNewOrders and UI components.
+function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceChange24h: number): SignalEvaluation {
+  const action = result.direction === 'LONG' ? 'buy' : result.direction === 'SHORT' ? 'sell' : 'hold';
+  const tradeSide = result.direction;
+  const isSignal = result.outcome === 'SIGNAL';
+
+  return {
+    symbol: result.symbol,
+    action: action as 'buy' | 'sell' | 'hold',
+    tradeType: result.tradeType as 'SPOT' | 'FUTURES' | 'HOLD',
+    tradeSide: tradeSide as 'LONG' | 'SHORT' | 'BUY' | 'SELL' | 'NONE',
+    confidence: result.confidence,
+    price: currentPrice,
+    priceChange24h,
+    reasoning: result.reasoning.join('\n'),
+    status: isSignal ? `SIGNAL ${result.tradeType} ${result.direction}` : `NO_SIGNAL [${result.gate}]`,
+    willExecute: isSignal,
+    factors: [],
+    confidenceGap: 0,
+    leverage: result.riskPlan?.leverage,
+    stopLoss: result.riskPlan?.stopLoss,
+    takeProfit1: result.riskPlan?.takeProfit1,
+    takeProfit2: result.riskPlan?.takeProfit2,
+    takeProfit: result.riskPlan?.takeProfit,
+    decision: result.raw as never
+  };
+}
 
 // A snapshot the engine can hydrate from (server-shared state may omit hourlyHistory).
 interface HydratableSnapshot {
@@ -337,26 +367,104 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   }, [mtfData]);
 
   // ═══════════════════════════════════════════════════════
-  // Evaluation Engine (Single Source of Truth)
+  // Evaluation Engine (Single Source of Truth) — DecisionEngine
   // ═══════════════════════════════════════════════════════
+  const engine = useMemo(() => {
+    const eng = new DecisionEngine({ verbose: false });
+    eng.registerAdapter(new IntradayAdapter());
+    return eng;
+  }, []);
+
+  // Notional exposure per BASE asset, for the 8%-per-asset cap in the risk
+  // layer. Derived from open positions so it can never drift from them.
+  const exposureByAsset = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const p of positions) {
+      const base = toBaseAsset(p.symbol);
+      map[base] = (map[base] || 0) + (p.notionalUsd || 0);
+    }
+    return map;
+  }, [positions]);
+
   const evaluations = useMemo<SignalEvaluation[]>(() => {
     if (!cryptoData?.length) return [];
-    return buildEvaluations({
-      cryptoData,
-      mtfData,
-      positions,
-      pending,
-      config,
-      equity,
-      initialAmount: config.initialAmount,
-      dailyDrawdownPercent,
-      weeklyDrawdownPercent,
-      totalLeveragedExposureUsd,
-      closedTrades: closedTradeRecords,
-      isRunning,
-      toBase: (s) => toBaseAsset(s)
+
+    return cryptoData.map((crypto) => {
+      const symbol = crypto.symbol.toUpperCase();
+      const baseAsset = toBaseAsset(symbol);
+      const currentPrice = crypto.current_price;
+      const priceChange24h = crypto.price_change_percentage_24h || 0;
+      const snap = mtfData[baseAsset];
+
+      if (!snap || snap.status !== 'READY') {
+        return {
+          symbol: baseAsset,
+          action: 'hold' as const,
+          tradeType: 'HOLD' as const,
+          tradeSide: 'NONE' as const,
+          confidence: 0,
+          price: currentPrice,
+          priceChange24h,
+          reasoning: 'NO_DATA — snapshot not ready',
+          status: 'NO_SIGNAL [NO_DATA]',
+          willExecute: false,
+          factors: [],
+          confidenceGap: 0
+        };
+      }
+
+      const context: DecisionContext = {
+        symbol: baseAsset,
+        candles: {
+          h1: snap.h1,
+          m15: snap.m15 ?? [],
+          m5: snap.m5 ?? []
+        },
+        currentPrice,
+        portfolio: {
+          portfolioValue: equity,
+          initialAmount: config.initialAmount,
+          dailyDrawdownPercent,
+          weeklyDrawdownPercent,
+          openPositionsCount: positions.length,
+          openFuturesPositionsCount: positions.filter((p) => p.type === 'FUTURES').length,
+          totalLeveragedExposureUsd,
+          // Per-asset notional exposure, keyed the same way openPositions is.
+        // Hardcoding {} here disabled the 8%-per-asset cap in intradayRisk.ts:
+        // the cap read a current exposure of 0 for every asset, so it could
+        // never see what was already held.
+        existingExposureByAsset: exposureByAsset,
+          systemLocked: false
+        },
+        // `candles` is what makes the correlation gate able to run at all —
+        // without it evaluateCorrelationGate finds no series and abstains.
+        openPositions: positions.map((p) => ({
+          symbol: toBaseAsset(p.symbol),
+          type: p.type,
+          side: p.side,
+          candles: correlationCandles[toBaseAsset(p.symbol)]
+        })),
+        marketData: {
+          spreadPercent: snap.liquidity?.spreadPercent ?? 0,
+          quoteVolume24h: snap.liquidity?.quoteVolume24h ?? 0,
+          quoteVolume24hSpot: snap.liquidity?.quoteVolume24hSpot ?? 0,
+          livePrice: snap.livePrice,
+          priceChange24h
+        },
+        params: {},
+        now: Date.now(),
+        closedTrades: closedTradeRecords,
+        config: {
+          minConfidenceOverride: 40,
+          maxPositions: config.maxPositions || 7,
+          maxFuturesPositions: config.maxFuturesPositions || 2
+        }
+      };
+
+      const result = engine.evaluate(context, 'intraday');
+      return toSignalEvaluation(result, currentPrice, priceChange24h);
     });
-  }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, mtfData, closedTradeRecords]);
+  }, [cryptoData, mtfData, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, closedTradeRecords, engine, exposureByAsset]);
 
   // Purely derived from evaluations — a useState+useEffect pair here previously
   // added an extra setState-triggered render on every evaluations change,

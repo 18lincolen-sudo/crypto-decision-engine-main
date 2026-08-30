@@ -9,8 +9,9 @@ import CryptoDetailModal from '../components/CryptoDetailModal';
 import Navigation from '../components/Navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { AlertCircle, BarChart3, TrendingUp, DollarSign, Target } from 'lucide-react';
+import { AlertCircle, BarChart3, TrendingUp } from 'lucide-react';
 import SmartTipsPanel from '../components/SmartTipsPanel';
+import MarketOverview from '../components/MarketOverview';
 import { ExecutiveDashboard } from '../components/dashboard/ExecutiveDashboard';
 import { CryptoRecommendation } from '../types/crypto';
 
@@ -89,47 +90,15 @@ const Index = () => {
           </div>
         )}
 
-        {cryptoData && cryptoData.length > 0 && filteredRecommendations && (
-          <div className="mb-8">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <Card className="bg-background border-primary/30">
-                <CardContent className="p-4 text-center">
-                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
-                    <Target className="w-6 h-6" />
-                    {filteredRecommendations.filter(r => r.recommendation === 'buy').length}
-                  </div>
-                  <div className="text-sm text-primary/80 font-mono">המלצות קנייה חזקות</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-background border-primary/30">
-                <CardContent className="p-4 text-center">
-                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
-                    <BarChart3 className="w-6 h-6" />
-                    {filteredRecommendations.filter(r => r.recommendation === 'hold').length}
-                  </div>
-                  <div className="text-sm text-primary/80 font-mono">המלצות המתנה</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-background border-primary/30">
-                <CardContent className="p-4 text-center">
-                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
-                    <TrendingUp className="w-6 h-6" />
-                    {filteredRecommendations.filter(r => r.recommendation === 'sell').length}
-                  </div>
-                  <div className="text-sm text-primary/80 font-mono">המלצות מכירה</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-background border-primary/30">
-                <CardContent className="p-4 text-center">
-                  <div className="text-2xl font-bold text-primary flex items-center justify-center gap-2 font-mono">
-                    <DollarSign className="w-6 h-6" />
-                    {filteredRecommendations.length}
-                  </div>
-                  <div className="text-sm text-primary/80 font-mono">המלצות רלוונטיות</div>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
+        {/* Market summary. Counts the SAME filtered set rendered below, and
+            hides its own sentiment card because FearGreedIndicator sits right
+            above it. */}
+        {cryptoData && cryptoData.length > 0 && (
+          <MarketOverview
+            recommendations={filteredRecommendations}
+            isLoading={isLoading}
+            showSentiment={false}
+          />
         )}
 
         <div className="mb-8">

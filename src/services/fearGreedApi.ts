@@ -1,6 +1,7 @@
 
 import { FearGreedIndex } from '../types/crypto';
 import { resolveWorkerBaseUrl } from './workerConfig';
+import { fetchJson, ValidationError } from '../utils/errorHandler';
 
 const FEAR_GREED_API_URL = 'https://api.alternative.me/fng/';
 const WORKER_FEAR_GREED_PATH = '/api/fear-greed';
@@ -22,11 +23,12 @@ let inFlight: Promise<FearGreedIndex> | null = null;
 async function fetchFromWorker(): Promise<FearGreedIndex> {
   const base = resolveWorkerBaseUrl();
   if (!base) throw new Error('no worker configured');
-  const res = await fetch(`${base}${WORKER_FEAR_GREED_PATH}`);
-  if (!res.ok) throw new Error(`worker fear-greed HTTP ${res.status}`);
-  const data = await res.json() as { value?: unknown; value_classification?: unknown; timestamp?: unknown };
+  const data = await fetchJson<{ value?: unknown; value_classification?: unknown; timestamp?: unknown }>(
+    `${base}${WORKER_FEAR_GREED_PATH}`,
+    { timeoutMs: 6000, label: 'worker fear-greed' }
+  );
   if (typeof data?.value !== 'number' || !isFinite(data.value)) {
-    throw new Error('invalid worker fear-greed payload');
+    throw new ValidationError('invalid worker fear-greed payload');
   }
   return {
     value: data.value,
@@ -35,38 +37,34 @@ async function fetchFromWorker(): Promise<FearGreedIndex> {
   };
 }
 
-/** Fallback source: direct browser call to api.alternative.me (8s timeout). */
+/** Fallback source: direct browser call to api.alternative.me (8s timeout).
+ *  The timeout/abort/status handling all lives in fetchJson now — this
+ *  function is left with the one thing specific to it: the payload shape. */
+interface AlternativeMeResponse {
+  data?: Array<{ value?: string | number; value_classification?: string; timestamp?: string | number }>;
+}
+
 async function fetchDirect(): Promise<FearGreedIndex> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+  const data = await fetchJson<AlternativeMeResponse>(`${FEAR_GREED_API_URL}?limit=1`, {
+    timeoutMs: 8000,
+    label: 'alternative.me fear-greed'
+  });
 
-  try {
-    const response = await fetch(`${FEAR_GREED_API_URL}?limit=1`, {
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-
-    if (!data.data || !data.data[0]) {
-      throw new Error('Invalid API response format');
-    }
-
-    const latest = data.data[0];
-    return {
-      value: parseInt(latest.value),
-      value_classification: latest.value_classification,
-      timestamp: latest.timestamp
-    };
-  } finally {
-    clearTimeout(timeoutId);
+  const latest = data.data?.[0];
+  if (!latest) {
+    throw new ValidationError('Invalid API response format');
   }
+
+  const value = Number(latest.value);
+  if (!isFinite(value)) {
+    throw new ValidationError('Invalid fear-greed value');
+  }
+
+  return {
+    value,
+    value_classification: latest.value_classification ?? 'Neutral',
+    timestamp: String(latest.timestamp ?? Math.floor(Date.now() / 1000))
+  };
 }
 
 function neutralFallback(): FearGreedIndex {

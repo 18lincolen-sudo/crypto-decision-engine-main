@@ -446,6 +446,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       equity: eq,
       trades,
       history,
+      hourlyHistory,
       pending,
       totalFees,
       totalSlippageCost,
@@ -494,3 +495,4 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
 
   return { tick, getSnapshot, hydrate, reset };
 }
+

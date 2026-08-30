@@ -20,7 +20,9 @@ import { detectRegime1H, Regime1H } from './intradayRegime';
 import { detectSetup15M, Setup15M } from './intradaySetup';
 import { confirmEntry5M, Entry5M } from './intradayEntry';
 import { evaluateCostEdge, CostAnalysis, buildRiskPlan, RiskPlan } from './intradayRisk';
-import { DEFAULT_INTRADAY_PARAMS, DecisionGate, Direction, IntradayParams, SetupType } from './intradayParams';
+import { DEFAULT_INTRADAY_PARAMS, DecisionGate, Direction, IntradayParams, SetupType,
+  withParams
+} from './intradayParams';
 
 export type TradeType = 'SPOT' | 'FUTURES';
 export type DecisionOutcome = 'SIGNAL' | 'NO_SIGNAL' | 'NO_DATA';
@@ -42,7 +44,10 @@ export interface IntradayDecisionInput {
   portfolio: PortfolioRiskStats;
   /** Open positions of the SAME account, for same-asset Spot/Futures exclusion (§36) */
   openPositions: { symbol: string; type: TradeType }[];
-  params?: IntradayParams;
+  /** Partial overrides are merged over DEFAULT_INTRADAY_PARAMS — see the note
+   *  in evaluateIntradayDecision. Was typed as a COMPLETE IntradayParams,
+   *  which is what let `{}` slip past the compiler as a valid params object. */
+  params?: Partial<IntradayParams>;
   now?: number;
   /** Current notional exposure per asset for per-asset cap checks */
   existingExposureByAsset?: Record<string, number>;
@@ -112,8 +117,23 @@ function emptyDecision(symbol: string, gate: DecisionGate, outcome: DecisionOutc
   };
 }
 
+/** Cheap identity check so the common case (a caller that already passed a
+ *  complete params object) skips the merge allocation entirely. */
+function isFullParams(p: Partial<IntradayParams> | undefined): p is IntradayParams {
+  return !!p && typeof (p as IntradayParams).adxTrendMin === 'number';
+}
+
 export function evaluateIntradayDecision(input: IntradayDecisionInput): IntradayDecision {
-  const params = input.params ?? DEFAULT_INTRADAY_PARAMS;
+  // MERGE, never replace. `input.params ?? DEFAULT_INTRADAY_PARAMS` only fell
+  // back when params was null/undefined — a caller passing `{}` (which the
+  // DecisionEngine adapter did, because the orchestrator always writes at
+  // least one key into context.params) handed this function an object where
+  // EVERY threshold is undefined. Every `x >= params.someThreshold` then
+  // evaluates to false, so the engine silently produced NO_SETUP for every
+  // symbol AND the drawdown circuit breaker below never fired.
+  // withParams() deep-merges over the defaults, so a partial override can
+  // never blank out a threshold again.
+  const params = isFullParams(input.params) ? input.params : withParams(input.params);
   const now = input.now ?? Date.now();
   const logs: string[] = [];
   const symbol = input.symbol;

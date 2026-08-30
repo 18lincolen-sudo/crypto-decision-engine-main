@@ -19,7 +19,6 @@ import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
 import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
 import {
-  buildLegacyEvaluations,
   generateLegacyOrders,
   activeMarketRegimesFrom,
   MIN_LEGACY_CANDLES
@@ -31,8 +30,39 @@ import type {
   PendingOrder,
   SimBotConfig
 } from './useSimulationBot';
+import { DecisionEngine, LegacyAdapter } from '../services/decisionEngine';
+import type { DecisionResult, DecisionContext } from '../services/decisionEngine';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from './useSimulationBot';
+
+// Convert DecisionEngine result to SignalEvaluation for backward compatibility
+// with generateLegacyOrders and UI components.
+function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceChange24h: number): SignalEvaluation {
+  const action = result.direction === 'LONG' ? 'buy' : result.direction === 'SHORT' ? 'sell' : 'hold';
+  const tradeSide = result.direction;
+  const isSignal = result.outcome === 'SIGNAL';
+
+  return {
+    symbol: result.symbol,
+    action: action as 'buy' | 'sell' | 'hold',
+    tradeType: result.tradeType as 'SPOT' | 'FUTURES' | 'HOLD',
+    tradeSide: tradeSide as 'LONG' | 'SHORT' | 'BUY' | 'SELL' | 'NONE',
+    confidence: result.confidence,
+    price: currentPrice,
+    priceChange24h,
+    reasoning: result.reasoning.join('\n'),
+    status: isSignal ? `SIGNAL ${result.tradeType} ${result.direction}` : `NO_SIGNAL [${result.gate}]`,
+    willExecute: isSignal,
+    factors: [],
+    confidenceGap: 0,
+    leverage: result.riskPlan?.leverage,
+    stopLoss: result.riskPlan?.stopLoss,
+    takeProfit1: result.riskPlan?.takeProfit1,
+    takeProfit2: result.riskPlan?.takeProfit2,
+    takeProfit: result.riskPlan?.takeProfit,
+    decision: result.raw as never
+  };
+}
 
 // A snapshot the engine can hydrate from (server-shared state may omit hourlyHistory).
 interface HydratableSnapshot {
@@ -251,23 +281,95 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   // ═══════════════════════════════════════════════════════
   // Evaluation Engine — Layers 0-3 of the ORIGINAL alg.md algorithm
   // ═══════════════════════════════════════════════════════
+  const engine = useMemo(() => {
+    const eng = new DecisionEngine({ verbose: false });
+    eng.registerAdapter(new LegacyAdapter());
+    return eng;
+  }, []);
+
+  // Notional exposure per BASE asset, for the 8%-per-asset cap in the risk
+  // layer. Derived from open positions so it can never drift from them.
+  const exposureByAsset = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const p of positions) {
+      const base = toBaseAsset(p.symbol);
+      map[base] = (map[base] || 0) + (p.notionalUsd || 0);
+    }
+    return map;
+  }, [positions]);
+
   const evaluations = useMemo<SignalEvaluation[]>(() => {
     if (!cryptoData?.length) return [];
-    return buildLegacyEvaluations({
-      cryptoData,
-      candlesBySymbol,
-      positions,
-      pending,
-      config,
-      equity,
-      totalLeveragedExposureUsd,
-      dailyDrawdownPercent,
-      weeklyDrawdownPercent,
-      fearGreedIndex,
-      closedTradeMetrics,
-      isRunning
+
+    return cryptoData.map((crypto) => {
+      const symbol = crypto.symbol.toUpperCase();
+      const baseAsset = toBaseAsset(symbol);
+      const currentPrice = crypto.current_price;
+      const priceChange24h = crypto.price_change_percentage_24h || 0;
+      const candles = candlesBySymbol[baseAsset];
+
+      if (!candles || candles.length < MIN_LEGACY_CANDLES) {
+        return {
+          symbol: baseAsset,
+          action: 'hold' as const,
+          tradeType: 'HOLD' as const,
+          tradeSide: 'NONE' as const,
+          confidence: 0,
+          price: currentPrice,
+          priceChange24h,
+          reasoning: 'NO_DATA — insufficient H1 candles',
+          status: 'NO_SIGNAL [NO_DATA]',
+          willExecute: false,
+          factors: [],
+          confidenceGap: 0
+        };
+      }
+
+      const context: DecisionContext = {
+        symbol: baseAsset,
+        candles: { h1: candles },
+        currentPrice,
+        portfolio: {
+          portfolioValue: equity,
+          initialAmount: config.initialAmount,
+          dailyDrawdownPercent,
+          weeklyDrawdownPercent,
+          openPositionsCount: positions.length,
+          openFuturesPositionsCount: positions.filter((p) => p.type === 'FUTURES').length,
+          totalLeveragedExposureUsd,
+          // Per-asset notional exposure, keyed the same way openPositions is.
+        // Hardcoding {} here disabled the 8%-per-asset cap in intradayRisk.ts:
+        // the cap read a current exposure of 0 for every asset, so it could
+        // never see what was already held.
+        existingExposureByAsset: exposureByAsset,
+          systemLocked: false
+        },
+        // `candles` is what makes the correlation gate able to run at all —
+        // without it evaluateCorrelationGate finds no series and abstains.
+        openPositions: positions.map((p) => ({
+          symbol: toBaseAsset(p.symbol),
+          type: p.type,
+          side: p.side,
+          candles: candlesBySymbol[toBaseAsset(p.symbol)]
+        })),
+        marketData: {
+          priceChange24h,
+          fearGreedIndex
+        },
+        params: {},
+        now: Date.now(),
+        closedTrades: closedTradeMetrics,
+        config: {
+          minConfidenceOverride: 58,
+          maxPositions: config.maxPositions || 7,
+          maxFuturesPositions: config.maxFuturesPositions || 2
+        }
+      };
+
+      const result = engine.evaluate(context, 'legacy');
+      return toSignalEvaluation(result, currentPrice, priceChange24h);
     });
-  }, [cryptoData, positions, pending, isRunning, equity, totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, config, candlesBySymbol, fearGreedIndex, closedTradeMetrics]);
+  }, [cryptoData, candlesBySymbol, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, fearGreedIndex, closedTradeMetrics, engine, exposureByAsset]);
 
   // Purely derived from evaluations — a useState+useEffect pair here previously
   // added an extra setState-triggered render on every evaluations change,

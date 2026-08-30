@@ -67,6 +67,7 @@ export interface SimBotSnapshot {
   equity: number;
   trades: unknown[];
   history: unknown[];
+  hourlyHistory?: unknown[];
   pending: unknown[];
   totalFees: number;
   totalSlippageCost: number;
@@ -329,3 +330,4 @@ export function createTradingApiClient(configuredBaseUrl: string, adminToken: st
     stop: () => authed<WorkerBotState>('/api/bot/stop', 'POST')
   };
 }
+

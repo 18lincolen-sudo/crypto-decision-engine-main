@@ -16,10 +16,14 @@
 **קבצים מרכזיים:**
 | קובץ | תפקיד |
 |------|-------|
-| `src/services/proAdvancedAnalysis.ts` | מנוע אותות Pro (מקור אמת — Advanced Analysis) |
-| `src/services/proAlgEngine.ts` | מנוע החלטות Pro — ניתוב/סיכון/יציאה (alg.md) |
-| `src/services/proSimExecution.ts` | לוגיקת ביצוע סימולציה Pro |
-| `server/proSimEngine.ts` | מנוע סימולציה 24/7 בשרת |
+| `src/services/proAdvancedAnalysis.ts` | מקור אותות Pro — מנוע הניתוח המתקדם של האתר |
+| `src/services/proAlgEngine.ts` | מנוע החלטות Pro — זיהוי משטר, ניתוב, סיכון, יציאה (alg.md) |
+| `src/services/proSimExecution.ts` | לוגיקת ביצוע סימולציה Pro — buildProEvaluations, generateProOrders |
+| `src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown (משותף) |
+| `src/services/correlation.ts` | מניעת קורלציה (משותף) |
+| `src/services/simExecution.ts` | ביצוע פקודות משותף (fillDueOrders) |
+| `server/proSimEngine.ts` | adapter למנוע סימולציה 24/7 בשרת |
+| `server/simEngineFactory.ts` | tick loop, hydrate, persist, getSnapshot משותף |
 
 ---
 
@@ -37,6 +41,11 @@ Layer 2: Trade Routing (ניתוב סוג עסקה)
 Layer 3: Risk Management (ניהול סיכונים)
     ↓
 Layer 4: Exit Logic (לוגיקת יציאה)
+```
+
+**שערולים נוספים (בסדר ביצוע):**
+```
+CIRCUIT_BREAKER → EXPOSURE → (Layer 0-4) → Correlation Gate → Cost/Edge → Confidence Floor → Streak Cooldown → Budget Floor
 ```
 
 ---
@@ -102,7 +111,7 @@ Layer 4: Exit Logic (לוגיקת יציאה)
 | קנס | תנאי | השפעה |
 |-----|------|-------|
 | פחד קיצוני | Fear & Greed < 25 | הוספת הערת סנטימנט |
-| חמדנות קיצונית | Fear & Greed > 75 | הוספת הערת סנטימנט |
+| חמדנות קיצוני | Fear & Greed > 75 | הוספת הערת סנטימנט |
 
 ---
 
@@ -119,22 +128,25 @@ Layer 4: Exit Logic (לוגיקת יציאה)
 | **EMA20** | ממוצע עובר |
 | **Bollinger Bands** | רצועות בולינג'ר |
 | **ATR** | תנודתיות לחישוב pullback |
+| **Relative Volume** | נפח יחסי (מינימום 0.6) |
 
 **לוגיקת החלטה:**
 ```typescript
 if (action === 'BUY') {
   // אם מחיר מורחק מעל EMA20 — ממתין לירידה
-  if (currentPrice > ema20 + atr * 1.5) → shouldEnter = false
+  if (currentPrice > ema20 + atr * 1.5) → shouldEnter = false, sizeMultiplier < 1
   // אחרת — כניסה מיידית
   else → shouldEnter = true, entryPrice = currentPrice
 }
 else if (action === 'SELL') {
   // אם מחיר מורחק מתחת ל-EMA20 — ממתין לעלייה
-  if (currentPrice < ema20 - atr * 1.5) → shouldEnter = false
+  if (currentPrice < ema20 - atr * 1.5) → shouldEnter = false, sizeMultiplier < 1
   // אחרת — כניסה מיידית
   else → shouldEnter = true, entryPrice = currentPrice
 }
 ```
+
+**Size Multiplier:** כניסות מורחבות (מעל EMA20 ± 1.5×ATR) עדיין מותרות עם הפחתת גודל (sizeMultiplier < 1) במקום חסימה קשה.
 
 ---
 
@@ -157,14 +169,14 @@ else if (action === 'SELL') {
 |------|-----|
 | Regime | TRENDING (ADX > 25) |
 | Volatility | LOW או NORMAL (ATR% <= 5%) |
- | rawConfidence | >= dynamic(72) (סף דינמי לפי ATR%) |
- | Same-Asset | ללא פוזיציית Futures קיימת |
+| rawConfidence | >= dynamic(72) (סף דינמי לפי ATR%) |
+| Same-Asset | ללא פוזיציית Futures קיימת |
 
- **ניתוב Spot:**
- | תנאי | ערך |
- |------|-----|
- | Regime | TRENDING, RANGING, או SOFT_TREND |
- | rawConfidence | >= dynamic(60) (סף דינמי לפי ATR%, 65 ב-SOFT_TREND) |
+**ניתוב Spot:**
+| תנאי | ערך |
+|------|-----|
+| Regime | TRENDING, RANGING, או SOFT_TREND |
+| rawConfidence | >= dynamic(60) (סף דינמי לפי ATR%, 65 ב-SOFT_TREND) |
 
 **סף ביטחון דינמי:**
 ```typescript
@@ -178,7 +190,7 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 
 | סוג עסקה | סף מינימלי (ATR% <= 2) | סף מקסימלי (ATR% >= 8) |
 |----------|------------------------|------------------------|
-| Futures | 70 | 85 |
+| Futures | 72 | 87 |
 | Spot | 60 | 75 |
 | Spot (SOFT_TREND) | 65 | 80 |
 
@@ -198,8 +210,8 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 | סוג | SL | TP1 | TP2 |
 |-----|----|----|-----|
 | **SPOT** | entry - ATR × 1.8 | - | entry + ATR × 2.7 |
- | **FUTURES LONG** | entry - ATR × 1.5 | entry + ATR × 2.3 | entry + ATR × 3.5 |
- | **FUTURES SHORT** | entry + ATR × 1.5 | entry - ATR × 2.3 | entry - ATR × 3.5 |
+| **FUTURES LONG** | entry - ATR × 1.5 | entry + ATR × 2.3 | entry + ATR × 3.5 |
+| **FUTURES SHORT** | entry + ATR × 1.5 | entry - ATR × 2.3 | entry - ATR × 3.5 |
 
 **מינוף:**
 | תנודתיות | מינוף בסיסי | מינוף עם Confidence >= 80 |
@@ -219,6 +231,12 @@ betFraction = 0.06 (6%)
 
 // התאמה אדפטיבית
 betFraction *= adaptiveFactor (drawdown/streak/winRate)
+```
+
+**High-Confidence Fallback:**
+```typescript
+// אם calculateProRisk דחה אבל confidence >= 72 — fallback עם SL 1.8% / TP 3%
+if (!risk.approved && signal.rawConfidence >= HIGH_CONFIDENCE_BYPASS) → buildFallbackProRisk()
 ```
 
 ---
@@ -262,7 +280,7 @@ if (isShort && buyConfidence >= 65) → FULL (reversal)
 
 ## 4. חישוב Confidence
 
-**מקור:** `src/services/proAdvancedAnalysis.ts` → `generateSmartRecommendation()`
+**מקור:** `src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
 
 ```typescript
 // confidence = הציון מהמנוע המתקדם (0-100)
@@ -283,6 +301,15 @@ if (signal.rawConfidence < minConf) → BLOCK
 
 ## 5. שערול נוספים בסימולציה
 
+### Circuit Breakers
+
+```typescript
+const PRO_WEEKLY_DRAWDOWN_LOCK_PERCENT = 15;
+const PRO_DAILY_DRAWDOWN_BLOCK_PERCENT = 8;
+if (weeklyDrawdownPercent >= 15) → LOCK
+if (dailyDrawdownPercent >= 8) → BLOCK
+```
+
 ### Streak Cooldown — השהיה אחרי הפסדים (לפי מטבע)
 
 ```typescript
@@ -298,7 +325,7 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 
 ### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
 
-מקור: src/services/adaptiveRisk.ts
+מקור: `src/services/adaptiveRisk.ts`
 
 streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
@@ -312,14 +339,31 @@ multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2�
 
 ```typescript
 // מקסימום 12 פוזיציות מקורלציות
+// סף קורלציה: 0.7 (Pearson על log-returns)
+// חלון זיהוי: 72 נרות H1
 if (correlatedPositions >= maxCorrelated) → BLOCK
 ```
 
 ### Same-Asset Dedup — מניעת כפילות
 
 ```typescript
-// אין כניסה חוזרת לאותו נכס
+// אין כניסה חוזרת לאותו נכס (Spot בלבד — alg.md לא חוסם Futures כפול)
 if (isHeld) → BLOCK
+```
+
+### Cost / Edge Gate
+
+```typescript
+// יחס סיכון-רווח נמוך מדי
+if (effectiveRisk.riskRewardRatio < MIN_RISK_REWARD_RATIO) → BLOCK
+```
+
+### Budget Floor
+
+```typescript
+// תקציב נמוך מדי
+const budget = computeEntryBudget(cash, tradeType);
+if (budget < 5) → BLOCK
 ```
 
 ---
@@ -330,20 +374,31 @@ if (isHeld) → BLOCK
 
 ```
 1. Refresh Market Data (כל 60 שניות)
-   ├── getAggregatedPrices() — מחירי שוק
-   └── getUniverseMarketData() — נרות H1
+    ├── getAggregatedPrices() — מחירי שוק
+    └── getUniverseMarketData() — נרות H1
 
 2. Build Evaluations
-   └── buildProEvaluations() — החלטה לכל סימבול
+    └── buildProEvaluations() — החלטה לכל סימבול
+        ├── computeProAdvancedAnalysis() (Layer 1)
+        ├── detectProRegime() (Layer 0)
+        ├── routeProTradeType() (Layer 2)
+        ├── calculateProOptimalEntry() (Layer 1.5)
+        ├── calculateProRisk() (Layer 3)
+        ├── Correlation Gate
+        ├── Cost/Edge Gate
+        ├── Confidence Floor
+        └── Streak Cooldown
 
 3. Generate Orders
-   └── generateProOrders() — יצירת פקודות
+    └── generateProOrders() — יצירת פקודות
+        ├── evaluateProExit() — בדיקת יציאה מפוזיציות קיימות
+        └── entries חדשים
 
 4. Fill Due Orders
-   └── fillDueOrders() — ביצוע פקודות שהגיעו זמנן
+    └── fillDueOrders() — ביצוע פקודות שהגיעו זמנן
 
 5. Update State
-   └── עדכון מצב, היסטוריה, וכו'
+    └── עדכון מצב, היסטוריה, וכו'
 ```
 
 ### ביצוע פקודות (Fill)
@@ -376,7 +431,7 @@ const fee = notional * feePercent / 100;
 | `initialAmount` | 10,000$ |
 | `stopLoss` | 4.2% |
 | `takeProfit` | 3% |
-| `maxPositions` | 7 (ניתן להגדרה: עד 7 פוזיציות פתוחות כברירת מחדל, ניתן לשנות ב-UI) |
+| `maxPositions` | 7 |
 | `maxFuturesPositions` | 2 |
 | `feePercent` | 0.1% |
 | `slippagePercent` | 0.05% |
@@ -399,6 +454,9 @@ const fee = notional * feePercent / 100;
 | Position sizing | risk-first + Kelly (6%) | Kelly ישיר (6%) |
 | קנסות Layer 1 | לא מיושמים | לא מיושמים (מקור אותות חדש) |
 | Time exit | סגירה מלאה אחרי 48 שעות | 50% סגירה + הרחבה ל-36 שעות |
+| Entry timing | calculateOptimalEntry | calculateProOptimalEntry (עם size multiplier) |
+| Cost/Edge gate | MIN_RISK_REWARD_RATIO | MIN_RISK_REWARD_RATIO |
+| High-confidence bypass | 72 (Layer 3) | 72 (Layer 3) |
 
 ---
 
@@ -413,7 +471,7 @@ const fee = notional * feePercent / 100;
 | `confidence` | ציון ביטחון (0-100) ממנוע הניתוח המתקדם |
 | `price` | מחיר כניסה (Limit Order) |
 | `priceChange24h` | שינוי 24 שעות |
-| `reasoning` | הסבר החלטה |
+| `reasoning` | הסבר ההחלטה |
 | `status` | סטטוס (מוכן/חסום) |
 | `willExecute` | האם יבוצע |
 | `factors` | גורמי החלטה |

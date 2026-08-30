@@ -8,7 +8,9 @@
  *   REGIME → SIGNALS → ROUTE → ENTRY_TIMING → RISK → EXIT
  */
 
-import {
+import type {
+  EngineParams,
+  ClosedTradeRecord,
   DecisionContext,
   DecisionResult,
   EngineAdapter,
@@ -19,7 +21,7 @@ import {
   TradeType,
   TradeDirection,
   DecisionOutcome
-} from './types';
+} from '../types';
 import {
   detectProRegime,
   evaluateProSignals,
@@ -27,7 +29,6 @@ import {
   calculateProOptimalEntry,
   calculateProRisk,
   evaluateProExit,
-  Candle,
   ProMarketRegimeResult,
   ProSignalResult,
   ProRouterResult,
@@ -37,6 +38,7 @@ import {
   ProEntryTimingResult,
   dynamicConfidenceThreshold
 } from '../../proAlgEngine';
+import type { Candle } from '../../tradeEngine';
 import { computeProAdvancedAnalysis } from '../../proAdvancedAnalysis';
 import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
 import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
@@ -96,7 +98,7 @@ class DetectRegimeStage implements PipelineStage<ProPipelineContext> {
   name = 'detect-regime';
 
   execute(context: ProPipelineContext): StageResult<ProPipelineContext> {
-    const candles = context.candles.h1 as Candle[];
+    const candles = context.candles.h1;
     if (!candles || candles.length < 60) {
       return {
         context,
@@ -121,7 +123,7 @@ class AdvancedAnalysisStage implements PipelineStage<ProPipelineContext> {
 
     // Use Advanced Analysis as the signal source (per approved product decision)
     const adv = computeProAdvancedAnalysis({
-      candles: context.candles.h1 as Candle[],
+      candles: context.candles.h1,
       currentPrice: context.currentPrice,
       priceChange24h: context.marketData.priceChange24h ?? 0,
       fearGreedIndex: context.marketData.fearGreedIndex ?? 50,
@@ -227,7 +229,7 @@ class RiskParametersStage implements PipelineStage<ProPipelineContext> {
       context.config?.maxFuturesPositions ?? 2
     );
 
-    return { context: { ...context, risk }, blocked: !risk };
+    return { context: { ...context, risk: risk ?? undefined }, blocked: !risk };
   }
 }
 
@@ -382,9 +384,9 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
         atrPercent: result.regime?.atrPercent ?? 0,
         buyScore: result.signal?.buyScore ?? 0,
         sellScore: result.signal?.sellScore ?? 0,
-        confidence,
-        volatility: result.regime?.volatility ?? 'NONE'
+        confidence
       },
+      volatilityBand: result.regime?.volatility ?? 'NONE',
       raw: result
     };
   }

@@ -8,7 +8,8 @@
  *   REGIME → SIGNALS → ROUTE → ENTRY_TIMING → RISK → EXIT
  */
 
-import {
+import type {
+  EngineParams,
   DecisionContext,
   DecisionResult,
   EngineAdapter,
@@ -20,7 +21,7 @@ import {
   TradeDirection,
   DecisionOutcome,
   ClosedTradeRecord
-} from './types';
+} from '../types';
 import {
   detectMarketRegime,
   evaluateSignals,
@@ -28,17 +29,18 @@ import {
   calculateOptimalEntry,
   calculateRiskParameters,
   evaluateExit,
-  Candle,
+  MIN_ENTRY_RELATIVE_VOLUME
+} from '../../tradeEngine';
+import type { Candle, EntryTimingResult, ExitDecision, ClosedTradeMetric } from '../../tradeEngine';
+// These live in types/crypto.ts — tradeEngine only re-declares them locally,
+// so importing them from there was a type error.
+import type {
   MarketRegimeResult,
   SignalEngineResult,
   TradeRouterResult,
   RiskParametersResult,
-  ActivePosition,
-  EntryTimingResult,
-  ExitDecision,
-  ClosedTradeMetric,
-  MIN_ENTRY_RELATIVE_VOLUME
-} from '../../tradeEngine';
+  ActivePosition
+} from '../../../types/crypto';
 import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
 import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
@@ -97,7 +99,7 @@ class DetectRegimeStage implements PipelineStage<LegacyPipelineContext> {
   name = 'detect-regime';
 
   execute(context: LegacyPipelineContext): StageResult<LegacyPipelineContext> {
-    const candles = context.candles.h1 as Candle[];
+    const candles = context.candles.h1;
     if (!candles || candles.length < 60) {
       return {
         context,
@@ -120,7 +122,7 @@ class EvaluateSignalsStage implements PipelineStage<LegacyPipelineContext> {
       return { context, blocked: true, blockReason: 'Missing layer0', gate: 'ERROR' };
     }
 
-    const candles = context.candles.h1 as Candle[];
+    const candles = context.candles.h1;
     const layer1 = evaluateSignals(
       candles,
       context.currentPrice,
@@ -171,7 +173,7 @@ class EntryTimingStage implements PipelineStage<LegacyPipelineContext> {
       context.currentPrice,
       context.layer0.atr,
       context.layer2.side,
-      context.candles.h1 as Candle[],
+      context.candles.h1,
       0.35,
       context.layer0.atrPercent,
       MIN_ENTRY_RELATIVE_VOLUME,
@@ -216,7 +218,7 @@ class RiskParametersStage implements PipelineStage<LegacyPipelineContext> {
       context.config?.maxFuturesPositions ?? 2
     );
 
-    return { context: { ...context, layer3 }, blocked: !layer3 };
+    return { context: { ...context, layer3: layer3 ?? undefined }, blocked: !layer3 };
   }
 }
 
@@ -369,9 +371,9 @@ export class LegacyAdapter implements EngineAdapter<LegacyPipelineContext> {
         buyScore: result.layer1?.buyScore ?? 0,
         sellScore: result.layer1?.sellScore ?? 0,
         signalScore: result.layer1?.signalScore ?? 0,
-        confidence,
-        volatility: result.layer0?.volatility ?? 'NONE'
+        confidence
       },
+      volatilityBand: result.layer0?.volatility ?? 'NONE',
       raw: result
     };
   }

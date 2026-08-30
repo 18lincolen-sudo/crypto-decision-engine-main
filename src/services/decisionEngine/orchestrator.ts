@@ -8,40 +8,48 @@
  *   - Result normalization
  */
 
-import {
+// Types from ./types, VALUES from the modules that own them. Importing values
+// through the types barrel is what broke the worker's esbuild bundle and made
+// toPositionDirection resolve to `undefined` at runtime.
+import type {
   DecisionContext,
   DecisionResult,
   EngineAdapter,
-  PipelineStage,
-  StageResult,
   EngineId,
+  ResultEngineId,
   RiskPlan,
-  ClosedTradeRecord,
-  CorrelatedHolding,
   Candle,
+  ClosedTradeRecord
+} from './types';
+import {
   evaluateCorrelationGate,
   toPositionDirection,
   DEFAULT_CORRELATION_LOOKBACK,
   DEFAULT_CORRELATION_THRESHOLD,
-  DEFAULT_MAX_CORRELATED,
+  DEFAULT_MAX_CORRELATED
+} from '../correlation';
+import type { CorrelatedHolding } from '../correlation';
+import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
-  sizingMultiplierFromHistory,
   isInStreakCooldown,
   streakCooldownFromHistory
-} from './types';
+} from '../adaptiveRisk';
 
 export interface DecisionEngineOptions {
-  /** Enable correlation gate (default: true) */
-  correlationGate?: boolean;
-  /** Correlation gate tuning */
-  correlationThreshold?: number;
-  maxCorrelatedPositions?: number;
-  correlationLookback?: number;
   /** Enable adaptive risk (default: true) */
   adaptiveRisk?: boolean;
   /** Log all stage transitions (default: false) */
   verbose?: boolean;
+  /** Run the cross-asset correlation gate on approved trades (default: true).
+   *  It abstains harmlessly when open positions carry no candle history. */
+  correlationGate?: boolean;
+  /** |rho| at or above which two positions count as the same risk factor. */
+  correlationThreshold?: number;
+  /** How many correlated same-direction positions are tolerated. */
+  maxCorrelatedPositions?: number;
+  /** Bars of history used for the correlation estimate. */
+  correlationLookback?: number;
 }
 
 export class DecisionEngine {
@@ -50,12 +58,12 @@ export class DecisionEngine {
 
   constructor(options: DecisionEngineOptions = {}) {
     this.options = {
+      adaptiveRisk: options.adaptiveRisk ?? true,
+      verbose: options.verbose ?? false,
       correlationGate: options.correlationGate ?? true,
       correlationThreshold: options.correlationThreshold ?? DEFAULT_CORRELATION_THRESHOLD,
       maxCorrelatedPositions: options.maxCorrelatedPositions ?? DEFAULT_MAX_CORRELATED,
-      correlationLookback: options.correlationLookback ?? DEFAULT_CORRELATION_LOOKBACK,
-      adaptiveRisk: options.adaptiveRisk ?? true,
-      verbose: options.verbose ?? false
+      correlationLookback: options.correlationLookback ?? DEFAULT_CORRELATION_LOOKBACK
     };
   }
 
@@ -76,12 +84,13 @@ export class DecisionEngine {
 
   /** Select the best adapter for the given input */
   selectAdapter(input: Partial<DecisionContext>, engineId?: EngineId): EngineAdapter<DecisionContext> | null {
-    // If engineId is specified, try exact match first
+    // If engineId is specified, return the exact adapter (caller explicitly requested it)
     if (engineId) {
       const explicit = this.adapters.get(engineId);
-      if (explicit && explicit.canHandle(input)) {
+      if (explicit) {
         return explicit;
       }
+      return null;
     }
     // Otherwise, try canHandle match in registration order
     for (const adapter of this.adapters.values()) {
@@ -173,11 +182,26 @@ export class DecisionEngine {
       return { allowed: true };
     }
 
+    // The candidate's OWN series has to be in the map too — evaluateCorrelationGate
+    // looks itself up by `symbol` and abstains when it finds nothing, so a map
+    // holding only the held positions made the gate a no-op that always allowed.
     const candlesBySymbol: Record<string, Candle[]> = {};
+    if (context.candles?.h1?.length) {
+      candlesBySymbol[context.symbol] = context.candles.h1;
+    }
     for (const pos of context.openPositions) {
-      if (pos.symbol !== context.symbol && pos.candles) {
+      if (pos.symbol !== context.symbol && pos.candles && pos.candles.length > 0) {
         candlesBySymbol[pos.symbol] = pos.candles;
       }
+    }
+
+    // Nothing to compare against: every held position lacks history. Abstain
+    // loudly rather than silently approving as if the check had run.
+    if (Object.keys(candlesBySymbol).length < 2) {
+      if (this.options.verbose) {
+        console.warn(`[DecisionEngine] correlation gate abstained for ${context.symbol}: open positions carry no candle history`);
+      }
+      return { allowed: true };
     }
 
     const gate = evaluateCorrelationGate({
@@ -185,16 +209,16 @@ export class DecisionEngine {
       direction: toPositionDirection(result.direction),
       held,
       candlesBySymbol,
-      threshold: this.options.correlationThreshold,
-      maxCorrelated: this.options.maxCorrelatedPositions,
-      lookback: this.options.correlationLookback
+      threshold: this.options.correlationThreshold ?? DEFAULT_CORRELATION_THRESHOLD,
+      maxCorrelated: this.options.maxCorrelatedPositions ?? DEFAULT_MAX_CORRELATED,
+      lookback: this.options.correlationLookback ?? DEFAULT_CORRELATION_LOOKBACK
     });
 
     return { allowed: gate.allowed, reason: gate.reason };
   }
 
   /** Create a NO_SIGNAL result */
-  private noSignalResult(context: DecisionContext, engineId: EngineId, gate: string, reason: string): DecisionResult {
+  private noSignalResult(context: DecisionContext, engineId: ResultEngineId, gate: string, reason: string): DecisionResult {
     return {
       engineId,
       symbol: context.symbol,

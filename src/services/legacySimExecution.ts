@@ -9,7 +9,7 @@
 // the one deliberate difference between the two bots. Order EXECUTION
 // (fillDueOrders) is identical fee/slippage/reanchor mechanics for both bots,
 // so that stays imported directly from simExecution.ts — no separate copy here.
-import { CryptoData, MarketRegimeResult } from '../types/crypto';
+import { CryptoData, MarketRegimeResult, TradeSide, RiskParametersResult } from '../types/crypto';
 import {
   detectMarketRegime,
   evaluateSignals,

@@ -15,12 +15,22 @@
  * this framework only unifies the orchestration, not the logic.
  */
 
+// `Candle` and `ClosedTradeRecord` are USED by the declarations below, so they
+// must be IMPORTED here. The previous version only re-exported them
+// (`export type { X } from '...'`), which publishes the name to consumers but
+// does NOT bind it inside this module — hence "Cannot find name 'Candle'".
+import type { Candle } from '../tradeEngine';
+import type { ClosedTradeRecord } from '../adaptiveRisk';
+
 // ── Shared Types ──────────────────────────────────────────────────────────────
 
 export type TradeDirection = 'LONG' | 'SHORT' | 'BUY' | 'SELL' | 'NONE';
 export type TradeType = 'SPOT' | 'FUTURES' | 'HOLD';
 export type DecisionOutcome = 'SIGNAL' | 'NO_SIGNAL' | 'NO_DATA';
 export type EngineId = 'intraday' | 'legacy' | 'pro';
+/** What a DecisionResult may report: a real engine, or 'unknown' when no
+ *  adapter could handle the input at all. */
+export type ResultEngineId = EngineId | 'unknown';
 
 /** Market data snapshot — what the engine needs to evaluate a symbol */
 export interface MarketDataSnapshot {
@@ -54,13 +64,15 @@ export interface OpenPosition {
   symbol: string;
   type: 'SPOT' | 'FUTURES';
   side: 'BUY' | 'SELL' | 'LONG' | 'SHORT';
+  /** Candle history for correlation gate (optional — populated when available) */
+  candles?: Candle[];
 }
 
 /** Multi-timeframe candles — each engine uses what it needs */
 export interface MultiTimeframeCandles {
-  h1: number[][]; // [timestamp, open, high, low, close, volume] arrays
-  m15?: number[][];
-  m5?: number[][];
+  h1: Candle[];
+  m15?: Candle[];
+  m5?: Candle[];
 }
 
 /** Engine-specific parameters — each engine defines its own */
@@ -97,17 +109,10 @@ export interface DecisionContext {
   };
 }
 
-/** Closed trade record — for adaptive risk management */
-export interface ClosedTradeRecord {
-  pnl: number;
-  at?: number;
-  symbol?: string;
-}
-
 /** Unified decision result — output from any engine */
 export interface DecisionResult {
-  /** Which engine produced this result */
-  engineId: EngineId;
+  /** Which engine produced this result ('unknown' = no adapter matched) */
+  engineId: ResultEngineId;
   /** Symbol */
   symbol: string;
   /** Outcome */
@@ -124,8 +129,12 @@ export interface DecisionResult {
   riskPlan: RiskPlan | null;
   /** Human-readable reasoning */
   reasoning: string[];
-  /** Structured metrics */
+  /** Structured NUMERIC metrics. Labels (volatility band, regime name) belong
+   *  in `reasoning` or `raw`, not here — pushing a string in was the source of
+   *  the "Type 'string' is not assignable to type 'number'" errors. */
   metrics: Record<string, number>;
+  /** Volatility band label, when the engine reports one. */
+  volatilityBand?: string;
   /** Raw engine-specific output (for advanced consumers) */
   raw?: unknown;
 }
@@ -155,12 +164,19 @@ export interface StageResult<C extends DecisionContext> {
   gate?: string;
 }
 
-/** Pipeline stage interface */
+/** Pipeline stage interface.
+ *
+ *  SYNCHRONOUS on purpose: every adapter runs its stages in a plain `for`
+ *  loop and reads `result.context` straight away. Declaring the return as
+ *  `StageResult<C> | Promise<StageResult<C>>` made that loop a type error in
+ *  all three adapters (15 of them) while no stage was ever actually async.
+ *  If a stage ever needs I/O, make the whole pipeline async deliberately —
+ *  don't widen this type and leave the callers unawaited. */
 export interface PipelineStage<C extends DecisionContext> {
   /** Stage name for logging */
   name: string;
   /** Execute the stage */
-  execute(context: C): StageResult<C> | Promise<StageResult<C>>;
+  execute(context: C): StageResult<C>;
 }
 
 /** Engine adapter interface */
@@ -171,19 +187,24 @@ export interface EngineAdapter<C extends DecisionContext> {
   name: string;
   /** Can this engine handle the given input? */
   canHandle(input: Partial<DecisionContext>): boolean;
-  /** Pipeline stages */
-  stages: PipelineStage<C>[];
   /** Engine-specific parameters */
   params: EngineParams;
+  /** Run the engine's pipeline and return its raw output. The orchestrator
+   *  calls this; it was missing from the interface after `stages` was removed,
+   *  so `adapter.execute(...)` type-errored while working at runtime. */
+  execute(context: C): unknown;
   /** Normalize engine-specific output to unified DecisionResult */
   normalize(output: unknown, context: C): DecisionResult;
 }
 
-// ── Re-export shared infrastructure types ─────────────────────────────────────
+// ── Type re-exports ───────────────────────────────────────────────────────────
+// TYPES ONLY. This module used to re-export VALUES (evaluateCorrelationGate,
+// toPositionDirection, DEFAULT_CORRELATION_*, computeSizingMultiplier...).
+// When that list was edited, every consumer importing them from './types' kept
+// compiling in the app config but resolved to `undefined` at runtime
+// ("toPositionDirection is not a function") and broke the worker's esbuild
+// bundle outright. Values are imported from the module that owns them.
 
+export type { Candle } from '../tradeEngine';
 export type { ClosedTradeRecord } from '../adaptiveRisk';
-export { computeSizingMultiplier, adaptiveRiskPercentFromHistory, sizingMultiplierFromHistory, summarizeRecentPerformance, isInStreakCooldown, streakCooldownFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../adaptiveRisk';
-export type { CorrelatedHolding, CorrelationGateInput, CorrelationGateResult } from '../correlation';
-export { evaluateCorrelationGate, toPositionDirection, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../correlation';
-export type { Candle, PortfolioRiskStats as SharedPortfolioRiskStats } from '../tradeEngine';
-export { calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from '../tradeEngine';
+export type { CorrelatedHolding, CorrelationGateResult } from '../correlation';

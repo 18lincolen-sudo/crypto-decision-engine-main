@@ -72,11 +72,13 @@ export function useApiPolling<T>(
   const intervalIdRef = useRef<number | null>(null);
   const failuresRef = useRef(0);
 
+  const pollGenerationRef = useRef(0);
+
   const poll = useCallback(async () => {
-    // Cancel any in-flight request
+    const generation = ++pollGenerationRef.current;
+
+    // Cancel any in-flight request from a previous generation.
     if (inFlightRef.current) {
-      // We can't truly abort fetch without AbortController, but we can
-      // ignore its result if a newer poll has started.
       inFlightRef.current = null;
     }
 
@@ -85,6 +87,9 @@ export function useApiPolling<T>(
       try {
         const result = await pollFnRef.current();
         if (cancelledRef.current) return;
+        // Ignore stale results: if a newer poll has already started,
+        // this response is outdated and must not overwrite fresh state.
+        if (inFlightRef.current !== promise) return;
         failuresRef.current = 0;
         setData(result);
         setError(null);
@@ -93,6 +98,7 @@ export function useApiPolling<T>(
         setCurrentInterval(baseInterval);
       } catch (e) {
         if (cancelledRef.current) return;
+        if (inFlightRef.current !== promise) return;
         const msg = e instanceof Error ? e.message : 'שגיאת סנכרון';
         failuresRef.current += 1;
         setError(msg);

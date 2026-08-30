@@ -50,6 +50,7 @@ export const ExecutiveDashboard: React.FC = () => {
     trades?: SimTrade[];
     config?: { initialAmount?: number };
     isRunning?: boolean;
+    winRate?: number;
   }
 
   const deriveSimState = (source: SimSource | null, fallbackKey: string, fallbackStatusKey: string) => {

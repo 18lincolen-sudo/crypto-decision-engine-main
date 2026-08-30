@@ -9,31 +9,40 @@
  *   TRADE_TYPE → LIQUIDITY → SPREAD → COST → RISK
  */
 
-import {
+import type {
   DecisionContext,
   DecisionResult,
   EngineAdapter,
   PipelineStage,
   StageResult,
   EngineId,
+  EngineParams,
   RiskPlan,
   TradeType,
   TradeDirection,
   DecisionOutcome,
-  MultiTimeframeCandles
-} from './types';
-import {
-  evaluateIntradayDecision,
+  ClosedTradeRecord
+} from '../types';
+import { evaluateIntradayDecision } from '../../intradayEngine';
+import type {
   IntradayDecisionInput,
   IntradayDecision,
-  TradeType as IntradayTradeType,
+  DecisionOutcome as IntradayDecisionOutcome,
+  TradeType as IntradayTradeType
+} from '../../intradayEngine';
+// Direction / DecisionGate / SetupType / TradeType live in intradayParams —
+// intradayEngine only re-declares them locally, so importing them from there
+// was a type error.
+import { DEFAULT_INTRADAY_PARAMS } from '../../intradayParams';
+import type {
+  IntradayParams,
   Direction as IntradayDirection,
   DecisionGate as IntradayDecisionGate,
-  DecisionOutcome as IntradayDecisionOutcome,
   SetupType as IntradaySetupType
-} from '../../intradayEngine';
-import { DEFAULT_INTRADAY_PARAMS, IntradayParams, DecisionGate, Direction, SetupType } from '../../intradayParams';
-import { Candle, PortfolioRiskStats, formatDynamicPrice } from '../../tradeEngine';
+} from '../../intradayParams';
+import { computeSizingMultiplier, summarizeRecentPerformance } from '../../adaptiveRisk';
+import { formatDynamicPrice } from '../../tradeEngine';
+import type { PortfolioRiskStats } from '../../tradeEngine';
 
 // ── Type Mappings ─────────────────────────────────────────────────────────────
 
@@ -179,16 +188,20 @@ class RunEngineStage implements PipelineStage<DecisionContext> {
     // Convert unified types to intraday types
     const input: IntradayDecisionInput = {
       symbol: context.symbol,
-      h1: context.candles.h1 as Candle[],
-      m15: (context.candles.m15 ?? []) as Candle[],
-      m5: (context.candles.m5 ?? []) as Candle[],
+      h1: context.candles.h1,
+      m15: context.candles.m15 ?? [],
+      m5: context.candles.m5 ?? [],
       spreadPercent: context.marketData.spreadPercent,
       quoteVolume24h: context.marketData.quoteVolume24h,
       quoteVolume24hSpot: context.marketData.quoteVolume24hSpot,
       livePrice: context.marketData.livePrice ?? context.currentPrice,
       portfolio: context.portfolio as PortfolioRiskStats,
       openPositions: context.openPositions,
-      params: (context.params as Partial<IntradayParams>) ?? DEFAULT_INTRADAY_PARAMS,
+      // Merge, don't replace: context.params always carries at least the
+      // orchestrator's own bookkeeping keys, so `?? DEFAULT_INTRADAY_PARAMS`
+      // never fired and the engine ran with every threshold undefined.
+      // (evaluateIntradayDecision now merges defensively too — belt and braces.)
+      params: { ...DEFAULT_INTRADAY_PARAMS, ...(context.params as Partial<IntradayParams>) },
       now: context.now,
       existingExposureByAsset: context.portfolio.existingExposureByAsset
     };
@@ -234,18 +247,28 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
   }
 
   execute(context: DecisionContext): unknown {
-    // Run stages sequentially
-    let current = context;
+    // Compute adaptive sizing multiplier (like legacy/pro adapters)
+    const closedTrades = (context.closedTrades ?? []) as ClosedTradeRecord[];
+    let sizingMultiplier = 1;
+    if (closedTrades.length >= 5) {
+      const perf = summarizeRecentPerformance(closedTrades);
+      sizingMultiplier = computeSizingMultiplier(perf, context.portfolio.dailyDrawdownPercent);
+    }
+
+    // Run stages sequentially with sizingMultiplier in context
+    let current: DecisionContext = { ...context, params: { ...context.params, _sizingMultiplier: sizingMultiplier } };
     for (const stage of this.stages) {
       const result = stage.execute(current);
       current = result.context;
       if (result.blocked) {
-        // Return a blocked result
+        // Return blocked result with any available raw result from RunEngineStage
+        const raw = (current as unknown as { _rawResult?: IntradayDecision })._rawResult;
         return {
           outcome: 'NO_SIGNAL' as DecisionOutcome,
           gate: result.gate ?? 'UNKNOWN',
           logs: [result.blockReason ?? 'Blocked'],
-          summary: result.blockReason ?? 'Blocked'
+          summary: result.blockReason ?? 'Blocked',
+          _rawResult: raw
         };
       }
     }
@@ -255,32 +278,54 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
   }
 
   normalize(output: unknown, context: DecisionContext): DecisionResult {
-    const result = output as IntradayDecision;
+    const result = output as {
+      outcome: DecisionOutcome;
+      gate: string;
+      logs: string[];
+      summary: string;
+      _rawResult?: IntradayDecision;
+    };
 
+    const raw = result._rawResult;
+    if (raw) {
+      return {
+        engineId: this.id,
+        symbol: context.symbol,
+        outcome: mapOutcome(raw.outcome),
+        gate: raw.gate,
+        tradeType: mapTradeType(raw.tradeType),
+        direction: mapDirection(raw.direction),
+        confidence: raw.entry
+          ? Math.round(((raw.setup?.setupScore ?? 0) + raw.entry.entryScore) / 2)
+          : raw.setup
+          ? Math.round(raw.setup.setupScore)
+          : 0,
+        riskPlan: mapRiskPlan(raw.risk),
+        reasoning: raw.logs,
+        metrics: {
+          setupScore: raw.metrics?.setupScore ?? 0,
+          entryScore: raw.metrics?.entryScore ?? 0,
+          edgeRatio: raw.metrics?.edgeRatio ?? 0,
+          netRewardRisk: raw.metrics?.netRewardRisk ?? 0,
+          riskPercent: raw.metrics?.riskPercent ?? 0,
+          atrPercentile: raw.metrics?.atrPercentile ?? 0
+        },
+        raw: raw
+      };
+    }
+
+    // No raw result available (blocked before RunEngineStage)
     return {
       engineId: this.id,
-      symbol: result.symbol,
-      outcome: mapOutcome(result.outcome),
+      symbol: context.symbol,
+      outcome: 'NO_SIGNAL',
       gate: result.gate,
-      tradeType: mapTradeType(result.tradeType),
-      direction: mapDirection(result.direction),
-      confidence: result.entry
-        ? Math.round(((result.setup?.setupScore ?? 0) + result.entry.entryScore) / 2)
-        : result.setup
-        ? Math.round(result.setup.setupScore)
-        : 0,
-      riskPlan: mapRiskPlan(result.risk),
-      reasoning: result.logs,
-      metrics: {
-        setupScore: result.metrics.setupScore,
-        entryScore: result.metrics.entryScore,
-        edgeRatio: result.metrics.edgeRatio,
-        netRewardRisk: result.metrics.netRewardRisk,
-        riskPercent: result.metrics.riskPercent,
-        atrPercentile: result.metrics.atrPercentile,
-        volatility: result.metrics.volatility
-      },
-      raw: result
+      tradeType: 'HOLD',
+      direction: 'NONE',
+      confidence: 0,
+      riskPlan: null,
+      reasoning: [result.summary, ...result.logs],
+      metrics: {}
     };
   }
 }

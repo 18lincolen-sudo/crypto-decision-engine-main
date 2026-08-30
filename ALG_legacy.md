@@ -16,9 +16,13 @@
 **קבצים מרכזיים:**
 | קובץ | תפקיד |
 |------|-------|
-| `src/services/tradeEngine.ts` | מנוע מסחר בסיסי — Layers 0-3 |
-| `src/services/legacySimExecution.ts` | לוגיקת ביצוע סימולציה Legacy |
-| `server/legacySimEngine.ts` | מנוע סימולציה 24/7 בשרת |
+| `src/services/tradeEngine.ts` | מנוע מסחר בסיסי — אינדיקטורים, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters, evaluateExit |
+| `src/services/legacySimExecution.ts` | לוגיקת ביצוע סימולציה Legacy — buildLegacyEvaluations, generateLegacyOrders |
+| `src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown (משותף) |
+| `src/services/correlation.ts` | מניעת קורלציה (משותף) |
+| `src/services/simExecution.ts` | ביצוע פקודות משותף (fillDueOrders) |
+| `server/legacySimEngine.ts` | adapter למנוע סימולציה 24/7 בשרת |
+| `server/simEngineFactory.ts` | tick loop, hydrate, persist, getSnapshot משותף |
 
 ---
 
@@ -34,6 +38,11 @@ Layer 1: Signal Scoring (חישוב ציון ביטחון)
 Layer 2: Trade Routing (ניתוב סוג עסקה)
     ↓
 Layer 3: Risk Management (ניהול סיכונים)
+```
+
+**שערולים נוספים (בסדר ביצוע):**
+```
+CIRCUIT_BREAKER → EXPOSURE → (Layer 0-3) → Entry Timing → Correlation Gate → Cost/Edge → Confidence Floor → Streak Cooldown → Budget Floor
 ```
 
 ---
@@ -95,7 +104,7 @@ SignalScore = Σ(weight × strength)
 - **סה"כ BUY:** 25.4
 
 **קנסות (Penalties):**
-| קנס | תנ�י | השפעה |
+| קנס | תנאי | השפעה |
 |-----|------|-------|
 | חוסר נפח | Volume Surge NEUTRAL | Confidence × 0.6 |
 | שוק דשדוש | ADX < 20 (RANGING) | Confidence × 0.7 |
@@ -159,8 +168,8 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 | פרמטר | תיאור |
 |-------|-------|
 | `stopLoss` | מחיר Stop Loss |
-| `takeProfit1` | מחיר Take Profit ראשון |
-| `takeProfit2` | מחיר Take Profit שני |
+| `takeProfit1` | Take Profit ראשון |
+| `takeProfit2` | Take Profit שני |
 | `leverage` | מינוף (1x-5x) |
 | `betSizeUsd` | גודל התערבוב בדולרים |
 | `riskRewardRatio` | יחס סיכון-רווח |
@@ -176,7 +185,7 @@ betFraction = clamp(kellyFraction × 0.5, 0, 0.10)
 betFraction = 0.06 (6%)
 ```
 
-הערה: זהה לנוסחת Pro — Legacy התיישר איתה (§Layer3.3), לא נוסחת half-Kelly ישנה יותר.
+הערה: זהה לנוסחת Pro — Legacy התיישר איתה, לא נוסחת half-Kelly ישנה יותר.
 
 **מגבלות:**
 | פרמטר | מקסימום |
@@ -194,31 +203,74 @@ betFraction = 0.06 (6%)
 
 ---
 
-## 4. חישוב Confidence
+## 4. Entry Timing — תזמון כניסה
+
+**מקור:** `src/services/tradeEngine.ts` → `calculateOptimalEntry()`
+
+**מטרה:** מניעת רטיטות — כניסה רק אחרי pullback ל-EMA20.
+
+**אינדיקטורים:**
+| מדד | תיאור |
+|-----|-------|
+| **RSI(14)** | מדד כוח יחסי |
+| **EMA20** | ממוצע עובר |
+| **Bollinger Bands** | רצועות בולינג'ר |
+| **ATR** | תנודתיות לחישוב pullback |
+| **Relative Volume** | נפח יחסי (מינימום 0.6) |
+
+**לוגיקת החלטה:**
+```typescript
+if (action === 'BUY') {
+  // אם מחיר מורחק מעל EMA20 — ממתין לירידה
+  if (currentPrice > ema20 + atr * 1.5) → shouldEnter = false
+  // אחרת — כניסה מיידית
+  else → shouldEnter = true, entryPrice = currentPrice
+}
+else if (action === 'SELL') {
+  // אם מחיר מורחק מתחת ל-EMA20 — ממתין לעלייה
+  if (currentPrice < ema20 - atr * 1.5) → shouldEnter = false
+  // אחרת — כניסה מיידית
+  else → shouldEnter = true, entryPrice = currentPrice
+}
+```
+
+---
+
+## 5. חישוב Confidence
 
 **מקור:** `src/services/legacySimExecution.ts`
 
 ```typescript
 // חישוב confidence מ-Layer 1
-confidence = layer1.signalScore;
+confidence = layer1.confidence; // כבר כולל קנסות
 
-// קנסות
-if (volumeSignal === 'NEUTRAL') confidence *= 0.6;
-if (regime === 'RANGING') confidence *= 0.7;
+// High-confidence bypass: אם confidence >= 72, Layer 3 blocks נדרסים
+const effectiveLayer3 = layer3 ?? (confidence >= HIGH_CONFIDENCE_BYPASS
+  ? buildFallbackLegacyRisk(entryPrice, layer2.side, confidence)
+  : null);
 ```
 
 **סינון בסימולציה:**
 ```typescript
 // legacySimExecution.ts — Confidence floor
 const minConf = config.minConfidenceOverride ?? 58;
-if (layer1.signalScore < minConf) → BLOCK
+if (layer1.confidence < minConf) → BLOCK
 ```
 
 **סף מינימלי:** 58 (ניתן לשינוי דרך ה-UI)
 
 ---
 
-## 5. שערול נוספים בסימולציה
+## 6. שערול נוספים בסימולציה
+
+### Circuit Breakers
+
+```typescript
+const LEGACY_WEEKLY_DRAWDOWN_LOCK_PERCENT = 15;
+const LEGACY_DAILY_DRAWDOWN_BLOCK_PERCENT = 8;
+if (weeklyDrawdownPercent >= 15) → LOCK
+if (dailyDrawdownPercent >= 8) → BLOCK
+```
 
 ### Streak Cooldown — השהיה אחרי הפסדים (לפי מטבע)
 
@@ -235,7 +287,7 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 
 ### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
 
-מקור: src/services/adaptiveRisk.ts
+מקור: `src/services/adaptiveRisk.ts`
 
 streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
@@ -249,6 +301,8 @@ multiplier = streakFactor × drawdownFactor × winRateFactor, מוגבל ל-0.2�
 
 ```typescript
 // מקסימום 12 פוזיציות מקורלציות
+// סף קורלציה: 0.7 (Pearson על log-returns)
+// חלון זיהוי: 72 נרות H1
 if (correlatedPositions >= maxCorrelated) → BLOCK
 ```
 
@@ -259,28 +313,54 @@ if (correlatedPositions >= maxCorrelated) → BLOCK
 if (isHeld) → BLOCK
 ```
 
+### Cost / Edge Gate
+
+```typescript
+// יחס סיכון-רווח נמוך מדי
+if (effectiveLayer3.riskRewardRatio < MIN_RISK_REWARD_RATIO) → BLOCK
+```
+
+### Budget Floor
+
+```typescript
+// תקציב נמוך מדי
+const budget = computeEntryBudget(cash, tradeType);
+if (budget < 5) → BLOCK
+```
+
 ---
 
-## 6. זרימת ביצוע סימולציה
+## 7. זרימת ביצוע סימולציה
 
 ### מחזור ראשי (Tick)
 
 ```
 1. Refresh Market Data (כל 60 שניות)
-   ├── getAggregatedPrices() — מחירי שוק
-   └── getUniverseMarketData() — נרות H1
+    ├── getAggregatedPrices() — מחירי שוק
+    └── getUniverseMarketData() — נרות H1
 
 2. Build Evaluations
-   └── buildLegacyEvaluations() — החלטה לכל סימבול
+    └── buildLegacyEvaluations() — החלטה לכל סימבול
+        ├── detectMarketRegime() (Layer 0)
+        ├── evaluateSignals() (Layer 1)
+        ├── routeTradeType() (Layer 2)
+        ├── calculateOptimalEntry() (Entry Timing)
+        ├── calculateRiskParameters() (Layer 3)
+        ├── Correlation Gate
+        ├── Cost/Edge Gate
+        ├── Confidence Floor
+        └── Streak Cooldown
 
 3. Generate Orders
-   └── generateLegacyOrders() — יצירת פקודות
+    └── generateLegacyOrders() — יצירת פקודות
+        ├── evaluateExit() — בדיקת יציאה מפוזיציות קיימות
+        └── entries חדשים
 
 4. Fill Due Orders
-   └── fillDueOrders() — ביצוע פקודות שהגיעו זמנן
+    └── fillDueOrders() — ביצוע פקודות שהגיעו זמנן
 
 5. Update State
-   └── עדכון מצב, היסטוריה, וכו'
+    └── עדכון מצב, היסטוריה, וכו'
 ```
 
 ### ביצוע פקודות (Fill)
@@ -305,9 +385,9 @@ const fee = notional * feePercent / 100;
 
 ---
 
-## 7. יציאה מפוזיציה (Exit)
+## 8. יציאה מפוזיציה (Exit)
 
-**מקור:** `src/services/legacySimExecution.ts` → `evaluateExit()`
+**מקור:** `src/services/tradeEngine.ts` → `evaluateExit()`
 
 **סוגי יציאה:**
 | סוג | תנאי |
@@ -326,7 +406,7 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 
 ---
 
-## 8. קונפיגורציה
+## 9. קונפיגורציה
 
 **ערכי ברירת מחדל:**
 | פרמטר | ערך |
@@ -334,7 +414,7 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | `initialAmount` | 10,000$ |
 | `stopLoss` | 4.2% |
 | `takeProfit` | 3% |
-| `maxPositions` | 7 (ניתן להגדרה: עד 7 פוזיציות פתוחות כברירת מחדל, ניתן לשנות ב-UI) |
+| `maxPositions` | 7 |
 | `maxFuturesPositions` | 2 |
 | `feePercent` | 0.1% |
 | `slippagePercent` | 0.05% |
@@ -344,7 +424,7 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 
 ---
 
-## 9. סיכום שדות SignalEvaluation
+## 10. סיכום שדות SignalEvaluation
 
 | שדה | תיאור |
 |-----|-------|
@@ -353,9 +433,9 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | `tradeType` | `SPOT` / `FUTURES` / `HOLD` |
 | `tradeSide` | `LONG` / `SHORT` / `BUY` / `SELL` / `NONE` |
 | `confidence` | ציון ביטחון (0-100) |
-| `price` | מחיר כניסה |
+| `price` | מחיר כניסה (Limit Order) |
 | `priceChange24h` | שינוי 24 שעות |
-| `reasoning` | הסבר החלטה |
+| `reasoning` | הסבר ההחלטה |
 | `status` | סטטוס (מוכן/חסום) |
 | `willExecute` | האם יבוצע |
 | `factors` | גורמי החלטה |
@@ -363,10 +443,31 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | `leverage` | מינוף |
 | `stopLoss` | Stop Loss |
 | `takeProfit1` | Take Profit ראשון |
+| `takeProfit2` | Take Profit שני |
 
 ---
 
-## 10. תיקוני באגים
+## 11. הבדלים מהבוטים האחרים
+
+| תכונה | Legacy | חדש (MTF) | Pro |
+|-------|--------|-----------|-----|
+| מקור אותות | tradeEngine.ts (סטה) | intradayEngine.ts (MTF) | proAdvancedAnalysis.ts (האתר) |
+| פריימים זמן | H1 בלבד | 1H + 15M + 5M | H1 בלבד |
+| SPOT threshold | 58 (סטטי) | 52 (סטטי) | 60 (דינמי לפי ATR%) |
+| FUTURES threshold | 70 (סטטי) | 52 (סטטי) | 72 (דינמי לפי ATR%) |
+| Daily circuit breaker | 8% | 8% | 8% |
+| Weekly circuit breaker | 15% | 15% | 15% |
+| Time exit | 48 שעות (Spot) | TREND_PULLBACK: 120ד', BREAKOUT_RETEST: 60ד', MEAN_REVERSION: 45ד' | 24 שעות + הרחבה ל-36 שעות |
+| Position sizing | Kelly (6%) | risk-first (0.5% equity / stop distance) | Kelly ישיר (6%) |
+| Entry timing | calculateOptimalEntry | confirmEntry5M | calculateProOptimalEntry |
+| Cost/Edge gate | MIN_RISK_REWARD_RATIO | evaluateCostEdge | MIN_RISK_REWARD_RATIO |
+| Correlation gate | כן | כן | כן |
+| Streak cooldown | לפי מטבע | לפי מטבע | לפי מטבע |
+| High-confidence bypass | 72 (Layer 3) | 72 (NO_ENTRY + COST) | 72 (Layer 3) |
+
+---
+
+## 12. תיקוני באגים
 
 ### תיקון: `MIN_ENTRY_RELATIVE_VOLUME` לא מוגדר
 

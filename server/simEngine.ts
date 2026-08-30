@@ -17,12 +17,29 @@ import { SignalEvaluation, DecisionFactor } from '../src/services/intradayBridge
 import { Candle, PortfolioRiskStats } from '../src/services/tradeEngine';
 import { IntradayParams, DEFAULT_INTRADAY_PARAMS } from '../src/services/intradayParams';
 
+/** Base asset for a position symbol, keyed the same way the candle maps and
+ *  the exposure map are. */
+function toBase(symbol: string): string {
+  return symbol.replace(/USDT$/, '').replace(/BUSD$/, '');
+}
+
+/** Notional exposure per base asset — feeds the 8%-per-asset cap in the risk
+ *  layer, which read a hardcoded {} before and so never saw existing holdings. */
+function exposureByAsset(positions: { symbol: string; notionalUsd?: number }[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const p of positions) {
+    const base = toBase(p.symbol);
+    map[base] = (map[base] || 0) + (p.notionalUsd || 0);
+  }
+  return map;
+}
+
+
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../src/services/simExecution';
 export type { SimSnapshot };
 
 // Create the DecisionEngine with IntradayAdapter
 const engine = new DecisionEngine({
-  correlationGate: true,
   verbose: false
 });
 engine.registerAdapter(new IntradayAdapter());
@@ -73,13 +90,16 @@ const intradayStrategy: SimEngineStrategy = {
           openPositionsCount: input.positions.length,
           openFuturesPositionsCount: input.positions.filter(p => p.type === 'FUTURES').length,
           totalLeveragedExposureUsd: input.totalLeveragedExposureUsd,
-          existingExposureByAsset: {},
+          existingExposureByAsset: exposureByAsset(input.positions),
           systemLocked: false
         } as PortfolioRiskStats,
+        // `candles` is what lets the correlation gate actually run — without a
+        // series per held position it finds nothing and abstains.
         openPositions: input.positions.map(p => ({
-          symbol: p.symbol.replace(/USDT$/, '').replace(/BUSD$/, ''),
+          symbol: toBase(p.symbol),
           type: p.type,
-          side: p.side
+          side: p.side,
+          candles: input.correlationCandles[toBase(p.symbol)]
         })),
         marketData: {
           spreadPercent: snap.liquidity?.spreadPercent ?? 0,

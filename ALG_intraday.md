@@ -21,12 +21,17 @@
 |------|-------|
 | `src/services/intradayEngine.ts` | מרכז ההחלטות — evaluateIntradayDecision |
 | `src/services/intradayRegime.ts` | זיהוי משטר שוק (Layer 0) |
-| `src/services/intradaySetup.ts` | זיהוי Setup (Layer 1) |
+| `src/services/intradaySetup.ts` | זיהוי Setup (Layer 1) — TREND_PULLBACK, BREAKOUT_RETEST, MEAN_REVERSION |
 | `src/services/intradayEntry.ts` | אישור כניסה (Layer 2) |
-| `src/services/intradayRisk.ts` | ניהול סיכונים (Layer 3) |
+| `src/services/intradayRisk.ts` | Cost/Edge + תכנון סיכון (Layer 3) |
+| `src/services/intradayExit.ts` | לוגיקת יציאה מפוזיציה |
+| `src/services/intradayBridge.ts` | גשר בין סימולציה ל-intradayEngine + מיפוי ל-SignalEvaluation |
+| `src/services/intradayParams.ts` | פרמטרים מרכזיים (DEFAULT_INTRADAY_PARAMS) |
 | `src/services/simExecution.ts` | לוגיקת ביצוע סימולציה (משותף) |
-| `src/services/intradayBridge.ts` | גשר בין סימולציה ל-intradayEngine |
-| `server/simEngine.ts` | מנוע סימולציה 24/7 בשרת |
+| `src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown |
+| `src/services/correlation.ts` | מניעת קורלציה (Pearson log-returns) |
+| `server/simEngine.ts` | adapter למנוע סימולציה 24/7 בשרת |
+| `server/simEngineFactory.ts` | tick loop, hydrate, persist, getSnapshot משותף |
 
 ---
 
@@ -35,9 +40,11 @@
 האלגוריתם עובר דרך שלבים סדרתיים — **השערול הראשון שנכשל עוצר את התהליך**:
 
 ```
-NO_DATA → CIRCUIT_BREAKER → EXPOSURE → NO_REGIME → VOLATILITY → 
-LIQUIDITY → SPREAD → NO_SETUP → NO_ENTRY → COST → RISK
+NO_DATA → CIRCUIT_BREAKER → EXPOSURE → (1H REGIME) → (15M SETUP) → (5M ENTRY) →
+TRADE TYPE ROUTING → LIQUIDITY → SPREAD → (EXTREME strict bar) → COST → RISK
 ```
+
+**הערה:** אין שערול NO_REGIME נפרד. TRANSITIONAL/SOFT_TREND לא חוסמים את התהליך לחלוטין — הם מגדירים אילו סוגי עסקאות מותרים ואילו ספים נדרשים, ומופעלים כחלק מ-trade type routing.
 
 ---
 
@@ -62,10 +69,10 @@ const min5m = 500;   // מינימום 500 נרות 5 דקות
 if (p.systemLocked) → BLOCK
 
 // Drawdown יומי >= 8% — חסימה
-if (p.dailyDrawdownPercent >= 8) → BLOCK
+if (p.dailyDrawdownPercent >= params.dailyDrawdownBlockPercent) → BLOCK
 
 // Drawdown שבועי >= 15% — נעילה
-if (p.weeklyDrawdownPercent >= 15) → BLOCK
+if (p.weeklyDrawdownPercent >= params.weeklyDrawdownLockPercent) → BLOCK
 ```
 
 ---
@@ -77,32 +84,44 @@ if (p.weeklyDrawdownPercent >= 15) → BLOCK
 if (p.openPositionsCount >= params.maxOpenPositions) → BLOCK
 
 // נכס כבר פתוח (אין כפילות Spot/Futures)
+const sameAsset = input.openPositions.find((o) => o.symbol === symbol);
 if (sameAsset) → BLOCK
 ```
 
 **מקסימום פוזיציות:**
 ```typescript
-maxPositions = 7  // ניתן להגדרה: עד 7 פוזיציות פתוחות כברירת מח�דל, ניתן לשנות ב-UI
+maxPositions = 7
+maxFutures = 2
 ```
 
 ---
 
-### LAYER 0: 1H REGIME — זיהוי משטר שוק
+### LAYER A: 1H REGIME — זיהוי משטר שוק
 
-**מקור:** `src/services/intradayRegime.ts`
+**מקור:** `src/services/intradayRegime.ts` → `detectRegime1H()`
 
 **תוצאות אפשריות:**
 | Regime | תיאור | Futures |
 |--------|-------|---------|
-| `TRENDING` | מגמה ברורה | ✅ מותר |
+| `BULL_TREND` | מגמה עולה | ✅ מותר |
+| `BEAR_TREND` | מגמה יורדת | ✅ מותר |
 | `RANGING` | טווח (דשדוש) | ❌ חסום |
-| `TRANSITIONAL` | מעבר בין משטרים | ❌ חסום (Spot רק איכותי מאוד) |
-| `SOFT_TREND` | מגמה חלשה | ❌ חסום (Spot רק עם סף מוגבר) |
+| `TRANSITIONAL` | מעבר בין משטרים | ❌ Futures חסום, Spot איכותי מותר |
+| `SOFT_TREND` | מגמה חלשה | ❌ Futures חסום, Spot איכותי מותר |
 
 **מדדים מרכזיים:**
 - **ADX** — עוצמת מגמה (מעל 25 = מגמה)
 - **ATR%** — תנודתיות יחסית
 - **Supertrend** — כיוון מגמה
+- **ATR Percentile** — מיקום התנודתיות בהיסטוריה (LOW/NORMAL/HIGH/EXTREME)
+
+**רמות תנודתיות:**
+| רמה | תנאי ATR percentile | השפעה |
+|-----|---------------------|-------|
+| `LOW` | < 30 | כל האסטרטגיות מותרות |
+| `NORMAL` | 30-80 | כל האסטרטגיות מותרות |
+| `HIGH` | 80-95 | Futures חסום, Spot מותר |
+| `EXTREME` | >= 95 | Futures חסום, Spot במסלול מחמיר |
 
 **משטרים מיוחדים:**
 - **TRANSITIONAL:** Futures חסום, Spot רק אם Setup+Entry חזקים + ATR percentile < 80
@@ -110,47 +129,29 @@ maxPositions = 7  // ניתן להגדרה: עד 7 פוזיציות פתוחות
 
 ---
 
-### GATE 5: VOLATILITY — בדיקת תנודתיות
+### LAYER B: 15M SETUP — זיהוי Setup
 
-```typescript
-// EXTREME volatility — Futures חסום, Spot רק במסלול מחמיר
-if (regime.volatility === 'EXTREME' && !regime.futuresAllowed) → מסלול מחמיר
-
-// במסלול מחמיר — דורש Setup ו-Entry חזקים
-if (strictMode && (!setup.strong || !entry.strong)) → BLOCK
-```
-
-**רמות תנודתיות:**
-| רמה | תיאור |
-|-----|-------|
-| `LOW` | תנודה נמוכה — כל האסטרטגיות מותרות |
-| `NORMAL` | תנודה רגילה — כל האסטרטגיות מותרות |
-| `HIGH` | תנודה גבוהה — Futures עם מגבלות |
-| `EXTREME` | תנודה קיצונית — רק Spot, מסלול מחמיר |
-
----
-
-### LAYER 1: 15M SETUP — זיהוי Setup
-
-**מקור:** `src/services/intradaySetup.ts`
+**מקור:** `src/services/intradaySetup.ts` → `detectSetup15M()`
 
 **סוגי Setup אפשריים:**
 | Setup | תיאור |
 |-------|-------|
 | `TREND_PULLBACK` | משיכה לאחור במגמה |
+| `BREAKOUT_RETEST` | פריצה מטווח + אישור retest |
 | `MEAN_REVERSION` | חזרה לממוצע |
-| `BREAKOUT` | פריצה מטווח |
 | `NONE` | אין Setup |
 
 **ציונים:**
 - `setupScore` — ציון Setup (0-100)
 - `strong` — האם Setup חזק (מעל סף מינימלי)
+- `candidateCount` — כמה חלופות זוהו
+- `blockers` — רשימת סיבות לחסימה
 
 ---
 
-### LAYER 2: 5M ENTRY — אישור כניסה
+### LAYER C: 5M ENTRY — אישור כניסה
 
-**מקור:** `src/services/intradayEntry.ts`
+**מקור:** `src/services/intradayEntry.ts` → `confirmEntry5M()`
 
 **תנאי כניסה:**
 - `confirmed` — האם הכניסה מאושרת
@@ -159,6 +160,14 @@ if (strictMode && (!setup.strong || !entry.strong)) → BLOCK
 - `entryPrice` — מחיר כניסה מומלץ
 - `stopReference` — רפרנס ל-Stop Loss
 - `targetReference` — רפרנס ל-Take Profit
+- `trigger` — סוג טריגר (PULLBACK_HOLD, BREAKOUT_RETEST, REVERSAL_RECOVERY)
+
+**High-Confidence Bypass:**
+```typescript
+// אם confidence >= 72, NO_ENTRY ו-COST נדרסים
+if (!entry.confirmed && confidence >= 72) → BYPASS (entry = confirmed)
+if (!cost.approved && confidence >= 72) → BYPASS (cost = approved)
+```
 
 ---
 
@@ -167,11 +176,20 @@ if (strictMode && (!setup.strong || !entry.strong)) → BLOCK
 ```typescript
 if (setup.spotOnly) → SPOT
 else if (regime.futuresAllowed) → FUTURES
-else if (allowShortDuringHighVolatility && trending && HIGH && SHORT) → FUTURES
 else → SPOT
 
 // EXTREME volatility — תמיד SPOT
 if (regime.volatility === 'EXTREME') → SPOT
+```
+
+**TRANSITIONAL / SOFT_TREND quality gate:**
+```typescript
+if (transitional || softTrend) {
+  tradeType = 'SPOT';
+  const atrOk = !regime.strictMode && (regime.atrPercentile ?? 50) < (isSoftTrend ? 70 : 80);
+  const highQuality = setup.strong && entry.strong && atrOk;
+  if (!highQuality) → BLOCK
+}
 ```
 
 ---
@@ -181,15 +199,24 @@ if (regime.volatility === 'EXTREME') → SPOT
 ```typescript
 // נזילות מינימלית (תלוי בסוג עסקה)
 const quoteVolume = tradeType === 'SPOT' ? quoteVolume24hSpot : quoteVolume24h;
-if (quoteVolume < minQuoteVolume24h) → BLOCK
+if (quoteVolume > 0 && quoteVolume < params.minQuoteVolume24h) → BLOCK
 
 // Spread מקסימלי
-if (spreadPercent > maxSpreadPercent) → BLOCK
+if (spreadPercent > params.maxSpreadPercent) → BLOCK
 ```
 
 **ערכי ברירת מחדל:**
-- `minQuoteVolume24h` — 100,000$ (SPOT), 500,000$ (FUTURES)
-- `maxSpreadPercent` — 0.5%
+- `minQuoteVolume24h` — 1,000,000$ (SPOT ו-FUTURES)
+- `maxSpreadPercent` — 0.12%
+
+---
+
+### GATE 5b: EXTREME Volatility Strict Bar
+
+```typescript
+// במסלול מחמיר (EXTREME volatility) — דורש Setup ו-Entry חזקים
+if (strictMode && (!setup.strong || !entry.strong)) → BLOCK
+```
 
 ---
 
@@ -204,12 +231,17 @@ netRewardRisk = edgeRatio - costPercent
 ```
 
 **תנאי אישור:**
-- `edgeRatio >= 2.0` (רווח כפול לפחות מהסיכון)
-- `netRewardRisk >= 1.5` (אחרי הפחתת עלויות)
+- `edgeRatio >= 1.2` (רווח כפול לפחות מהסיכון)
+- `netRewardRisk >= costSafetyMultiplier` (אחרי הפחתת עלויות)
+
+**High-Confidence Bypass:**
+```typescript
+if (!cost.approved && confidence >= 72) → BYPASS
+```
 
 ---
 
-### LAYER 3: RISK PLAN — תכנון סיכון
+### LAYER D: RISK PLAN — תכנון סיכון
 
 **מקור:** `src/services/intradayRisk.ts` → `buildRiskPlan()`
 
@@ -217,19 +249,58 @@ netRewardRisk = edgeRatio - costPercent
 | פרמטר | תיאור |
 |-------|-------|
 | `stopLoss` | מחיר Stop Loss |
-| `takeProfit1` | מחיר Take Profit ראשון |
+| `takeProfit1` | Take Profit ראשון |
+| `takeProfit2` | Take Profit שני |
 | `leverage` | מינוף (1x-5x) |
 | `quantity` | כמות |
 | `riskPercentUsed` | אחוז סיכון מהתיק |
 
 **מגבלות:**
-- `riskPerTradePercent` — 2% מהתיק לסיכון מקסימלי
+- `riskPerTradePercent` — 0.5% מהתיק לסיכון מקסימלי
+- `maxRiskPerTradePercent` — 0.75% מהתיק
 - `maxLeverage` — 5x מקסימלי
-- `minOrderValue` — 5$ מינימום לפקודה
+- `minOrderUsd` — 5$ מינימום לפקודה
+
+**High-Confidence Fallback:**
+```typescript
+// אם buildRiskPlan דחה אבל confidence >= 72 — fallback עם SL 1.8% / TP 3%
+if (!risk.approved && confidence >= 72) → buildFallbackIntradayRisk()
+```
 
 ---
 
-## 4. חישוב Confidence
+## 4. יציאה מפוזיציה (Exit)
+
+**מקור:** `src/services/intradayExit.ts` → `evaluateIntradayExit()`
+
+**גשר:** `src/services/intradayBridge.ts` → `evaluatePositionExit()` + `buildExitView()`
+
+**סוגי יציאה:**
+| סוג | תנאי |
+|-----|------|
+| `FULL` | Stop Loss או Take Profit |
+| `PARTIAL_50` | 50% סגירה ב-TP1 |
+| `TRAILING` | עקיבת סטופ |
+| `REVERSAL` | היפוך אותות |
+| `TIME_STOP` | סגירה לפי זמן |
+
+**זמני החזקה מקסימליים (לפי Setup):**
+| Setup | מקסימום זמן | הרחבה |
+|-------|-------------|--------|
+| `TREND_PULLBACK` | 120 דקות | ×1.5 אם התקדמות >= 0.5R |
+| `BREAKOUT_RETEST` | 60 דקות | ×1.5 אם התקדמות >= 0.5R |
+| `MEAN_REVERSION` | 45 דקות | ללא הרחבה |
+
+**Trailing Stop:**
+| Setup | הפעלה ב-R | ATR multiplier |
+|-------|-----------|----------------|
+| `TREND_PULLBACK` | 0.8R | 1.2x |
+| `BREAKOUT_RETEST` | 1.0R | 1.2x |
+| `MEAN_REVERSION` | 1.5R | 1.2x |
+
+---
+
+## 5. חישוב Confidence
 
 **מקור:** `src/services/intradayBridge.ts` → `mapDecisionToSignalEvaluation()`
 
@@ -257,7 +328,7 @@ if (ev.confidence < minConf) → BLOCK
 
 ---
 
-## 5. שערול נוספים בסימולציה
+## 6. שערול נוספים בסימולציה
 
 ### Streak Cooldown — השהיה אחרי הפסדים (לפי מטבע)
 
@@ -274,7 +345,7 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 
 ### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
 
-מקור: src/services/adaptiveRisk.ts
+מקור: `src/services/adaptiveRisk.ts`
 
 streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
@@ -292,8 +363,12 @@ multiplier = streakFactor × drawdownFactor × winRateFactor
 
 ```typescript
 // מקסימום 12 פוזיציות מקורלציות
+// סף קורלציה: 0.7 (Pearson על log-returns)
+// חלון זיהוי: 72 נרות H1
 if (correlatedPositions >= maxCorrelated) → BLOCK
 ```
+
+**כיוון חשוב:** LONG מול SHORT עם קורלציה גבוהה נחשב כ-spread (לא כקונצנטרציה) — ה-effective correlation נחלת לפי כיוון.
 
 ### Same-Asset Dedup — מניעת כפילות
 
@@ -302,28 +377,35 @@ if (correlatedPositions >= maxCorrelated) → BLOCK
 if (isHeld) → BLOCK
 ```
 
+### Per-Asset Exposure Cap
+
+```typescript
+// הגבלת חשיפה מקסימלית לנכס בודד
+if (existingExposureByAsset[symbol] > maxExposurePerAsset) → BLOCK
+```
+
 ---
 
-## 6. זרימת ביצוע סימולציה
+## 7. זרימת ביצוע סימולציה
 
 ### מחזור ראשי (Tick)
 
 ```
 1. Refresh Market Data (כל 60 שניות)
-   ├── getAggregatedPrices() — מחירי שוק
-   └── getUniverseMarketData() — נרות MTF
+    ├── getAggregatedPrices() — מחירי שוק
+    └── getUniverseMarketData() — נרות MTF
 
 2. Build Evaluations
-   └── buildEvaluations() — החלטה לכל סימבול
+    └── buildEvaluations() — החלטה לכל סימבול
 
 3. Generate Orders
-   └── generateNewOrders() — יצירת פקודות
+    └── generateNewOrders() — יצירת פקודות
 
 4. Fill Due Orders
-   └── fillDueOrders() — ביצוע פקודות שהגיעו זמנן
+    └── fillDueOrders() — ביצוע פקודות שהגיעו זמנן
 
 5. Update State
-   └── עדכון מצב, היסטוריה, וכו'
+    └── עדכון מצב, היסטוריה, וכו'
 ```
 
 ### ביצוע פקודות (Fill)
@@ -346,20 +428,12 @@ const fee = notional * feePercent / 100;
 | `slippagePercent` | 0.05% |
 | `feePercent` | 0.1% |
 
----
-
-## 7. יציאה מפוזיציה (Exit)
-
-**מקור:** `src/services/intradayBridge.ts` → `evaluatePositionExit()`
-
-**סוגי יציאה:**
-| סוג | תנאי |
-|-----|------|
-| `FULL` | Stop Loss או Take Profit |
-| `PARTIAL_50` | 50% סגירה ב-TP1 |
-| `TRAILING` | עקיבת סטופ |
-| `REVERSAL` | היפוך אותות |
-| `TIME_STOP` | סגירה לפי זמן |
+**realism פרמטרים:**
+| פרמטר | ערך | תיאור |
+|-------|-----|-------|
+| `limitOrderTtlMinutes` | 10 | תוקף פקודת Limit |
+| `touchFillProbability` | 0.5 | הסתברות מילוי במגע |
+| `partialFillRatio` | 0.5 | יחס מילוי חלקי |
 
 ---
 
@@ -367,19 +441,69 @@ const fee = notional * feePercent / 100;
 
 **מקור:** `src/services/intradayParams.ts` — `DEFAULT_INTRADAY_PARAMS`
 
-**התאמות סימולציה מיוחדות** (`SIM_INTRADAY_PARAMS_OVERRIDE`):
+**התאמות סימולציה מיוחדות** (`SIM_INTRADAY_PARAMS_OVERRIDE` ב-`simExecution.ts`):
 ```typescript
 {
   allowShortDuringHighVolatility: true,  // מותר למכור ב-HIGH volatility
   meanReversionMinStopAtrMult: 1.6,      // מינימום SL ל-Mean Reversion
   meanReversionMinStopPercent: 0.25,     // מינימום SL באחוזים
-  meanReversionCloseConfirmStop: true    // אישור סגירה
+  meanReversionCloseConfirmStop: true    // אישור סגירה על נר סגור
 }
+```
+
+**ערכי ברירת מחדל עיקריים:**
+| פרמטר | ערך |
+|-------|-----|
+| `initialAmount` | 10,000$ |
+| `stopLoss` | 4.2% |
+| `takeProfit` | 3% |
+| `maxPositions` | 7 |
+| `maxFuturesPositions` | 2 |
+| `feePercent` | 0.1% |
+| `slippagePercent` | 0.05% |
+| `executionDelaySec` | 3 |
+| `minConfidenceOverride` | 52 |
+| `positionPercent` | 10% |
+| `dailyDrawdownBlockPercent` | 8% |
+| `weeklyDrawdownLockPercent` | 15% |
+| `weeklyDrawdownFlattenPercent` | 15% |
+
+---
+
+## 9. Telemetry
+
+### Funnel Telemetry
+
+כל `IntradayDecision` מכיל אובייקט `funnel` שמתעד את התקדמות האותות דרך השערולים:
+
+```typescript
+funnel: {
+  evaluated: true,
+  regimePassed: boolean,
+  setupCandidates: number,
+  entryCandidates: number,
+  costBlocked: boolean,
+  riskBlocked: boolean,
+  approved: boolean,
+  executed: boolean
+}
+```
+
+### Decision Logs
+
+כל החלטה מכילה `logs: string[]` עם שורות עברית שמתעדות כל שערול:
+
+```
+[SYMBOL] 1H=BULL_TREND bias=BULL ADX=32.5 ATR%=1.23 vol=NORMAL futuresAllowed=true
+[SYMBOL] 15M=TREND_PULLBACK dir=LONG SetupScore=78 (strong=true)
+[SYMBOL] 5M=PULLBACK_HOLD EntryScore=82 price=1234.56
+[SYMBOL] COST OK — R:R נטו 2.34 | edge 3.12
+[SYMBOL] SIGNAL FUTURES LONG TREND_PULLBACK | SL=1210.00 TP1=1250.00 lev=3x risk=0.75% qty=0.1234
 ```
 
 ---
 
-## 9. סיכום שדות SignalEvaluation
+## 10. סיכום שדות SignalEvaluation
 
 | שדה | תיאור |
 |-----|-------|
@@ -398,3 +522,25 @@ const fee = notional * feePercent / 100;
 | `leverage` | מינוף |
 | `stopLoss` | Stop Loss |
 | `takeProfit1` | Take Profit ראשון |
+| `takeProfit2` | Take Profit שני |
+| `decision` | IntradayDecision גולמי (לשימוש פנימי) |
+
+---
+
+## 11. הבדלים מהבוטים האחרים
+
+| תכונה | חדש (MTF) | Legacy | Pro |
+|-------|-----------|--------|-----|
+| מקור אותות | intradayEngine.ts (MTF) | tradeEngine.ts (drifted) | proAdvancedAnalysis.ts (האתר) |
+| פריימים זמן | 1H + 15M + 5M | H1 בלבד | H1 בלבד |
+| SPOT threshold | 52 (סטטי) | 58 (סטטי) | 60 (דינמי לפי ATR%) |
+| FUTURES threshold | 52 (סטטי) | 70 (סטטי) | 72 (דינמי לפי ATR%) |
+| Daily circuit breaker | 8% | 8% | 8% |
+| Weekly circuit breaker | 15% | 15% | 15% |
+| Time exit | TREND_PULLBACK: 120ד', BREAKOUT_RETEST: 60ד', MEAN_REVERSION: 45ד' | 48 שעות (Spot) | 24 שעות + הרחבה ל-36 שעות |
+| Position sizing | risk-first (0.5% equity / stop distance) | Kelly (6%) | Kelly ישיר (6%) |
+| Entry timing | 5M confirmation (confirmEntry5M) | calculateOptimalEntry | calculateProOptimalEntry |
+| Cost/Edge gate | כן (evaluateCostEdge) | לא (MIN_RISK_REWARD_RATIO בלבד) | לא (MIN_RISK_REWARD_RATIO בלבד) |
+| Correlation gate | כן (Pearson log-returns) | כן | כן |
+| Streak cooldown | לפי מטבע | לפי מטבע | לפי מטבע |
+| High-confidence bypass | 72 (NO_ENTRY + COST) | 72 (Layer 3) | 72 (Layer 3) |

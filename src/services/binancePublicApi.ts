@@ -4,6 +4,8 @@
  * Rate limit: 1200 req/min — far more permissive than CoinGecko's 30 req/min.
  */
 
+import { readJson } from '../utils/errorHandler';
+
 const BINANCE_BASE_URL = 'https://api.binance.com/api/v3';
 
 export interface Binance24hTicker {
@@ -73,7 +75,7 @@ export const binancePublicApi = {
       });
       clearTimeout(timeout);
       if (!res.ok) return _allTickersCache?.data ?? [];
-      const all: Binance24hTicker[] = await res.json();
+      const all = await readJson<Binance24hTicker[]>(res, 'binance 24h tickers');
       // Filter to USDT pairs with real volume
       const filtered = all.filter(t =>
         t.symbol.endsWith('USDT') && parseFloat(t.quoteVolume) > 10000
@@ -94,7 +96,7 @@ export const binancePublicApi = {
     const res = await fetchWithBackoff(`${BINANCE_BASE_URL}/ticker/24hr?symbol=${formatted}`, 6000);
     if (!res?.ok) return null;
     try {
-      return await res.json();
+      return await readJson<Binance24hTicker>(res, 'binance 24h ticker');
     } catch {
       return null;
     }
@@ -112,7 +114,7 @@ export const binancePublicApi = {
     );
     if (!res?.ok) return [];
     try {
-      const data: unknown[][] = await res.json();
+      const data = await readJson<unknown[][]>(res, 'binance klines');
       return data.map(item => ({
         timestamp: item[0] as number,
         open:   parseFloat(item[1] as string),
