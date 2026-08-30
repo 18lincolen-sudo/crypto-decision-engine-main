@@ -203,9 +203,16 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
 
   // ── LAYER C: 5M ENTRY ───────────────────────────────────────────────────────
   const entry = confirmEntry5M(input.m5, setup, params);
-  if (!entry.confirmed) {
+  const setupScore = setup.setupScore;
+  const entryScore = entry.entryScore;
+  const confidence = Math.round((setupScore + entryScore) / 2);
+  if (!entry.confirmed && confidence < 72) {
     logs.push(`[${symbol}] NO_ENTRY — EntryScore=${entry.entryScore} | ${entry.blockers[0] ?? ''}`);
     return finalize(symbol, 'NO_ENTRY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_ENTRY', 'NO_SIGNAL', setup, entry), null);
+  }
+  if (!entry.confirmed && confidence >= 72) {
+    logs.push(`[${symbol}] NO_ENTRY BYPASS — EntryScore=${entry.entryScore} | ${entry.blockers[0] ?? ''} (confidence ${confidence} >= 72)`);
+    entry = { ...entry, confirmed: true, blockers: [] };
   }
   logs.push(`[${symbol}] 5M=${entry.trigger} EntryScore=${entry.entryScore} price=${formatDynamicPrice(entry.entryPrice)}`);
 
@@ -291,17 +298,16 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     entryIsLimit: true,
     params
   });
-  if (!cost.approved) {
+  if (!cost.approved && confidence < 72) {
     logs.push(`[${symbol}] COST — ${cost.reason}`);
     return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry), tradeType);
+  }
+  if (!cost.approved && confidence >= 72) {
+    logs.push(`[${symbol}] COST BYPASS — ${cost.reason} (confidence ${confidence} >= 72)`);
   }
   logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
   // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
-  const setupScore = setup.setupScore;
-  const entryScore = entry.entryScore;
-  const confidence = Math.round((setupScore + entryScore) / 2);
-
   const risk = buildRiskPlan({
     symbol,
     direction: setup.direction as Exclude<Direction, 'NONE'>,

@@ -179,9 +179,9 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
   // ─────────────────────────────────────────────────────────────
   // Test 6 — Below Spot threshold
   // ADX = 32, ATR = 1% (below 2% ramp threshold), SignalScore = 55
-  // Expected: HOLD (55 < 60, static threshold)
+  // Expected: HOLD (55 < 58, fixed legacy minimum)
   // ─────────────────────────────────────────────────────────────
-  it('Test 6: Below Spot threshold (55 < 60) — Returns HOLD', () => {
+  it('Test 6: Below Spot threshold (55 < 58) — Returns HOLD', () => {
     const regime = makeRegime({
       adx: 32,
       atr: 1,
@@ -194,8 +194,8 @@ describe('Section 41 — 10 Mandatory Decision Engine Test Scenarios', () => {
     const result = routeTradeType(signal, regime, { hasExistingFutures: false, hasExistingSpot: false });
 
     expect(result.type).toBe('HOLD');
-    // Static threshold: base 60 (ATR% < 2, no dynamic ramp)
-    expect(result.reason).toContain('60');
+    // Fixed minimum for legacy bot: 58
+    expect(result.reason).toContain('58');
   });
 
   // ─────────────────────────────────────────────────────────────

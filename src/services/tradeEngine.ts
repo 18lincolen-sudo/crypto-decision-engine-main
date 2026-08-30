@@ -912,8 +912,8 @@ export function routeTradeType(
   // ═══════════════════════════════════════════════════════
   const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING' || (layer0.regime === 'TRANSITIONAL' && (layer0.adx > 22 || routingScore >= 80));
   const softTrendSpot = layer0.regime === 'TRANSITIONAL' && (layer0.adx > 22 || routingScore >= 80);
-  const spotThreshold = dynamicConfidenceThreshold(60, layer0.atrPercent);
-  const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(softTrendBase, layer0.atrPercent) : spotThreshold;
+  const spotThreshold = 58; // Fixed minimum for legacy bot
+  const requiredSpotScore = softTrendSpot ? Math.max(spotThreshold, softTrendBase) : spotThreshold;
   const isSpotScorePassed = routingScore >= requiredSpotScore;
 
   if (isSpotRegimeValid && isSpotScorePassed) {
@@ -950,7 +950,7 @@ export function routeTradeType(
   // ═══════════════════════════════════════════════════════
   // SPECIFIC BLOCK REASONS FOR TELEMETRY & LOGS
   // ═══════════════════════════════════════════════════════
-  if (layer0.volatility === 'HIGH' && !isSpotScorePassed) {
+  if (layer0.volatility === 'HIGH' && !isSpotScorePassed && routingScore < 72) {
     return {
       type: 'HOLD',
       side: 'NONE',
@@ -960,7 +960,7 @@ export function routeTradeType(
     };
   }
 
-  if (routingScore < requiredSpotScore) {
+  if (routingScore < requiredSpotScore && routingScore < 72) {
     return {
       type: 'HOLD',
       side: 'NONE',
@@ -1106,7 +1106,8 @@ export function calculateOptimalEntry(
   candles: Candle[],
   pullbackFactor: number = 0.35,
   atrPercent: number = 0,
-  minRelativeVolume: number = MIN_ENTRY_RELATIVE_VOLUME
+  minRelativeVolume: number = MIN_ENTRY_RELATIVE_VOLUME,
+  confidence: number = 50
 ): EntryTimingResult {
   const isBuy = side === 'BUY' || side === 'LONG';
 
@@ -1134,7 +1135,7 @@ export function calculateOptimalEntry(
   // limit order this function returns rests into a pullback, and a pullback
   // on no volume is drift, not a level anyone is defending.
   const relativeVolume = computeRelativeVolume(candles);
-  if (relativeVolume !== undefined && relativeVolume < minRelativeVolume) {
+  if (relativeVolume !== undefined && relativeVolume < minRelativeVolume && confidence < 72) {
     return {
       shouldEnterNow: false,
       entryPrice: currentPrice,

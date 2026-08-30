@@ -136,7 +136,7 @@ export function buildLegacyEvaluations(ctx: LegacyEvaluationContext): SignalEval
     let entryAccepted = true;
     let entryBlockReason = '';
     if (layer2.type !== 'HOLD' && layer2.side !== 'NONE') {
-      const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, layer2.side, candles, 0.35, layer0.atrPercent);
+      const entryTiming = calculateOptimalEntry(currentPrice, layer0.atr, layer2.side, candles, 0.35, layer0.atrPercent, MIN_ENTRY_RELATIVE_VOLUME, layer1.confidence);
       // The entry-timing layer is a REAL gate (matching Pro): when RSI is
       // overbought / price sits on the Bollinger top / price is extended
       // beyond 1.5×ATR from EMA20 / volume is too thin, `shouldEnterNow` is

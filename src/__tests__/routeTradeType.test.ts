@@ -36,7 +36,7 @@ describe('routeTradeType', () => {
     expect(result.type).toBe('HOLD');
   });
 
-  it('returns HOLD when confidence below spot minimum (60)', () => {
+  it('returns HOLD when confidence below spot minimum (58)', () => {
     const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 50 }), trendingLayer0);
     expect(result.type).toBe('HOLD');
   });
@@ -90,9 +90,9 @@ describe('routeTradeType', () => {
     expect(result.side).toBe('BUY');
   });
 
-  it('blocks SPOT in HIGH VOL when Score < 60', () => {
+  it('blocks SPOT in HIGH VOL when Score < 58', () => {
     const highVolRegime = makeRegime({ regime: 'TRENDING', volatility: 'HIGH', atrPercent: 6.5, adx: 30 });
-    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 59 }), highVolRegime);
+    const result = routeTradeType(makeSignal({ action: 'BUY', signalScore: 55 }), highVolRegime);
     expect(result.type).toBe('HOLD');
     expect(result.hardGateBlocked).toBe(true);
     expect(result.blockReason).toBe('SPOT_SCORE_BELOW_HIGH_VOL_THRESHOLD');
