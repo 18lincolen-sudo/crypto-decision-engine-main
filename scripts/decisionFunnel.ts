@@ -37,7 +37,7 @@ const OUT = process.env.OUT ?? 'decisionFunnel.report.json';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchJson(url: string, tries = 4): Promise<any> {
+async function fetchJson(url: string, tries = 4): Promise<unknown> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
@@ -53,16 +53,22 @@ async function fetchJson(url: string, tries = 4): Promise<any> {
   throw lastErr;
 }
 
-function toCandles(list: any[]): Candle[] {
+function toCandles(list: unknown[]): Candle[] {
   return list
-    .map((c) => ({
-      timestamp: Number(c[0]),
-      open: Number(c[1]),
-      high: Number(c[2]),
-      low: Number(c[3]),
-      close: Number(c[4]),
-      volume: Number(c[5])
-    }))
+    .map((c) => {
+      if (!Array.isArray(c)) {
+        return null;
+      }
+      return {
+        timestamp: Number(c[0]),
+        open: Number(c[1]),
+        high: Number(c[2]),
+        low: Number(c[3]),
+        close: Number(c[4]),
+        volume: Number(c[5])
+      };
+    })
+    .filter((c): c is Candle => c !== null)
     .sort((a, b) => a.timestamp - b.timestamp);
 }
 
@@ -86,17 +92,23 @@ async function fetchBinanceKlines(symbol: string, interval: string, limit: numbe
   const url = `${BINANCE}/klines?symbol=${symbol}&interval=${bi}&limit=${limit}`;
   try {
     const res = await fetch(url);
-    const list = (await res.json()) as any[];
+    const list = (await res.json()) as unknown;
     if (!Array.isArray(list) || !list.length) return null;
     return list
-      .map((c) => ({
-        timestamp: Number(c[0]),
-        open: Number(c[1]),
-        high: Number(c[2]),
-        low: Number(c[3]),
-        close: Number(c[4]),
-        volume: Number(c[5])
-      }))
+      .map((c) => {
+        if (!Array.isArray(c)) {
+          return null;
+        }
+        return {
+          timestamp: Number(c[0]),
+          open: Number(c[1]),
+          high: Number(c[2]),
+          low: Number(c[3]),
+          close: Number(c[4]),
+          volume: Number(c[5])
+        };
+      })
+      .filter((c): c is Candle => c !== null)
       .sort((a, b) => a.timestamp - b.timestamp);
   } catch {
     return null;
@@ -243,8 +255,8 @@ async function run() {
           if (stale) console.log(`[funnel] ${symbol}: STALE data (ends ${new Date(m5[m5.length - 1].timestamp).toISOString()})`);
           dateRanges.push({ symbol, from: m5[0].timestamp, to: m5[m5.length - 1].timestamp, m5: m5.length, source: m5r.source });
           evaluateSymbol(agg, symbol, h1r.candles, m15r.candles, m5, liq);
-      } catch (e: any) {
-        console.log(`[funnel] ${symbol}: FETCH ERROR ${e?.message ?? e}`);
+      } catch (e: unknown) {
+        console.log(`[funnel] ${symbol}: FETCH ERROR ${e instanceof Error ? e.message : String(e)}`);
       }
       done++;
       if (done % 10 === 0) console.log(`[funnel] progress ${done}/${symbols.length}`);

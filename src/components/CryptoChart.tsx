@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -24,13 +24,7 @@ const CryptoChart = ({ symbol, isOpen, onClose }: CryptoChartProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (symbol && isOpen) {
-      fetchChartData();
-    }
-  }, [symbol, isOpen]);
-
-  const fetchChartData = async () => {
+  const fetchChartData = useCallback(async () => {
     if (!symbol) return;
     
     setIsLoading(true);
@@ -54,7 +48,13 @@ const CryptoChart = ({ symbol, isOpen, onClose }: CryptoChartProps) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [symbol]);
+
+  useEffect(() => {
+    if (symbol && isOpen) {
+      fetchChartData();
+    }
+  }, [symbol, isOpen, fetchChartData]);
 
   if (!symbol) return null;
 

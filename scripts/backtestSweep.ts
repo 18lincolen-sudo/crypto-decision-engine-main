@@ -27,17 +27,21 @@ async function fetchKlinesPaged(symbol: string, interval: string, startMs: numbe
   while (cursor < endMs && guard < 2000) {
     guard++;
     const url = `${BINANCE}/klines?symbol=${symbol}&interval=${interval}&startTime=${cursor}&endTime=${endMs}&limit=1000`;
-    let list: any[] = [];
+    let list: unknown[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const r = await fetch(url);
-        list = (await r.json()) as any[];
-        if (Array.isArray(list)) break;
+        const raw = (await r.json()) as unknown;
+        if (Array.isArray(raw)) {
+          list = raw;
+          break;
+        }
       } catch { /* retry */ }
       await sleep(300 * (attempt + 1));
     }
     if (!Array.isArray(list) || !list.length) break;
     for (const c of list) {
+      if (!Array.isArray(c)) continue;
       out.push({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) });
     }
     const lastTs = Number(list[list.length - 1][0]);

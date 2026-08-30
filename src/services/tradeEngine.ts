@@ -800,7 +800,7 @@ export function routeTradeType(
       side: 'NONE',
       hardGateBlocked: true,
       blockReason: 'DAILY_DRAWDOWN_BLOCK',
-      reason: 'הגנת תיק יומית (הפסד >= 6%) — חסימת כניסות חדשות עד יום המסחר הבא'
+      reason: 'הגנת תיק יומית (הפסד >= 8%) — חסימת כניסות חדשות עד יום המסחר הבא'
     };
   }
 
@@ -1283,7 +1283,7 @@ export function calculateRiskParameters(
   let takeProfit1: number | undefined;
   let takeProfit2: number | undefined;
   let takeProfit: number | undefined;
-  let riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
+  const riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
 
   if (tradeType === 'SPOT') {
     stopLoss = Math.max(0.00000001, entryPrice - slDistance);

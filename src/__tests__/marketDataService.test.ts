@@ -249,7 +249,6 @@ maybe('LIVE integration: control + problematic symbols', () => {
       for (const tf of ['1h', '15m', '5m'] as const) {
         expect(snap.counts[tf], `${s} ${tf} count`).toBeGreaterThanOrEqual(TIMEFRAME_SPECS[tf].minCandles);
       }
-      // eslint-disable-next-line no-console
       console.log(`${s.padEnd(10)} 1h=${snap.counts['1h']} 15m=${snap.counts['15m']} 5m=${snap.counts['5m']} src=${snap.sources['5m']}`);
     }
   }, 120_000);
@@ -265,7 +264,6 @@ maybe('LIVE full universe', () => {
       else notReady.push(`${s}:${snap.reason}`);
       await new Promise((r) => setTimeout(r, 30));
     }
-    // eslint-disable-next-line no-console
     console.log(`FULL UNIVERSE READY=${ready}/${TARGET_SYMBOLS.length} NOT_READY=${notReady.length}`);
     if (notReady.length) console.log(notReady.join('\n'));
     expect(notReady.length, `not ready: ${notReady.join(', ')}`).toBe(0);

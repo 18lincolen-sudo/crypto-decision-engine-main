@@ -347,7 +347,7 @@ export function calculateProOptimalEntry(
   // lets high-confidence signals enter even when price is extended, while
   // still protecting capital by scaling down exposure.
   let sizeMultiplier = 1.0;
-  let protectionNotes: string[] = [];
+  const protectionNotes: string[] = [];
 
   if (isLong) {
     if (rsi > 70) {
@@ -578,7 +578,7 @@ export function calculateProRisk(
   const tpDistance = entryPrice * fixedTpPercent / 100;
 
   let stopLoss: number, takeProfit1: number | undefined, takeProfit2: number | undefined, takeProfit: number | undefined;
-  let riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
+  const riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
   if (tradeType === 'SPOT') {
     stopLoss = Math.max(1e-8, entryPrice - slDistance);
     takeProfit = entryPrice + tpDistance;

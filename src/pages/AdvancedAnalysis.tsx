@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -68,11 +68,11 @@ const AdvancedAnalysis = () => {
   const [error, setError] = useState<string | null>(null);
 
   // Get available cryptocurrencies from the live data
-  const availableCryptos = cryptoData?.map(crypto => ({
+  const availableCryptos = useMemo(() => cryptoData?.map(crypto => ({
     symbol: crypto.symbol.toUpperCase(),
     name: crypto.name,
     price: crypto.current_price
-  })) || [];
+  })) || [], [cryptoData]);
 
   // Keep live data in refs so the analysis only reloads when the user picks a
   // different coin (or data first becomes available) — NOT on every price tick.

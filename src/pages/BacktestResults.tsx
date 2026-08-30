@@ -41,11 +41,11 @@ const authHeaders: Record<string, string> = adminToken ? { Authorization: `Beare
 
 /** Guard: the SPA host returns index.html for unknown /api paths — return a
  *  clear error instead of crashing on JSON.parse of an HTML document. */
-async function parseJsonOrThrow(res: Response): Promise<any> {
+async function parseJsonOrThrow(res: Response): Promise<Record<string, unknown> | null> {
   const text = await res.text();
   if (!text) return null;
   try {
-    return JSON.parse(text);
+    return JSON.parse(text) as Record<string, unknown>;
   } catch {
     throw new Error(`תגובה לא-תקינה מהשרת (${res.status} — ${res.url}). בדוק שכתובת ה-Worker נכונה (הגדרות → כתובת Worker), ושדף זה עומד מול ה-Worker ולא מול אחסון ה-SPA.`);
   }

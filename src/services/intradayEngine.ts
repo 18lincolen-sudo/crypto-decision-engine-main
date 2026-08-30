@@ -202,7 +202,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   logs.push(`[${symbol}] 15M=${setup.setupType} dir=${setup.direction} SetupScore=${setup.setupScore} (strong=${setup.strong})`);
 
   // ── LAYER C: 5M ENTRY ───────────────────────────────────────────────────────
-  const entry = confirmEntry5M(input.m5, setup, params);
+  let entry = confirmEntry5M(input.m5, setup, params);
   const setupScore = setup.setupScore;
   const entryScore = entry.entryScore;
   const confidence = Math.round((setupScore + entryScore) / 2);

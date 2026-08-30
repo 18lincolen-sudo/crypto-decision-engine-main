@@ -7,32 +7,32 @@ interface LoadingScreenProps {
   maxLoadingTime?: number;
 }
 
+const LOADING_STEPS = [
+  { text: 'מתחבר לבורסות קריפטו...', delay: 800 },
+  { text: 'טוען נתוני שוק בזמן אמת...', delay: 1000 },
+  { text: 'מבצע ניתוח טכני מתקדם...', delay: 1200 },
+  { text: 'מחשב מדדי RSI, MACD, Bollinger Bands...', delay: 900 },
+  { text: 'מעבד נתוני Fear & Greed Index...', delay: 700 },
+  { text: 'יוצר המלצות השקעה חכמות...', delay: 800 },
+  { text: '🚀 מוכן לזינוק בשוק הקריפטו!', delay: 600 }
+];
+
+const ENCOURAGING_MESSAGES = [
+  '💎 היום יכול להיות היום של הזהב שלך!',
+  '📈 השקעה חכמה מתחילה בניתוח נכון',
+  '🎯 הזדמנות מחכה למי שמוכן לתפוס אותה',
+  '💰 בשוק הקריפטו, הסבלנות משתלמת',
+  '🌟 כל מומחה היה פעם מתחיל - היום זה הקריאה שלך!'
+];
+
 const LoadingScreen = ({ onLoadingComplete, maxLoadingTime = 15000 }: LoadingScreenProps) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [displayedText, setDisplayedText] = useState('');
   const [showCursor, setShowCursor] = useState(true);
   const [isComplete, setIsComplete] = useState(false);
 
-  const loadingSteps = [
-    { text: 'מתחבר לבורסות קריפטו...', delay: 800 },
-    { text: 'טוען נתוני שוק בזמן אמת...', delay: 1000 },
-    { text: 'מבצע ניתוח טכני מתקדם...', delay: 1200 },
-    { text: 'מחשב מדדי RSI, MACD, Bollinger Bands...', delay: 900 },
-    { text: 'מעבד נתוני Fear & Greed Index...', delay: 700 },
-    { text: 'יוצר המלצות השקעה חכמות...', delay: 800 },
-    { text: '🚀 מוכן לזינוק בשוק הקריפטו!', delay: 600 }
-  ];
-
-  const encouragingMessages = [
-    '💎 היום יכול להיות היום של הזהב שלך!',
-    '📈 השקעה חכמה מתחילה בניתוח נכון',
-    '🎯 הזדמנות מחכה למי שמוכן לתפוס אותה',
-    '💰 בשוק הקריפטו, הסבלנות משתלמת',
-    '🌟 כל מומחה היה פעם מתחיל - היום זה הקריאה שלך!'
-  ];
-
   const [currentMessage] = useState(
-    encouragingMessages[Math.floor(Math.random() * encouragingMessages.length)]
+    ENCOURAGING_MESSAGES[Math.floor(Math.random() * ENCOURAGING_MESSAGES.length)]
   );
 
   // Auto-complete loading after max time
@@ -66,8 +66,8 @@ const LoadingScreen = ({ onLoadingComplete, maxLoadingTime = 15000 }: LoadingScr
       return timer;
     };
 
-    if (currentStep < loadingSteps.length && !isComplete) {
-      const step = loadingSteps[currentStep];
+    if (currentStep < LOADING_STEPS.length && !isComplete) {
+      const step = LOADING_STEPS[currentStep];
       const timer = typewriter(step.text, () => {
         setTimeout(() => {
           if (currentStep === loadingSteps.length - 1) {

@@ -22,7 +22,7 @@ const RISK = Number(process.env.RISK ?? 0.5);
 const SYMS = (process.env.SYMS ?? 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,AVAXUSDT,AAVEUSDT').split(',').map((s) => s.trim().toUpperCase());
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function fetchJson(url: string, tries = 4): Promise<any> {
+async function fetchJson(url: string, tries = 4): Promise<unknown> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
@@ -35,7 +35,7 @@ async function fetchJson(url: string, tries = 4): Promise<any> {
   }
   throw lastErr;
 }
-function toCandles(list: any[]): Candle[] {
+function toCandles(list: unknown[]): Candle[] {
   return list.map((c) => ({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) })).sort((a, b) => a.timestamp - b.timestamp);
 }
 async function fetchBybit(symbol: string, interval: string, limit: number): Promise<Candle[] | null> {
@@ -64,7 +64,7 @@ async function main() {
   }
   await Promise.all(Array.from({ length: Math.min(CONC, SYMS.length) }, worker));
 
-  let agg = {
+  const agg = {
     netProfitUsd: 0, totalTrades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0,
     fillStats: { signals: 0, pending: 0, filled: 0, missed: 0, partial: 0 }, holdSum: 0, equityCur: 10000, equityPeak: 10000, maxDD: 0
   };
@@ -90,7 +90,8 @@ async function main() {
   const grossWin = 0; // not tracked per-trade here; PF from metrics below
   const pf = (() => {
     // recompute PF from combined metrics per symbol
-    let gw = 0, gl = 0;
+    const gw = 0;
+    const gl = 0;
     for (const h of histories) {
       const m = runWalkForward(h, { ...DEFAULT_INTRADAY_PARAMS, riskPerTradePercent: RISK }, { startEquity: 10000, seed: 12345, spreadPercent: 0.03 }).combined;
       // approximate: use netProfit and win/loss counts
