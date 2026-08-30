@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Loader2, Play, RefreshCw, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
 import Navigation from '../components/Navigation';
-import { resolveWorkerBaseUrl } from '../services/workerConfig';
+import { useWorkerAuth } from '../contexts/WorkerAuthContext';
 
 const ADMIN_TOKEN_KEY = 'workerAdminToken';
 
@@ -33,12 +33,6 @@ interface BacktestState {
   days: number | null;
 }
 
-const API_BASE = resolveWorkerBaseUrl() || '';
-const adminToken = (() => {
-  try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch { return ''; }
-})();
-const authHeaders: Record<string, string> = adminToken ? { Authorization: `Bearer ${adminToken}` } : {};
-
 /** Guard: the SPA host returns index.html for unknown /api paths — return a
  *  clear error instead of crashing on JSON.parse of an HTML document. */
 async function parseJsonOrThrow(res: Response): Promise<Record<string, unknown> | null> {
@@ -52,28 +46,43 @@ async function parseJsonOrThrow(res: Response): Promise<Record<string, unknown> 
 }
 
 export default function BacktestResults() {
+  const { baseUrl: workerBaseUrl, adminToken } = useWorkerAuth();
   const [state, setState] = useState<BacktestState>({
     status: 'idle', startedAt: null, finishedAt: null, results: [], error: null, engine: null, days: null
   });
   const [loading, setLoading] = useState(true);
 
+  const authHeaders: Record<string, string> = adminToken ? { Authorization: `Bearer ${adminToken}` } : {};
+
   const fetchResults = useCallback(async () => {
+    if (!workerBaseUrl) {
+      setState(s => ({ ...s, error: 'כתובת Worker לא הוגדרה. הגדר אותה בדף הבוט סימולציה או במשתני בנייה.' }));
+      setLoading(false);
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/api/backtest/results`, { headers: authHeaders });
+      const res = await fetch(`${workerBaseUrl}/api/backtest/results`, { headers: authHeaders });
       if (res.ok) {
         const data = await parseJsonOrThrow(res);
         if (data) {
           setState(s => ({
             ...s,
             ...data,
+            error: null,
             status: data.status === 'running' ? 'running' : (data.results?.length ? 'done' : s.status),
           }));
         }
+      } else if (res.status === 404) {
+        setState(s => ({ ...s, error: 'נסה שוב מאוחר יותר.', status: 'error' }));
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.error('Failed to fetch backtest results:', e);
+      setState(s => ({ ...s, error: msg, status: 'error' }));
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }, [workerBaseUrl, authHeaders]);
 
   useEffect(() => {
     fetchResults();
@@ -85,9 +94,13 @@ export default function BacktestResults() {
   }, [state.status, fetchResults]);
 
   const handleRun = async () => {
+    if (!workerBaseUrl) {
+      setState(s => ({ ...s, error: 'כתובת Worker לא הוגדרה. הגדר אותה בדף הבוט סימולציה או במשתני בנייה.' }));
+      return;
+    }
     try {
       setState(s => ({ ...s, status: 'running', error: null }));
-      const res = await fetch(`${API_BASE}/api/backtest/run`, {
+      const res = await fetch(`${workerBaseUrl}/api/backtest/run`, {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
       });

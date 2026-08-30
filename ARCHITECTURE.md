@@ -114,6 +114,7 @@ crypto-decision-engine-main/
 │   │   ├── ProSimulationBot.tsx  # בוט פרו (Advanced Analysis)
 │   │   ├── RealTradingBot.tsx    # בוט מסחר אמיתי
 │   │   ├── AdvancedAnalysis.tsx  # ניתוח מתקדם
+│   │   ├── BacktestResults.tsx   # תוצאות Backtest Sweep
 │   │   └── NotFound.tsx           # 404
 │   │
 │   ├── components/               # קומפוננטות React
@@ -513,6 +514,40 @@ reason: `confidence ${signal.confidence} מתחת לסף המינימלי (${req
 4. `calculateProOptimalEntry()` — תזמון כניסה (Layer 1.5)
 5. `calculateProRisk()` — ניהול סיכונים (Layer 3)
 6. `evaluateProExit()` — לוגיקת יציאה (Layer 4)
+
+---
+
+## 9. תיקוני באגים אחרונים
+
+### תיקון 1: `MIN_ENTRY_RELATIVE_VOLUME` לא מוגדר ב-Legacy Sim
+
+**קובץ:** `src/services/legacySimExecution.ts`
+
+**בעיה:** המשתנה `MIN_ENTRY_RELATIVE_VOLUME` שייוצא מ-`src/services/tradeEngine.ts` נעשה שימוש ב-`legacySimExecution.ts` ללא ייבוא, גרם ל-`ReferenceError` בזמן ריצה.
+
+**תיקון:** נוסף הייבוא החסר:
+```typescript
+import { ..., MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
+```
+
+### תיקון 2: BacktestResults לא מציג תוצאות / דף ריק
+
+**קובץ:** `src/pages/BacktestResults.tsx`
+
+**בעיה:** הדף קרא `resolveWorkerBaseUrl()` ברמת המודול במקום להשתמש ב-`WorkerAuthContext`. כשכתובת ה-Worker לא הוגדרה:
+- `API_BASE` היה מחרוזת ריקה
+- קריאות ה-`fetch` הלכו לנתיבים יחסיים שהחזירו `index.html` במקום JSON
+- השגיאה נלכדה ב-`console.error` בלבד, ולכן המשתמש ראה דף ריק ללא הודעת שגיאה
+
+**תיקונים:**
+- החלפת `resolveWorkerBaseUrl()` ב-`useWorkerAuth()` — כתובת ה-Worker עכשיו ריאקטיבית ומתעדכנת אוטומטית
+- הוספת בדיקת `workerBaseUrl` ריק עם הודעת שגיאה ברורה למשתמש
+- הוספת `setState(s => ({ ...s, error: msg, status: 'error' }))` ב-catch block כדי שהשגיאה תוצג ב-UI
+- הוספת טיפול ב-`res.status === 404` עם הודעת שגיאה
+
+### תיקון 3: שגיאות חיבור ל-Worker
+
+**תיקון:** אותו תיקון של #2 — עכשיו `BacktestResults.tsx` משתמש בכתובת ה-Worker מאותו מקור כמו שאר הדפים (`WorkerAuthContext`), כך שהחיבור עובד באופן עקבי.
 
 ---
 

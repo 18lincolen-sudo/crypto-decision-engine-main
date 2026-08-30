@@ -18,7 +18,8 @@ import {
   calculateRiskParameters,
   evaluateExit,
   Candle,
-  ClosedTradeMetric
+  ClosedTradeMetric,
+  MIN_ENTRY_RELATIVE_VOLUME
 } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import { computeEntryBudget, isInEntryCooldown } from './simExecution';

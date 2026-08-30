@@ -363,3 +363,18 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | `leverage` | מינוף |
 | `stopLoss` | Stop Loss |
 | `takeProfit1` | Take Profit ראשון |
+
+---
+
+## 10. תיקוני באגים
+
+### תיקון: `MIN_ENTRY_RELATIVE_VOLUME` לא מוגדר
+
+**קובץ:** `src/services/legacySimExecution.ts`
+
+**בעיה:** המשתנה `MIN_ENTRY_RELATIVE_VOLUME` שייוצא מ-`src/services/tradeEngine.ts` נעשה שימוש ב-`legacySimExecution.ts` ללא ייבוא, גרם ל-`ReferenceError: MIN_ENTRY_RELATIVE_VOLUME is not defined` בזמן ריצה.
+
+**תיקון:** נוסף הייבוא החסר:
+```typescript
+import { ..., MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
+```
