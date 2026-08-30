@@ -71,6 +71,15 @@ const allowedOrigins = corsOriginEnv.split(',').map(s => s.trim()).filter(Boolea
 const RATE_LIMIT_MAX = Math.floor(boundedNumber('BOT_RATE_LIMIT_MAX', 120, 1, 10000));
 const RATE_LIMIT_WINDOW_MS = boundedNumber('BOT_RATE_LIMIT_WINDOW_MS', 60000, 1000, 3600000);
 const REQUEST_TIMEOUT_MS = boundedNumber('BOT_REQUEST_TIMEOUT_MS', 15000, 1000, 120000);
+// Engine versions — bumped when the decision algorithm changes.
+// The frontend can use this to warn if the displayed sim/backtest
+// results were produced by a different algorithm than the current one.
+export const ENGINE_VERSIONS = {
+  intraday: '1.0.0',
+  legacy: '1.0.0',
+  pro: '1.0.0',
+  backtest: '1.0.0',
+} as const;
 
 
 // ── HTTP helpers: CORS, rate limiting, timeouts ────────────────────────────
@@ -428,14 +437,6 @@ async function checkClosedFuturesPositions(ctx: Awaited<ReturnType<typeof getAcc
 }
 
 // Engine versions — bumped when the decision algorithm changes.
-// The frontend can use this to warn if the displayed sim/backtest
-// results were produced by a different algorithm than the current one.
-export const ENGINE_VERSIONS = {
-  intraday: '1.0.0',
-  legacy: '1.0.0',
-  pro: '1.0.0',
-  backtest: '1.0.0',
-} as const;
 
 const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
@@ -1444,3 +1445,4 @@ async function shutdown(signal: string): Promise<void> {
 }
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
+
