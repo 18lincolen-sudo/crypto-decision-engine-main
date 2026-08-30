@@ -324,6 +324,7 @@ const SimulationBot = () => {
         </div>
       </div>
     </div>
+    </div>
   );
 };
 
