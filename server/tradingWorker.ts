@@ -115,6 +115,9 @@ function setCors(req: { headers: Record<string, string | string[] | undefined> }
     (allowed.includes('*') && origin.startsWith(allowed.split('*')[0]) && origin.endsWith(allowed.split('*').slice(1).join('*')))
   );
   const allow = allowedOrigins.length === 0 || allowedOrigins.includes('*') ? '*' : (originAllowed ? origin : null);
+  if (!allow && origin) {
+    console.warn('[cors] blocked origin: ' + origin + ' | allowed: [' + allowedOrigins.join(', ') + '] | path: ' + req.url);
+  }
   if (allow) {
     res.setHeader('Access-Control-Allow-Origin', allow);
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -1088,6 +1091,13 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     });
   }
 
+  // Preflight (OPTIONS) requests must never be rate-limited: the browser
+  // sends them automatically before every cross-origin POST, and blocking
+  // them produces opaque CORS failures that look like 'no header present'.
+  if (req.method === 'OPTIONS') {
+    return;
+  }
+
   if (rateLimited(clientIp(req))) {
     return json(res, 429, { error: 'Too many requests' });
   }
@@ -1151,6 +1161,18 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sim/state') {
+    const body = await readJsonBody(req);
+    if (body && typeof body === 'object' && body !== null) {
+      if (typeof body.leaderId === 'string') {
+        simState.leaderId = body.leaderId;
+        simState.leaderHeartbeat = Date.now();
+      }
+      if (body.snapshot && typeof body.snapshot === 'object') {
+        simState.snapshot = body.snapshot;
+      }
+      simState.updatedAt = Date.now();
+      await persistSim();
+    }
     return json(res, 200, { ok: true, updatedAt: simState.updatedAt });
   }
 
@@ -1304,6 +1326,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   await hydrateProSim();
   if (proSimState.snapshot) proSimEngine.hydrate(proSimState.snapshot as ProSimSnapshot);
   await hydrateBacktest();
+  console.log('[cors] allowed origins: [' + allowedOrigins.join(', ') + ']' + (allowedOrigins.length === 0 ? ' (wildcard)' : ''));
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
   if (state.running) void scan();
   setInterval(() => void scan(), intervalMs);

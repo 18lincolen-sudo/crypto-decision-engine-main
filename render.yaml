@@ -47,9 +47,9 @@ services:
       - key: BOT_KLINE_INTERVAL
         value: "240"
       - key: BOT_RATE_LIMIT_MAX
-        value: "120"
+        value: "300"
       - key: BOT_RATE_LIMIT_WINDOW_MS
-        value: "60000"
+        value: "120000"
       - key: BOT_REQUEST_TIMEOUT_MS
         value: "15000"
       - key: CORS_ORIGIN
@@ -57,3 +57,4 @@ services:
         value: "https://crypto-d.netlify.app"
       - key: PORT
         value: "3001"
+

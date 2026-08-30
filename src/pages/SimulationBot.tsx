@@ -1,7 +1,7 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Bot, RefreshCw, AlertTriangle, Trash2, ExternalLink } from 'lucide-react';
+import { Bot, RefreshCw, AlertTriangle, Trash2, ExternalLink, Play, Pause, Square } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import PortfolioRiskMeter from '../components/trading/PortfolioRiskMeter';
 import SimulationEngineColumn from '../components/trading/SimulationEngineColumn';
@@ -86,16 +86,45 @@ const SimulationBot = () => {
           <p className="text-sm sm:text-base text-muted-foreground font-mono">
             מנוע חדש (רב-שכבתי Multi-Timeframe) · מנוע מקורי (ציון ביטחון משוקלל) · בוט פרו (מימוש מדויק של alg.md) — כל אחד עם הון וסטטיסטיקה נפרדים
           </p>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={clearAllCache}
-            className="mt-3 gap-2 text-destructive border-destructive/40 hover:bg-destructive/10"
-          >
-            <Trash2 className="w-4 h-4" />
-            איפוס מלא של כל המטמון (מקומי + שרת)
-          </Button>
-        </div>
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => { intraday.start(); legacy.start(); pro.start(); }}
+              disabled={intraday.isRunning && legacy.isRunning && pro.isRunning}
+              className="bg-green-600 hover:bg-green-700 gap-2"
+            >
+              <Play className="w-4 h-4" />
+              הפעל את כל הבוטים
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => { intraday.pause(); legacy.pause(); pro.pause(); }}
+              disabled={!intraday.isRunning && !legacy.isRunning && !pro.isRunning}
+              className="gap-2"
+            >
+              <Pause className="w-4 h-4" />
+              השהה את כל הבוטים
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => { intraday.resetAll(); legacy.resetAll(); pro.resetAll(); }}
+              className="gap-2"
+            >
+              <Square className="w-4 h-4" />
+              אפס את כל הבוטים
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={clearAllCache}
+              className="gap-2 text-destructive border-destructive/40 hover:bg-destructive/10"
+            >
+              <Trash2 className="w-4 h-4" />
+              איפוס מטמון (מקומי + שרת)
+            </Button>
+          </div>
 
         {/* Worker URL diagnostic — shows exactly which URL the frontend is using
             and where it came from. This is the #1 cause of "CORS blocked" errors
@@ -299,3 +328,4 @@ const SimulationBot = () => {
 };
 
 export default SimulationBot;
+

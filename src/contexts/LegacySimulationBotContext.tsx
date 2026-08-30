@@ -134,18 +134,36 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
     }
   }, [legacySimStateData, applyServerState]);
 
+  // Immediately sync with server on mount so a reload shows the true
+  // running state without waiting for the first polling interval.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const serverState = await getLegacySimState(baseUrl);
+        if (!cancelled) applyServerState(serverState);
+      } catch {
+        // Keep local state if server unreachable
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [baseUrl, applyServerState]);
+
   const start = useCallback(() => {
     setStatus('running');
+    try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '1'); } catch { /* ignore */ }
     startLegacySim(baseUrl).catch(() => {});
   }, [baseUrl]);
 
   const pause = useCallback(() => {
     setStatus('idle');
+    try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '0'); } catch { /* ignore */ }
     stopLegacySim(baseUrl).catch(() => {});
   }, [baseUrl]);
 
   const resetAll = useCallback(() => {
     setStatus('idle');
+    try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '0'); } catch { /* ignore */ }
     localSim.reset();
     setServerSnapshot(null);
     resetLegacySim(baseUrl).catch(() => {});
@@ -156,11 +174,9 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
     setLegacySimConfig(c, baseUrl).catch(() => {});
   }, [baseUrl]);
 
-  // If server has an active snapshot with data, use server data; otherwise use local client simulation engine
-  const useServer = serverSnapshot !== null && (
-    (serverSnapshot.positions && (serverSnapshot.positions as unknown[]).length > 0) ||
-    (serverSnapshot.trades && (serverSnapshot.trades as unknown[]).length > 0)
-  );
+  // The server is the execution authority. Use its data whenever the
+  // server is reachable and synced, even if it hasn't produced trades yet.
+  const useServer = serverSnapshot !== null && syncStatus === 'synced';
 
   const activeSource = useServer && serverSnapshot ? serverSnapshot : localSim;
 
