@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+﻿import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -53,33 +53,37 @@ export const ExecutiveDashboard: React.FC = () => {
   }
 
   const deriveSimState = (source: SimSource | null, fallbackKey: string, fallbackStatusKey: string) => {
-    const derive = (cash: number, positions: SimPosition[], trades: SimTrade[], initial: number, isRunning: boolean) => {
-      let currentVal = cash;
-      const activeMapped = positions.map((p) => {
-        const notional = p.notionalUsd || p.quantity * p.currentPrice || 0;
-        const pnl = p.side === 'LONG' || p.side === 'BUY'
-          ? ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100 * (p.leverage || 1)
-          : ((p.entryPrice - p.currentPrice) / p.entryPrice) * 100 * (p.leverage || 1);
-        currentVal += (p.marginUsd || notional) + (p.marginUsd || notional) * (pnl / 100);
-        return {
-          symbol: p.symbol,
-          side: p.side,
-          entryPrice: p.entryPrice,
-          currentPrice: p.currentPrice,
-          pnlPercent: pnl,
-          leverage: p.leverage || 1,
-          takeProfit: p.takeProfit1 || p.takeProfit,
-          stopLoss: p.stopLoss
-        };
-      });
-      const winningTrades = trades.filter((t) => (t.pnl || 0) > 0).length;
-      const winRate = trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
-      const totalProfit = currentVal - initial;
-      return { cash, initialAmount: initial, positionsCount: positions.length, totalTrades: trades.length, winRate, totalProfit, isRunning, activePositions: activeMapped };
+    const mapPosition = (p: SimPosition) => {
+      const notional = p.notionalUsd || p.quantity * p.currentPrice || 0;
+      const pnl = p.side === 'LONG' || p.side === 'BUY'
+        ? ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100 * (p.leverage || 1)
+        : ((p.entryPrice - p.currentPrice) / p.entryPrice) * 100 * (p.leverage || 1);
+      return {
+        symbol: p.symbol,
+        side: p.side,
+        entryPrice: p.entryPrice,
+        currentPrice: p.currentPrice,
+        pnlPercent: pnl,
+        leverage: p.leverage || 1,
+        takeProfit: p.takeProfit1 || p.takeProfit,
+        stopLoss: p.stopLoss
+      };
     };
 
     if (source) {
-      return derive(source.cash, source.positions, source.trades, source.config?.initialAmount || 10000, source.isRunning);
+      // Use native context values so the home page matches the simulation bot page exactly.
+      const initial = source.config?.initialAmount || 10000;
+      const totalProfit = (source.cash ?? 0) - initial;
+      return {
+        cash: source.cash,
+        initialAmount: initial,
+        positionsCount: (source.positions?.length || 0),
+        totalTrades: (source.trades?.length || 0),
+        winRate: source.winRate ?? 0,
+        totalProfit,
+        isRunning: source.isRunning,
+        activePositions: (source.positions || []).map(mapPosition)
+      };
     }
     // Fallback: read last snapshot persisted by the simulation bot hook.
     try {
@@ -87,16 +91,30 @@ export const ExecutiveDashboard: React.FC = () => {
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       const initial = 10000;
+      const positions = (parsed.positions || []) as SimPosition[];
+      const trades = (parsed.trades || []) as SimTrade[];
+      let currentVal = parsed.cash ?? initial;
+      const activeMapped = positions.map(mapPosition);
+      positions.forEach((p) => {
+        const notional = p.notionalUsd || p.quantity * p.currentPrice || 0;
+        const pnl = p.side === 'LONG' || p.side === 'BUY'
+          ? ((p.currentPrice - p.entryPrice) / p.entryPrice) * 100 * (p.leverage || 1)
+          : ((p.entryPrice - p.currentPrice) / p.entryPrice) * 100 * (p.leverage || 1);
+        currentVal += (p.marginUsd || notional) + (p.marginUsd || notional) * (pnl / 100);
+      });
+      const winningTrades = trades.filter((t) => (t.pnl || 0) > 0).length;
+      const winRate = trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
+      const totalProfit = currentVal - initial;
       const status = localStorage.getItem(fallbackStatusKey);
-      return derive(parsed.cash ?? initial, parsed.positions ?? [], parsed.trades ?? [], initial, status === 'running');
+      return { cash: parsed.cash ?? initial, initialAmount: initial, positionsCount: positions.length, totalTrades: trades.length, winRate, totalProfit, isRunning: status === 'running', activePositions: activeMapped };
     } catch {
       return null;
     }
   };
 
   const simState = deriveSimState(sim, 'simulation-bot-state-v2', 'sim-bot-last-known-running');
-  const legacyState = deriveSimState(legacy, 'legacy-simulation-bot-state-v2', 'legacy-sim-bot-last-known-running');
-  const proState = deriveSimState(pro, 'pro-simulation-bot-state-v2', 'pro-sim-bot-last-known-running');
+  const legacyState = deriveSimState(legacy, 'legacy-simulation-bot-state-v1', 'legacy-sim-bot-last-known-running');
+  const proState = deriveSimState(pro, 'pro-simulation-bot-state-v1', 'pro-sim-bot-last-known-running');
 
   // Shared with RealTradingBot.tsx via context (lives above the router, so it
   // survives in-app navigation) — BOT_ADMIN_TOKEN is memory-only, never in
@@ -515,3 +533,5 @@ export const ExecutiveDashboard: React.FC = () => {
     </div>
   );
 };
+
+
