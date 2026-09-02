@@ -4,6 +4,10 @@ import { Badge } from '@/components/ui/badge';
 import { TrendingUp, TrendingDown, Eye, Clock, Shield, Target } from 'lucide-react';
 import { CryptoRecommendation } from '../types/crypto';
 
+const safeNumber = (value: unknown, fallback = 0): number => {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+};
+
 interface CryptoCardProps {
   recommendation: CryptoRecommendation;
   isClickable?: boolean;
@@ -22,6 +26,13 @@ const CryptoCard = ({ recommendation, isClickable = false }: CryptoCardProps) =>
     timeframe,
     suggestedAmounts
   } = recommendation;
+  const safeCurrentPrice = safeNumber(currentPrice);
+  const safePriceChange24h = safeNumber(priceChange24h);
+  const safeRsi = safeNumber(indicators?.rsi, 50);
+  const safeMa20 = safeNumber(indicators?.ma20, safeCurrentPrice);
+  const safeMacd = safeNumber(indicators?.macd?.macd);
+  const safeStochasticK = safeNumber(indicators?.stochastic?.k, 50);
+  const safeSuggestedCrypto = safeNumber(suggestedAmounts?.crypto);
 
   const getRecommendationColor = (rec: string) => {
     switch (rec) {
@@ -97,12 +108,12 @@ const CryptoCard = ({ recommendation, isClickable = false }: CryptoCardProps) =>
       <CardContent className="space-y-4">
         <div className="flex justify-between items-center">
           <span className="text-2xl font-bold">
-            ${currentPrice.toLocaleString()}
+            ${safeCurrentPrice.toLocaleString()}
           </span>
-          <div className={`flex items-center ${priceChange24h >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-            {priceChange24h >= 0 ? <TrendingUp className="w-4 h-4 mr-1" /> : <TrendingDown className="w-4 h-4 mr-1" />}
+          <div className={`flex items-center ${safePriceChange24h >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {safePriceChange24h >= 0 ? <TrendingUp className="w-4 h-4 mr-1" /> : <TrendingDown className="w-4 h-4 mr-1" />}
             <span className="font-medium">
-              {priceChange24h >= 0 ? '+' : ''}{priceChange24h.toFixed(2)}%
+              {safePriceChange24h >= 0 ? '+' : ''}{safePriceChange24h.toFixed(2)}%
             </span>
           </div>
         </div>
@@ -112,14 +123,14 @@ const CryptoCard = ({ recommendation, isClickable = false }: CryptoCardProps) =>
           <div className="space-y-1">
             <div className="flex justify-between">
               <span className="text-muted-foreground">RSI:</span>
-              <span className={`font-medium ${getRSIColor(indicators.rsi)}`}>
-                {indicators.rsi.toFixed(1)}
+              <span className={`font-medium ${getRSIColor(safeRsi)}`}>
+                {safeRsi.toFixed(1)}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">MA20:</span>
               <span className="font-medium">
-                ${indicators.ma20.toLocaleString()}
+                ${safeMa20.toLocaleString()}
               </span>
             </div>
             {indicators.macd && (
@@ -129,7 +140,7 @@ const CryptoCard = ({ recommendation, isClickable = false }: CryptoCardProps) =>
                   indicators.macd.trend === 'bullish' ? 'text-green-600' : 
                   indicators.macd.trend === 'bearish' ? 'text-red-600' : 'text-gray-600'
                 }`}>
-                  {indicators.macd.macd.toFixed(4)}
+                  {safeMacd.toFixed(4)}
                 </span>
               </div>
             )}
@@ -157,7 +168,7 @@ const CryptoCard = ({ recommendation, isClickable = false }: CryptoCardProps) =>
                   indicators.stochastic.signal === 'oversold' ? 'text-green-600' :
                   indicators.stochastic.signal === 'overbought' ? 'text-red-600' : 'text-gray-600'
                 }`}>
-                  {indicators.stochastic.k.toFixed(0)}
+                  {safeStochasticK.toFixed(0)}
                 </span>
               </div>
             )}
@@ -192,7 +203,7 @@ const CryptoCard = ({ recommendation, isClickable = false }: CryptoCardProps) =>
             <div className="text-sm">
               <span className="font-bold">${suggestedAmounts.usd}</span>
               <span className="text-muted-foreground ml-2">
-                ({suggestedAmounts.crypto.toFixed(6)} {symbol})
+                ({safeSuggestedCrypto.toFixed(6)} {symbol})
               </span>
             </div>
           </div>

@@ -365,7 +365,7 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       const result = engine.evaluate(context, 'pro');
       return toSignalEvaluation(result, currentPrice, priceChange24h);
     });
-  }, [cryptoData, candlesBySymbol, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, fearGreedIndex, closedTradeMetrics, engine, exposureByAsset]);
+  }, [cryptoData, candlesBySymbol, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, config.minConfidenceOverride, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, fearGreedIndex, closedTradeMetrics, engine, exposureByAsset]);
 
   const activeMarketRegimes = useMemo<Record<string, MarketRegimeResult>>(
     () => activeMarketRegimesFrom(evaluations),

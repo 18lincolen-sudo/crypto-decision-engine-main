@@ -369,7 +369,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
       const result = engine.evaluate(context, 'legacy');
       return toSignalEvaluation(result, currentPrice, priceChange24h);
     });
-  }, [cryptoData, candlesBySymbol, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, fearGreedIndex, closedTradeMetrics, engine, exposureByAsset]);
+  }, [cryptoData, candlesBySymbol, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, config.minConfidenceOverride, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, fearGreedIndex, closedTradeMetrics, engine, exposureByAsset]);
 
   // Purely derived from evaluations — a useState+useEffect pair here previously
   // added an extra setState-triggered render on every evaluations change,

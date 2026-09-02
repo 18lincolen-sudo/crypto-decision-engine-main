@@ -1,6 +1,7 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useState } from 'react';
 import { Bot, RefreshCw, AlertTriangle, Trash2, ExternalLink, Play, Pause, Square } from 'lucide-react';
 import Navigation from '../components/Navigation';
 import PortfolioRiskMeter from '../components/trading/PortfolioRiskMeter';
@@ -34,6 +35,8 @@ const SimulationBotPage = () => {
   const pro = useProSimulationBotContext();
   const { cryptoData, isLoading } = useCryptoData();
   const { baseUrl, setBaseUrl, persistBaseUrl, baseUrlSource, setBaseUrlSource } = useWorkerAuth();
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
 
   const resetWorkerUrl = () => {
     localStorage.removeItem('workerConfig');
@@ -48,7 +51,19 @@ const SimulationBotPage = () => {
     none: 'לא הוגדר'
   };
 
-  const clearAllCache = () => {
+  const runGroupAction = async (actions: Array<() => Promise<void>>) => {
+    setGroupBusy(true);
+    setGroupError(null);
+    const results = await Promise.allSettled(actions.map((action) => action()));
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failures.length) {
+      setGroupError(failures.map((failure) => failure.reason instanceof Error ? failure.reason.message : 'פעולה נכשלה').join(' | '));
+    }
+    setGroupBusy(false);
+    return failures.length === 0;
+  };
+
+  const clearAllCache = async () => {
     if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של שלושת המנועים ותרענן את הדף.')) {
       return;
     }
@@ -63,10 +78,9 @@ const SimulationBotPage = () => {
     // clearing the persisted server-side snapshot (sim-state.json) that
     // otherwise survives a fresh deploy — that's the "remembers the past even
     // after I uploaded a new dist" symptom.
-    intraday.resetAll();
-    legacy.resetAll();
-    pro.resetAll();
-    window.location.reload();
+    if (await runGroupAction([intraday.resetAll, legacy.resetAll, pro.resetAll])) {
+      window.location.reload();
+    }
   };
 
   const combinedPositionsCount = intraday.positions.length + legacy.positions.length + pro.positions.length;
@@ -92,8 +106,8 @@ const SimulationBotPage = () => {
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <Button
               size="sm"
-              onClick={() => { intraday.start(); legacy.start(); pro.start(); }}
-              disabled={intraday.isRunning && legacy.isRunning && pro.isRunning}
+              onClick={() => void runGroupAction([intraday.start, legacy.start, pro.start])}
+              disabled={groupBusy || (intraday.isRunning && legacy.isRunning && pro.isRunning)}
               className="bg-green-600 hover:bg-green-700 gap-2"
             >
               <Play className="w-4 h-4" />
@@ -102,8 +116,8 @@ const SimulationBotPage = () => {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => { intraday.pause(); legacy.pause(); pro.pause(); }}
-              disabled={!intraday.isRunning && !legacy.isRunning && !pro.isRunning}
+              onClick={() => void runGroupAction([intraday.pause, legacy.pause, pro.pause])}
+              disabled={groupBusy || (!intraday.isRunning && !legacy.isRunning && !pro.isRunning)}
               className="gap-2"
             >
               <Pause className="w-4 h-4" />
@@ -112,7 +126,8 @@ const SimulationBotPage = () => {
             <Button
               size="sm"
               variant="destructive"
-              onClick={() => { intraday.resetAll(); legacy.resetAll(); pro.resetAll(); }}
+              onClick={() => void runGroupAction([intraday.resetAll, legacy.resetAll, pro.resetAll])}
+              disabled={groupBusy}
               className="gap-2"
             >
               <Square className="w-4 h-4" />
@@ -128,6 +143,14 @@ const SimulationBotPage = () => {
               איפוס מטמון (מקומי + שרת)
             </Button>
           </div>
+
+          {(groupError || intraday.controlError || legacy.controlError || pro.controlError) && (
+            <Card className="mt-3 border-red-500/40 bg-red-500/10">
+              <CardContent className="p-3 text-sm text-red-300 font-mono">
+                {groupError || intraday.controlError || legacy.controlError || pro.controlError}
+              </CardContent>
+            </Card>
+          )}
 
         {/* Worker URL diagnostic — shows exactly which URL the frontend is using
             and where it came from. This is the #1 cause of "CORS blocked" errors

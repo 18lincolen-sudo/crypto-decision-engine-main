@@ -464,7 +464,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       const result = engine.evaluate(context, 'intraday');
       return toSignalEvaluation(result, currentPrice, priceChange24h);
     });
-  }, [cryptoData, mtfData, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, closedTradeRecords, engine, exposureByAsset]);
+  }, [cryptoData, mtfData, positions, equity, config.initialAmount, config.maxPositions, config.maxFuturesPositions, config.minConfidenceOverride, dailyDrawdownPercent, weeklyDrawdownPercent, totalLeveragedExposureUsd, closedTradeRecords, engine, exposureByAsset, correlationCandles]);
 
   // Purely derived from evaluations — a useState+useEffect pair here previously
   // added an extra setState-triggered render on every evaluations change,

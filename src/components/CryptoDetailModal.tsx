@@ -12,6 +12,10 @@ import { Progress } from '@/components/ui/progress';
 import { TrendingUp, TrendingDown, Clock, AlertTriangle } from 'lucide-react';
 import { CryptoRecommendation } from '../types/crypto';
 
+const safeNumber = (value: unknown, fallback = 0): number => {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+};
+
 interface CryptoDetailModalProps {
   crypto: CryptoRecommendation | null;
   isOpen: boolean;
@@ -20,6 +24,11 @@ interface CryptoDetailModalProps {
 
 const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) => {
   if (!crypto) return null;
+
+  const safeCurrentPrice = safeNumber(crypto.currentPrice);
+  const safePriceChange24h = safeNumber(crypto.priceChange24h);
+  const safeRsi = safeNumber(crypto.indicators?.rsi, 50);
+  const safeMa20 = safeNumber(crypto.indicators?.ma20, safeCurrentPrice);
 
   const getRecommendationColor = (rec: string) => {
     switch (rec) {
@@ -61,8 +70,8 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
     }
   };
 
-  const rsiSignal = getRSISignal(crypto.indicators.rsi);
-  const priceVsMA = getPriceVsMA(crypto.currentPrice, crypto.indicators.ma20);
+  const rsiSignal = getRSISignal(safeRsi);
+  const priceVsMA = getPriceVsMA(safeCurrentPrice, safeMa20);
   const volumeSignal = getVolumeSignal(crypto.indicators.volumeTrend);
 
   const getCurrentTimeRecommendation = () => {
@@ -98,17 +107,17 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
             <CardContent className="p-4">
               <div className="text-center">
                 <div className="text-3xl font-bold mb-2">
-                  ${crypto.currentPrice.toLocaleString()}
+                  ${safeCurrentPrice.toLocaleString()}
                 </div>
                 <div className={`flex items-center justify-center ${
-                  crypto.priceChange24h >= 0 ? 'text-green-600' : 'text-red-600'
+                  safePriceChange24h >= 0 ? 'text-green-600' : 'text-red-600'
                 }`}>
-                  {crypto.priceChange24h >= 0 ? 
+                  {safePriceChange24h >= 0 ? 
                     <TrendingUp className="w-5 h-5 mr-1" /> : 
                     <TrendingDown className="w-5 h-5 mr-1" />
                   }
                   <span className="font-medium text-lg">
-                    {crypto.priceChange24h >= 0 ? '+' : ''}{crypto.priceChange24h.toFixed(2)}%
+                    {safePriceChange24h >= 0 ? '+' : ''}{safePriceChange24h.toFixed(2)}%
                   </span>
                 </div>
               </div>
@@ -144,14 +153,14 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
                 <div className="flex justify-between items-start mb-2">
                   <span className="font-medium">RSI (14 ימים):</span>
                   <div className="text-right">
-                    <div className="text-xl font-bold">{crypto.indicators.rsi.toFixed(1)}</div>
+                    <div className="text-xl font-bold">{safeRsi.toFixed(1)}</div>
                     <div className={`text-sm ${rsiSignal.color} flex items-center gap-1`}>
                       {rsiSignal.urgent && <AlertTriangle className="w-3 h-3" />}
                       {rsiSignal.text}
                     </div>
                   </div>
                 </div>
-                <Progress value={crypto.indicators.rsi} className="h-2" />
+                <Progress value={safeRsi} className="h-2" />
                 <div className="flex justify-between text-xs text-muted-foreground mt-1">
                   <span>Oversold (30)</span>
                   <span>Neutral (50)</span>
@@ -165,7 +174,7 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
                   <span className="font-medium">ממוצע נע (20 ימים):</span>
                   <div className="text-right">
                     <div className="text-lg font-bold">
-                      ${crypto.indicators.ma20.toLocaleString()}
+                      ${safeMa20.toLocaleString()}
                     </div>
                     <div className={`text-sm ${priceVsMA.color}`}>
                       {priceVsMA.text}
@@ -230,9 +239,9 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
                   <div className="space-y-1">
                     <div className="text-green-600 font-medium">📈 אסטרטגיית קנייה:</div>
                     <div>• רכישה הדרגתית ב-3-4 שלבים</div>
-                    <div>• הפסקת הפסד: ${(crypto.currentPrice * 0.92).toFixed(2)}</div>
-                    <div>• יעד ראשון: ${(crypto.currentPrice * 1.08).toFixed(2)}</div>
-                    <div>• יעד שני: ${(crypto.currentPrice * 1.15).toFixed(2)}</div>
+                    <div>• הפסקת הפסד: ${(safeCurrentPrice * 0.92).toFixed(2)}</div>
+                    <div>• יעד ראשון: ${(safeCurrentPrice * 1.08).toFixed(2)}</div>
+                    <div>• יעד שני: ${(safeCurrentPrice * 1.15).toFixed(2)}</div>
                   </div>
                 )}
                 {crypto.recommendation === 'sell' && (
@@ -240,7 +249,7 @@ const CryptoDetailModal = ({ crypto, isOpen, onClose }: CryptoDetailModalProps) 
                     <div className="text-red-600 font-medium">📉 אסטרטגיית מכירה:</div>
                     <div>• מכירה הדרגתית של 25%-50%</div>
                     <div>• שמירה על פוזיציה חלקית</div>
-                    <div>• יעד מכירה: ${(crypto.currentPrice * 0.95).toFixed(2)}</div>
+                    <div>• יעד מכירה: ${(safeCurrentPrice * 0.95).toFixed(2)}</div>
                   </div>
                 )}
                 {crypto.recommendation === 'hold' && (

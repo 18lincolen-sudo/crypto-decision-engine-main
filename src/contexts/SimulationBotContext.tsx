@@ -60,9 +60,10 @@ export interface SimulationBotContextValue {
   setConfig: (c: SimBotConfig) => void;
   status: SimStatus;
   isRunning: boolean;
-  start: () => void;
-  pause: () => void;
-  resetAll: () => void;
+  start: () => Promise<void>;
+  pause: () => Promise<void>;
+  resetAll: () => Promise<void>;
+  controlError: string | null;
   /** Whether this device is showing the shared server-synced bot state, or an
    *  unstarted local-only fallback because the Worker URL isn't reachable
    *  from THIS device (localStorage config is per-device, not synced). */
@@ -92,6 +93,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     }
   });
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
   const fearGreedIndex = useFearGreedIndex();
   const { baseUrl } = useWorkerAuth();
 
@@ -116,7 +118,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
       setServerSnapshot(st.snapshot);
     }
     if (typeof st.running === 'boolean') {
-      setStatus(st.running ? 'running' : 'idle');
+      setStatus(st.running ? 'running' : current => current === 'paused' ? 'paused' : 'idle');
       try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, st.running ? '1' : '0'); } catch { /* ignore */ }
     }
     if (st.config) {
@@ -140,6 +142,10 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     }
   }, [simStateData, applyServerState]);
 
+  useEffect(() => {
+    if (syncStatus === 'local-only') setServerSnapshot(null);
+  }, [syncStatus]);
+
   // Immediately sync with server on mount so a reload shows the true
   // running state without waiting for the first polling interval.
   useEffect(() => {
@@ -155,29 +161,54 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [baseUrl, applyServerState]);
 
-  const start = useCallback(() => {
+  const start = useCallback(async () => {
+    setControlError(null);
     setStatus('running');
     try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '1'); } catch { /* ignore */ }
-    startSim(baseUrl).catch(() => {});
-  }, [baseUrl]);
+    if (!baseUrl) return;
+    try {
+      applyServerState(await startSim(baseUrl));
+    } catch (error) {
+      setServerSnapshot(null);
+      setControlError(error instanceof Error ? error.message : 'שגיאה בהפעלת הבוט');
+    }
+  }, [baseUrl, applyServerState]);
 
-  const pause = useCallback(() => {
-    setStatus('idle');
+  const pause = useCallback(async () => {
+    setControlError(null);
+    setStatus('paused');
     try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '0'); } catch { /* ignore */ }
-    stopSim(baseUrl).catch(() => {});
+    if (!baseUrl) return;
+    try {
+      const state = await stopSim(baseUrl);
+      if (state.snapshot) setServerSnapshot(state.snapshot);
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : 'שגיאה בהשהיית הבוט');
+    }
   }, [baseUrl]);
 
-  const resetAll = useCallback(() => {
+  const resetAll = useCallback(async () => {
+    setControlError(null);
     setStatus('idle');
     try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '0'); } catch { /* ignore */ }
     localSim.reset();
     setServerSnapshot(null);
-    resetSim(baseUrl).catch(() => {});
+    if (!baseUrl) return;
+    try {
+      await resetSim(baseUrl);
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : 'שגיאה באיפוס הבוט');
+    }
   }, [localSim, baseUrl]);
 
   const setConfig = useCallback((c: SimBotConfig) => {
+    setControlError(null);
     setConfigState(c);
-    setSimConfig(c, baseUrl).catch(() => {});
+    if (baseUrl) {
+      setSimConfig(c, baseUrl).catch((error) => {
+        setControlError(error instanceof Error ? error.message : 'שגיאה בשמירת ההגדרות');
+      });
+    }
   }, [baseUrl]);
 
   // The server is the execution authority. Use its data whenever the
@@ -215,6 +246,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     start,
     pause,
     resetAll,
+    controlError,
     syncStatus,
     syncError
   };
