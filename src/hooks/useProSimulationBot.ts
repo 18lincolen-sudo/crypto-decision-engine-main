@@ -356,7 +356,7 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
         now: Date.now(),
         closedTrades: closedTradeMetrics,
         config: {
-          minConfidenceOverride: 58,
+          minConfidenceOverride: config.minConfidenceOverride,
           maxPositions: config.maxPositions || 7,
           maxFuturesPositions: config.maxFuturesPositions || 2
         }

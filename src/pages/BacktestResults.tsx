@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,11 +36,11 @@ interface BacktestState {
 
 /** Guard: the SPA host returns index.html for unknown /api paths — return a
  *  clear error instead of crashing on JSON.parse of an HTML document. */
-async function parseJsonOrThrow(res: Response): Promise<Record<string, unknown> | null> {
+async function parseJsonOrThrow<T>(res: Response): Promise<T | null> {
   const text = await res.text();
   if (!text) return null;
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    return JSON.parse(text) as T;
   } catch {
     throw new Error(`תגובה לא-תקינה מהשרת (${res.status} — ${res.url}). בדוק שכתובת ה-Worker נכונה (הגדרות → כתובת Worker), ושדף זה עומד מול ה-Worker ולא מול אחסון ה-SPA.`);
   }
@@ -53,9 +53,18 @@ export default function BacktestResults() {
   });
   const [loading, setLoading] = useState(true);
 
-  const authHeaders: Record<string, string> = adminToken ? { Authorization: `Bearer ${adminToken}` } : {};
+  const authHeaders = useMemo<Record<string, string>>(
+    () => (adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
+    [adminToken],
+  );
+
+  const fetchResultsRef = useRef<() => Promise<void>>(async () => {});
 
   const fetchResults = useCallback(async () => {
+    return fetchResultsRef.current();
+  }, []);
+
+  const performFetch = useCallback(async () => {
     if (!workerBaseUrl) {
       setState(s => ({ ...s, error: 'כתובת Worker לא הוגדרה. הגדר אותה בדף הבוט סימולציה או במשתני בנייה.' }));
       setLoading(false);
@@ -64,7 +73,7 @@ export default function BacktestResults() {
     try {
       const res = await fetch(`${workerBaseUrl}/api/backtest/results`, { headers: authHeaders });
       if (res.ok) {
-        const data = await parseJsonOrThrow(res);
+        const data = await parseJsonOrThrow<BacktestState>(res);
         if (data) {
           setState(s => ({
             ...s,
@@ -86,13 +95,19 @@ export default function BacktestResults() {
   }, [workerBaseUrl, authHeaders]);
 
   useEffect(() => {
-    fetchResults();
-    // Poll every 10 seconds if running
+    fetchResultsRef.current = performFetch;
+  }, [performFetch]);
+
+  useEffect(() => {
+    performFetch();
+  }, [performFetch]);
+
+  useEffect(() => {
     if (state.status === 'running') {
-      const interval = setInterval(fetchResults, 10000);
+      const interval = setInterval(performFetch, 10000);
       return () => clearInterval(interval);
     }
-  }, [state.status, fetchResults]);
+  }, [state.status === 'running', performFetch]);
 
   const handleRun = async () => {
     if (!workerBaseUrl) {

@@ -40,6 +40,7 @@ import type {
   DecisionGate as IntradayDecisionGate,
   SetupType as IntradaySetupType
 } from '../../intradayParams';
+import { SIM_INTRADAY_PARAMS_OVERRIDE } from '../../simExecution';
 import { computeSizingMultiplier, summarizeRecentPerformance } from '../../adaptiveRisk';
 import { formatDynamicPrice } from '../../tradeEngine';
 import type { PortfolioRiskStats } from '../../tradeEngine';
@@ -84,6 +85,8 @@ function mapRiskPlan(risk: IntradayDecision['risk']): RiskPlan | null {
 }
 
 // ── Pipeline Stages ───────────────────────────────────────────────────────────
+
+const intradayResultCache = new Map<string, { result: unknown; h1Last: number; m15Last: number; m5Last: number }>();
 
 class ValidateInputStage implements PipelineStage<DecisionContext> {
   name = 'validate-input';
@@ -201,7 +204,7 @@ class RunEngineStage implements PipelineStage<DecisionContext> {
       // orchestrator's own bookkeeping keys, so `?? DEFAULT_INTRADAY_PARAMS`
       // never fired and the engine ran with every threshold undefined.
       // (evaluateIntradayDecision now merges defensively too — belt and braces.)
-      params: { ...DEFAULT_INTRADAY_PARAMS, ...(context.params as Partial<IntradayParams>) },
+      params: { ...DEFAULT_INTRADAY_PARAMS, ...SIM_INTRADAY_PARAMS_OVERRIDE, ...(context.params as Partial<IntradayParams>) },
       now: context.now,
       existingExposureByAsset: context.portfolio.existingExposureByAsset
     };
@@ -247,34 +250,54 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
   }
 
   execute(context: DecisionContext): unknown {
-    // Compute adaptive sizing multiplier (like legacy/pro adapters)
-    const closedTrades = (context.closedTrades ?? []) as ClosedTradeRecord[];
-    let sizingMultiplier = 1;
-    if (closedTrades.length >= 5) {
-      const perf = summarizeRecentPerformance(closedTrades);
-      sizingMultiplier = computeSizingMultiplier(perf, context.portfolio.dailyDrawdownPercent);
-    }
+    const h1Last = context.candles.h1?.length ? context.candles.h1[context.candles.h1.length - 1].timestamp : 0;
+    const m15Last = context.candles.m15?.length ? context.candles.m15[context.candles.m15.length - 1].timestamp : 0;
+    const m5Last = context.candles.m5?.length ? context.candles.m5[context.candles.m5.length - 1].timestamp : 0;
+    const p = context.portfolio;
+    const portfolioKey = `${p.dailyDrawdownPercent.toFixed(2)}|${p.weeklyDrawdownPercent.toFixed(2)}|${p.openPositionsCount}|${p.openFuturesPositionsCount}|${p.totalLeveragedExposureUsd.toFixed(2)}|${Object.entries(p.existingExposureByAsset || {}).sort().map(([k,v]) => `${k}=${v.toFixed(2)}`).join(',')}`;
+    const closedTradesKey = (context.closedTrades || []).map(t => `${t.pnl.toFixed(2)}:${t.at}:${t.symbol}`).join(',');
+    const configKey = `${context.config?.minConfidenceOverride ?? 'default'}|${context.config?.maxPositions ?? 'default'}|${context.config?.maxFuturesPositions ?? 'default'}`;
+    const cacheKey = `${context.symbol}|${h1Last}|${m15Last}|${m5Last}|${portfolioKey}|${closedTradesKey}|${configKey}`;
+    const cached = intradayResultCache.get(cacheKey);
+    if (cached) return cached.result;
 
-    // Run stages sequentially with sizingMultiplier in context
-    let current: DecisionContext = { ...context, params: { ...context.params, _sizingMultiplier: sizingMultiplier } };
-    for (const stage of this.stages) {
-      const result = stage.execute(current);
-      current = result.context;
-      if (result.blocked) {
-        // Return blocked result with any available raw result from RunEngineStage
-        const raw = (current as unknown as { _rawResult?: IntradayDecision })._rawResult;
-        return {
-          outcome: 'NO_SIGNAL' as DecisionOutcome,
-          gate: result.gate ?? 'UNKNOWN',
-          logs: [result.blockReason ?? 'Blocked'],
-          summary: result.blockReason ?? 'Blocked',
-          _rawResult: raw
-        };
+    const result = (() => {
+      const orchestratorMult = (context.params as Record<string, unknown> | undefined)?._adaptiveMultiplier as number | undefined;
+      const closedTrades = (context.closedTrades ?? []) as ClosedTradeRecord[];
+      let sizingMultiplier = orchestratorMult ?? 1;
+      if (sizingMultiplier === 1 && closedTrades.length >= 5) {
+        const perf = summarizeRecentPerformance(closedTrades);
+        sizingMultiplier = computeSizingMultiplier(perf, context.portfolio.dailyDrawdownPercent);
       }
-    }
 
-    // Return the raw intraday result
-    return (current as unknown as { _rawResult: IntradayDecision })._rawResult;
+      let current: DecisionContext = {
+        ...context,
+        params: { ...context.params, _sizingMultiplier: sizingMultiplier, minConfidenceOverride: context.config?.minConfidenceOverride }
+      };
+      for (const stage of this.stages) {
+        const stageResult = stage.execute(current);
+        current = stageResult.context;
+        if (stageResult.blocked) {
+          const raw = (current as unknown as { _rawResult?: IntradayDecision })._rawResult;
+          return {
+            outcome: 'NO_SIGNAL' as DecisionOutcome,
+            gate: stageResult.gate ?? 'UNKNOWN',
+            logs: [stageResult.blockReason ?? 'Blocked'],
+            summary: stageResult.blockReason ?? 'Blocked',
+            _rawResult: raw
+          };
+        }
+      }
+
+      return (current as unknown as { _rawResult: IntradayDecision })._rawResult;
+    })();
+
+    intradayResultCache.set(cacheKey, { result, h1Last, m15Last, m5Last });
+    if (intradayResultCache.size > 200) {
+      const first = intradayResultCache.keys().next().value;
+      if (first) intradayResultCache.delete(first);
+    }
+    return result;
   }
 
   normalize(output: unknown, context: DecisionContext): DecisionResult {
@@ -288,18 +311,23 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
 
     const raw = result._rawResult;
     if (raw) {
-      return {
-        engineId: this.id,
-        symbol: context.symbol,
-        outcome: mapOutcome(raw.outcome),
-        gate: raw.gate,
-        tradeType: mapTradeType(raw.tradeType),
-        direction: mapDirection(raw.direction),
-        confidence: raw.entry
-          ? Math.round(((raw.setup?.setupScore ?? 0) + raw.entry.entryScore) / 2)
-          : raw.setup
-          ? Math.round(raw.setup.setupScore)
-          : 0,
+const computedConfidence = raw.entry
+      ? Math.round(((raw.setup?.setupScore ?? 0) + raw.entry.entryScore) / 2)
+      : raw.setup
+      ? Math.round(raw.setup.setupScore)
+      : 0;
+
+    const minConf = (context.config?.minConfidenceOverride ?? (context.params as Record<string, unknown> | undefined)?.minConfidenceOverride) as number | undefined;
+    const blockedByConfidence = typeof minConf === 'number' && raw.outcome === 'SIGNAL' && computedConfidence < minConf;
+
+    return {
+      engineId: this.id,
+      symbol: context.symbol,
+      outcome: blockedByConfidence ? 'NO_SIGNAL' : mapOutcome(raw.outcome),
+      gate: blockedByConfidence ? 'MIN_CONFIDENCE' : raw.gate,
+      tradeType: mapTradeType(raw.tradeType),
+      direction: mapDirection(raw.direction),
+      confidence: computedConfidence,
         riskPlan: mapRiskPlan(raw.risk),
         reasoning: raw.logs,
         metrics: {

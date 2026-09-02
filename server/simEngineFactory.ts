@@ -454,7 +454,15 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       totalTrades: trades.length,
       closedTrades: closedTrades.length,
       lastEvaluation,
-      evaluations: lastEvaluations,
+      evaluations: lastEvaluations.map((e) => ({
+        symbol: e.symbol,
+        action: e.action,
+        tradeType: e.tradeType,
+        tradeSide: e.tradeSide,
+        confidence: e.confidence,
+        status: e.status,
+        willExecute: e.willExecute
+      })),
       minConfidence: strategy.minConfidence,
       hasSavedSession: trades.length > 0 || positions.length > 0,
       nextTickAt: Date.now() + TICK_MS,

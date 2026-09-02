@@ -21,6 +21,8 @@ import { toBybitSymbol, toBaseAsset } from './assetUniverse';
 const BYBIT_PUBLIC_BASE = 'https://api.bybit.com';
 const BINANCE_PUBLIC_BASE = 'https://api.binance.com/api/v3';
 
+const universeFetchCache = new Map<string, Promise<{ snapshots: Map<string, MultiTimeframeSnapshot>; stats: MarketDataStats }>>();
+
 export type TimeframeKey = '1h' | '15m' | '5m';
 export type CandleSource = 'bybit' | 'binance' | 'cache' | 'none';
 
@@ -741,6 +743,11 @@ export interface GetMarketDataOptions {
   category?: 'spot' | 'linear';
 }
 
+function isNodeRuntime(): boolean {
+  const runtime = globalThis as typeof globalThis & { process?: { versions?: { node?: string } } };
+  return typeof runtime.process?.versions?.node === 'string';
+}
+
 /**
  * Loads 1H/15M/5M for a single symbol, honouring the per-timeframe refresh
  * cadence (§7) so a 5s tick does not hammer the API for 1H candles that cannot
@@ -781,7 +788,7 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
     // Only available in Node.js environment (not browser).
     // NOTE: This uses a variable import path to prevent Vite from analyzing
     // the server-only module during frontend builds.
-    if (!opts.force && typeof process !== 'undefined' && process.versions?.node) {
+    if (!opts.force && isNodeRuntime()) {
       try {
         const cachePath = '../../server/historicalCandleCache';
         const cacheModule = await import(/* @vite-ignore */ cachePath);
@@ -819,7 +826,7 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
           telemetry[tf] = { received: delta.received, closed: delta.closed, valid: merged.length, required: spec.minCandles, source: delta.source };
           // Save to persistent cache after successful network fetch (Node.js only)
           // Uses variable path to prevent Vite from analyzing server-only import
-          if (typeof process !== 'undefined' && process.versions?.node) {
+          if (isNodeRuntime()) {
             const cachePath = '../../server/historicalCandleCache';
             import(/* @vite-ignore */ cachePath).then(({ saveCachedHistory }) => {
               saveCachedHistory(bybitSymbol, tf, merged).catch(() => {});
@@ -855,7 +862,7 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
       });
       // Save to persistent cache after successful network fetch (Node.js only)
       // Uses variable path to prevent Vite from analyzing server-only import
-      if (typeof process !== 'undefined' && process.versions?.node) {
+      if (isNodeRuntime()) {
         const cachePath = '../../server/historicalCandleCache';
         import(/* @vite-ignore */ cachePath).then(({ saveCachedHistory }) => {
           saveCachedHistory(bybitSymbol, tf, result.candles).catch(() => {});
@@ -926,68 +933,80 @@ export async function getUniverseMarketData(
   symbols: string[],
   opts: GetMarketDataOptions & { concurrency?: number } = {}
 ): Promise<{ snapshots: Map<string, MultiTimeframeSnapshot>; stats: MarketDataStats }> {
-  const now = opts.now ?? Date.now();
-  const concurrency = opts.concurrency ?? 4;
-  const snapshots = new Map<string, MultiTimeframeSnapshot>();
-  const stats: MarketDataStats = {
-    assetsSeen: symbols.length,
-    assetsWithValidData: 0,
-    assetsSkipped: 0,
-    dataErrors: 0,
-    skipped: []
-  };
+  const cacheKey = symbols.slice().sort().join(',') + '|' + (opts.now ?? Date.now());
+  const existing = universeFetchCache.get(cacheKey);
+  if (existing) return existing;
 
-  // Warm the shared liquidity cache with a single call for the whole universe.
-  await getLiquiditySnapshots(symbols, now).catch(() => {
-    stats.dataErrors++;
-    return new Map<string, LiquiditySnapshot>();
-  });
+  const promise = (async () => {
+    const now = opts.now ?? Date.now();
+    const concurrency = opts.concurrency ?? 4;
+    const snapshots = new Map<string, MultiTimeframeSnapshot>();
+    const stats: MarketDataStats = {
+      assetsSeen: symbols.length,
+      assetsWithValidData: 0,
+      assetsSkipped: 0,
+      dataErrors: 0,
+      skipped: []
+    };
 
-  for (let i = 0; i < symbols.length; i += concurrency) {
-    const batch = symbols.slice(i, i + concurrency);
-    const results = await Promise.all(
-      batch.map(async (symbol) => {
-        try {
-          return await getMultiTimeframeData(symbol, { ...opts, now });
-        } catch (e) {
-          stats.dataErrors++;
-          return {
-            symbol: toBybitSymbol(symbol),
-            base: toBaseAsset(symbol),
-            status: 'NOT_READY' as const,
-            reason: `DATA_ERROR:${e instanceof Error ? e.message : String(e)}`,
-            h1: [],
-            m15: [],
-            m5: [],
-            counts: { '1h': 0, '15m': 0, '5m': 0 } as Record<TimeframeKey, number>,
-            sources: { '1h': 'none', '15m': 'none', '5m': 'none' } as Record<TimeframeKey, CandleSource>,
-            reasons: { '1h': 'DATA_ERROR', '15m': 'DATA_ERROR', '5m': 'DATA_ERROR' } as Record<TimeframeKey, string>,
-            telemetry: {
-              '1h': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['1h'].minCandles, source: 'none' },
-              '15m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['15m'].minCandles, source: 'none' },
-              '5m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['5m'].minCandles, source: 'none' }
-            },
-            lastClosedAt: 0,
-            liquidity: null,
-            livePrice: 0,
-            issues: [],
-            fetchedAt: now
-          } satisfies MultiTimeframeSnapshot;
+    await getLiquiditySnapshots(symbols, now).catch(() => {
+      stats.dataErrors++;
+      return new Map<string, LiquiditySnapshot>();
+    });
+
+    for (let i = 0; i < symbols.length; i += concurrency) {
+      const batch = symbols.slice(i, i + concurrency);
+      const results = await Promise.all(
+        batch.map(async (symbol) => {
+          try {
+            return await getMultiTimeframeData(symbol, { ...opts, now });
+          } catch (e) {
+            stats.dataErrors++;
+            return {
+              symbol: toBybitSymbol(symbol),
+              base: toBaseAsset(symbol),
+              status: 'NOT_READY' as const,
+              reason: `DATA_ERROR:${e instanceof Error ? e.message : String(e)}`,
+              h1: [],
+              m15: [],
+              m5: [],
+              counts: { '1h': 0, '15m': 0, '5m': 0 } as Record<TimeframeKey, number>,
+              sources: { '1h': 'none', '15m': 'none', '5m': 'none' } as Record<TimeframeKey, CandleSource>,
+              reasons: { '1h': 'DATA_ERROR', '15m': 'DATA_ERROR', '5m': 'DATA_ERROR' } as Record<TimeframeKey, string>,
+              telemetry: {
+                '1h': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['1h'].minCandles, source: 'none' },
+                '15m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['15m'].minCandles, source: 'none' },
+                '5m': { received: 0, closed: 0, valid: 0, required: TIMEFRAME_SPECS['5m'].minCandles, source: 'none' }
+              },
+              lastClosedAt: 0,
+              liquidity: null,
+              livePrice: 0,
+              issues: [],
+              fetchedAt: now
+            } satisfies MultiTimeframeSnapshot;
+          }
+        })
+      );
+
+      for (const snap of results) {
+        snapshots.set(snap.symbol, snap);
+        if (snap.status === 'READY') stats.assetsWithValidData++;
+        else {
+          stats.assetsSkipped++;
+          stats.skipped.push({ symbol: snap.symbol, reason: snap.reason || 'NOT_READY' });
         }
-      })
-    );
-
-    for (const snap of results) {
-      snapshots.set(snap.symbol, snap);
-      if (snap.status === 'READY') stats.assetsWithValidData++;
-      else {
-        stats.assetsSkipped++;
-        stats.skipped.push({ symbol: snap.symbol, reason: snap.reason || 'NOT_READY' });
       }
     }
-  }
 
-  return { snapshots, stats };
+    return { snapshots, stats };
+  })();
+
+  universeFetchCache.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    universeFetchCache.delete(cacheKey);
+  }
 }
 
 /**

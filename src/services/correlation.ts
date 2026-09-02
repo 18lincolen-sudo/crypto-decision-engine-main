@@ -33,8 +33,11 @@ export const DEFAULT_CORRELATION_LOOKBACK = 72;
 export const DEFAULT_CORRELATION_THRESHOLD = 0.7;
 
 /** How many already-open, highly-correlated same-direction positions are
- *  tolerated before a new one in that cluster is refused. */
-export const DEFAULT_MAX_CORRELATED = 12;
+ *  tolerated before a new one in that cluster is refused.
+ *  7 slots × 3 correlated = ~43% of the book in one risk factor. Judgment call,
+ *  not a measured optimum — calibrate with a portfolio-level backtest before
+ *  enabling live trading. */
+export const DEFAULT_MAX_CORRELATED = 3;
 
 /** Below this many overlapping bars the estimate is noise; the gate then
  *  abstains (allows the entry) rather than blocking on a bad number. */

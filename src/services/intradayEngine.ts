@@ -328,6 +328,13 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
   // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
+  // Adaptive sizing (DecisionEngine path only): the orchestrator injects
+  // `_sizingMultiplier` into params from recent closed-trade performance.
+  // The live scan() path passes no multiplier → 1 (base sizing, unchanged).
+  const rawSizing = (input.params as Record<string, unknown> | undefined)?._sizingMultiplier;
+  const sizingMultiplier = typeof rawSizing === 'number' && Number.isFinite(rawSizing)
+    ? Math.min(1, Math.max(0, rawSizing))
+    : 1;
   const risk = buildRiskPlan({
     symbol,
     direction: setup.direction as Exclude<Direction, 'NONE'>,
@@ -345,13 +352,14 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     existingExposureByAsset: input.existingExposureByAsset ?? p.existingExposureByAsset ?? {},
     riskPercent: params.riskPerTradePercent,
     confidence,
+    sizingMultiplier,
     params
   });
 
   // High-confidence bypass: if buildRiskPlan rejected but confidence >= 72,
   // use a minimal fallback with fixed 1.8% SL / 3% TP.
   const effectiveRisk = risk.approved ? risk : (confidence >= 72 && tradeType !== null
-    ? buildFallbackIntradayRisk(entry.entryPrice, setup.direction as Exclude<Direction, 'NONE'>, tradeType)
+    ? buildFallbackIntradayRisk(entry.entryPrice, setup.direction as Exclude<Direction, 'NONE'>, tradeType, sizingMultiplier)
     : null);
 
   if (!effectiveRisk) {
@@ -423,8 +431,10 @@ function finalize(
 }
 
 /** Builds a minimal fallback risk plan for high-confidence intraday signals
- *  that were rejected by buildRiskPlan. Uses fixed 1.8% SL / 3% TP. */
-function buildFallbackIntradayRisk(entryPrice: number, direction: Exclude<Direction, 'NONE'>, tradeType: TradeType): RiskPlan {
+ *  that were rejected by buildRiskPlan. Uses fixed 1.8% SL / 3% TP.
+ *  sizingMultiplier scales the (already tiny) emergency size the same way it
+ *  scales the regular plan — it only ever de-risks. */
+function buildFallbackIntradayRisk(entryPrice: number, direction: Exclude<Direction, 'NONE'>, tradeType: TradeType, sizingMultiplier: number = 1): RiskPlan {
   const slPercent = 1.8;
   const tpPercent = 3.0;
   const isLong = direction === 'LONG';
@@ -434,6 +444,7 @@ function buildFallbackIntradayRisk(entryPrice: number, direction: Exclude<Direct
   const stopDistance = Math.abs(entryPrice - stopLoss);
   const rewardRisk1 = Math.abs(takeProfit1 - entryPrice) / stopDistance;
   const rewardRisk2 = Math.abs(takeProfit2 - entryPrice) / stopDistance;
+  const baseUsd = 5 * Math.min(1, Math.max(0, sizingMultiplier));
   return {
     approved: true,
     blockReason: undefined,
@@ -442,16 +453,17 @@ function buildFallbackIntradayRisk(entryPrice: number, direction: Exclude<Direct
     takeProfit2: Number(takeProfit2.toFixed(8)),
     stopDistance: Number(stopDistance.toFixed(8)),
     stopDistancePercent: Number((slPercent).toFixed(4)),
-    riskUsd: 5,
-    quantity: 5 / stopDistance,
-    notionalUsd: (5 / stopDistance) * entryPrice,
-    marginUsd: tradeType === 'FUTURES' ? 5 : (5 / stopDistance) * entryPrice,
+    riskUsd: baseUsd,
+    quantity: baseUsd / stopDistance,
+    notionalUsd: (baseUsd / stopDistance) * entryPrice,
+    marginUsd: tradeType === 'FUTURES' ? baseUsd : (baseUsd / stopDistance) * entryPrice,
     leverage: 1,
     rewardRisk1: Number(rewardRisk1.toFixed(2)),
     rewardRisk2: Number(rewardRisk2.toFixed(2)),
     maxHoldMs: 60 * 60_000,
     timeStopMs: Math.round(60 * 60_000 * 0.45),
     positionPercentOfEquity: 0,
-    riskPercentUsed: 0.5
+    riskPercentUsed: 0.5,
+    sizingMultiplier: Math.min(1, Math.max(0, sizingMultiplier))
   };
 }

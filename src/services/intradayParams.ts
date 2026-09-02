@@ -111,8 +111,8 @@ export interface IntradayParams {
    *  switched off exactly when the down-move is sharpest. When true, a SHORT
    *  setup gets a carve-out to still trade FUTURES during HIGH volatility
    *  (not EXTREME — that stays blocked for both directions regardless of this
-   *  flag). LONG stays blocked in HIGH volatility either way. Simulation-only
-   *  for now (see buildEvaluations in simExecution.ts) while this is being
+    *  flag). LONG stays blocked in HIGH volatility either way. Simulation-only
+    *  for now while this is being
    *  evaluated against real results before enabling it on the live bot.
    */
   allowShortDuringHighVolatility: boolean;

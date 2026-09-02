@@ -5,10 +5,9 @@ import {
   stopSim,
   resetSim,
   setSimConfig,
-  pushSimState,
-  SimBotSnapshot,
   SimBotStateResponse
 } from '../services/tradingApiClient';
+import type { SimBotSnapshot } from '../services/tradingApiClient';
 import { useSimulationBot, SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder } from '../hooks/useSimulationBot';
 import type { SignalEvaluation } from '../services/intradayBridge';
 import { useCryptoData } from '../hooks/useCryptoData';
@@ -104,12 +103,12 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   // Run autonomous client-side simulation engine
   const localSim = useSimulationBot({
     config,
-    isRunning,
+    // The server owns execution as soon as it has supplied a snapshot. Keep
+    // the local engine only as an offline fallback; it must not continue
+    // calculating or persisting a competing simulation in synced mode.
+    isRunning: isRunning && serverSnapshot === null,
     cryptoData: cryptoData || [],
-    fearGreedIndex,
-    persist: (state) => {
-      pushSimState('browser-leader', state as unknown as SimBotSnapshot, baseUrl).catch(() => {});
-    }
+    fearGreedIndex
   });
 
   const applyServerState = useCallback((st: SimBotStateResponse) => {

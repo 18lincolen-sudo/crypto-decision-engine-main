@@ -49,7 +49,7 @@ function cacheKey(symbol: string, timeframe: string): string {
  * We use a conservative 30-minute max for all timeframes — if the cache
  * is younger than that, we trust it; otherwise we refetch.
  */
-const MAX_CACHE_AGE_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_CACHE_AGE_MS = 8 * 24 * 60 * 60 * 1000; // 8 days — covers the weekly backtest cycle
 
 interface CacheEntry {
   candles: Candle[];

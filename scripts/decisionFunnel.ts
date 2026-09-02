@@ -16,6 +16,26 @@ import type { Candle } from '../src/services/tradeEngine';
 import type { DecisionGate } from '../src/services/intradayParams';
 
 const BYBIT = 'https://api.bybit.com/v5/market';
+interface BybitApiResponse<TResult> {
+  retCode: number;
+  retMsg?: string;
+  result?: TResult;
+}
+
+interface BybitKlineResult {
+  list?: unknown[];
+}
+
+interface BybitTicker {
+  lastPrice?: string;
+  bid1Price?: string;
+  ask1Price?: string;
+  turnover24h?: string;
+}
+
+interface BybitTickerResult {
+  list?: BybitTicker[];
+}
 
 /**
  * Rebranded/delisted tickers: the TARGET_SYMBOLS label is kept in the report,
@@ -37,13 +57,13 @@ const OUT = process.env.OUT ?? 'decisionFunnel.report.json';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchJson(url: string, tries = 4): Promise<unknown> {
+async function fetchJson<T>(url: string, tries = 4): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url);
-      const json = (await res.json()) as { retCode: number; retMsg?: string; result?: unknown } | null;
-      if (json && json.retCode === 0) return json;
+      const json = (await res.json()) as BybitApiResponse<unknown> | null;
+      if (json && json.retCode === 0) return json as T;
       lastErr = new Error(`retCode ${json?.retCode} ${json?.retMsg}`);
     } catch (e) {
       lastErr = e;
@@ -78,7 +98,7 @@ const BINANCE_INTERVAL: Record<string, string> = { '5': '5m', '15': '15m', '60':
 async function fetchBybitKlines(symbol: string, interval: string, limit: number): Promise<Candle[] | null> {
   const url = `${BYBIT}/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
   try {
-    const json = await fetchJson(url);
+    const json = await fetchJson<BybitApiResponse<BybitKlineResult>>(url);
     const list = json.result?.list;
     if (!list || !list.length) return null; // symbol not on Bybit linear → try Binance
     return toCandles(list);
@@ -127,7 +147,7 @@ async function fetchKlines(symbol: string, interval: string, limit: number): Pro
 async function fetchTicker(symbol: string): Promise<{ turnover24h: number; spreadPercent: number; source: 'bybit' | 'binance' | 'fallback' }> {
   // Bybit linear ticker
   try {
-    const json = await fetchJson(`${BYBIT}/tickers?category=linear&symbol=${symbol}`);
+    const json = await fetchJson<BybitApiResponse<BybitTickerResult>>(`${BYBIT}/tickers?category=linear&symbol=${symbol}`);
     const t = json.result?.list?.[0];
     if (t) {
       const last = Number(t.lastPrice);

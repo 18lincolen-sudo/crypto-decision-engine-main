@@ -125,6 +125,10 @@ const RealTradingBot = () => {
   const recentDecisions: WorkerDecision[] = (botState?.decisions ?? []).filter(d => d.action && d.action !== 'HOLD').slice(0, 12);
   const skipped: WorkerSkippedSymbol[] = botState?.skippedSymbols ?? [];
   const health: WorkerHealth | undefined = botState?.health;
+  const trackedSymbols = botState?.openedSymbols ? Object.keys(botState.openedSymbols) : [];
+  const accountPositionsValue = account?.positions.reduce((sum, p) => sum + p.size * p.entryPrice, 0) ?? 0;
+  const accountEquity = account?.totalUsdt ?? 0;
+  const accountCash = account?.availableUsdt ?? 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -240,21 +244,21 @@ const RealTradingBot = () => {
 
           <TabsContent value="status" className="space-y-4">
             <PortfolioRiskMeter
-              portfolioValue={account?.totalUsdt || 1000}
-              totalInvestedUsd={0}
-              totalLeveragedExposureUsd={0}
-              openPositionsCount={botState?.openedSymbols?.length ?? 0}
-              maxPositions={botState?.maxOpenPositions ?? 5}
+              portfolioValue={accountEquity}
+              totalInvestedUsd={accountPositionsValue}
+              totalLeveragedExposureUsd={accountPositionsValue}
+              openPositionsCount={trackedSymbols.length}
+              maxPositions={botState?.maxOpenPositions ?? 7}
               openFuturesCount={account?.openFuturesCount ?? 0}
               maxFutures={2}
               dailyDrawdownPercent={0}
               weeklyDrawdownPercent={0}
             />
             <PortfolioPulseCard
-              equity={account?.totalUsdt || 1000}
-              invested={0}
-              cash={account?.availableUsdt || 1000}
-              positionsValue={0}
+              equity={accountEquity}
+              invested={accountEquity}
+              cash={accountCash}
+              positionsValue={Math.max(0, accountEquity - accountCash)}
               history={[]}
               statusLabel={botState?.running ? 'פועל' : 'מושבת'}
               statusTone={botState?.running ? 'running' : 'idle'}

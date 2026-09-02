@@ -103,13 +103,13 @@ class FirestoreKV {
     const fields = data.fields;
     if (!fields) return null;
 
-    // Check TTL — if expired, treat as null
-    const expiresAt = fields.expiresAt?.integerValue;
+// Check TTL — if expired, treat as null
+    const expiresAt = (fields.expiresAt as { integerValue?: string } | undefined)?.integerValue;
     if (expiresAt && Number(expiresAt) < Date.now()) {
       return null; // expired
     }
 
-    return fields.value?.stringValue ?? null;
+    return (fields.value as { stringValue?: string } | undefined)?.stringValue ?? null;
   }
 
   async get(key: string): Promise<string | null> {
@@ -138,7 +138,7 @@ class FirestoreKV {
       if (ttlMs && ttlMs > 0) {
         fields.expiresAt = { integerValue: String(Date.now() + ttlMs) };
       }
-      await fetch(`${this.baseUrl}/kv/${encodeURIComponent(key)}`, {
+const res = await fetch(`${this.baseUrl}/kv/${encodeURIComponent(key)}`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -146,6 +146,10 @@ class FirestoreKV {
         },
         body: JSON.stringify({ fields })
       });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.warn(`[kv] Firestore set failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+      }
     } catch (err) {
       console.warn('[kv] Firestore set failed:', err);
     }
@@ -198,7 +202,7 @@ class LocalKV {
   private async writeAtomic(full: Record<string, { value: string; expiresAt?: number }>): Promise<void> {
     await mkdir(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, JSON.stringify(full, null, 2), 'utf8');
+    await writeFile(tmp, JSON.stringify(full), 'utf8');
     await rename(tmp, this.file);
   }
 

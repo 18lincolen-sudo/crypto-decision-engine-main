@@ -104,7 +104,7 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
   // Local fallback engine — same role as SimulationBotContext's localSim.
   const localSim = useLegacySimulationBot({
     config,
-    isRunning,
+    isRunning: isRunning && serverSnapshot === null,
     cryptoData: cryptoData || [],
     fearGreedIndex
   });

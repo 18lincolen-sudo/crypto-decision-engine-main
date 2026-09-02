@@ -14,6 +14,11 @@ import type { Candle } from '../src/services/tradeEngine';
 const BYBIT = 'https://api.bybit.com/v5/market';
 const BINANCE = 'https://api.binance.com/api/v3';
 const BINANCE_INTERVAL: Record<string, string> = { '5': '5m', '15': '15m', '60': '1h' };
+interface BybitKlineResponse {
+  retCode: number;
+  retMsg?: string;
+  result?: { list?: unknown[] };
+}
 const FM_LIMIT = Number(process.env.FM_LIMIT ?? 1000);
 const M15_LIMIT = Number(process.env.M15_LIMIT ?? 500);
 const H1_LIMIT = Number(process.env.H1_LIMIT ?? 250);
@@ -22,13 +27,13 @@ const RISK = Number(process.env.RISK ?? 0.5);
 const SYMS = (process.env.SYMS ?? 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,AVAXUSDT,AAVEUSDT').split(',').map((s) => s.trim().toUpperCase());
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function fetchJson(url: string, tries = 4): Promise<unknown> {
+async function fetchJson<T>(url: string, tries = 4): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url);
-      const json = (await res.json()) as { retCode: number; retMsg?: string; result?: unknown } | null;
-      if (json && json.retCode === 0) return json;
+      const json = (await res.json()) as BybitKlineResponse | null;
+      if (json && json.retCode === 0) return json as T;
       lastErr = new Error(`retCode ${json?.retCode} ${json?.retMsg}`);
     } catch (e) { lastErr = e; }
     await sleep(250 * (i + 1));
@@ -36,14 +41,17 @@ async function fetchJson(url: string, tries = 4): Promise<unknown> {
   throw lastErr;
 }
 function toCandles(list: unknown[]): Candle[] {
-  return list.map((c) => ({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) })).sort((a, b) => a.timestamp - b.timestamp);
+  return list
+    .filter((c): c is unknown[] => Array.isArray(c))
+    .map((c) => ({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) }))
+    .sort((a, b) => a.timestamp - b.timestamp);
 }
 async function fetchBybit(symbol: string, interval: string, limit: number): Promise<Candle[] | null> {
-  try { const j = await fetchJson(`${BYBIT}/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`); return j.result?.list?.length ? toCandles(j.result.list) : null; } catch { return null; }
+  try { const j = await fetchJson<BybitKlineResponse>(`${BYBIT}/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`); return j.result?.list?.length ? toCandles(j.result.list) : null; } catch { return null; }
 }
 async function fetchBinance(symbol: string, interval: string, limit: number): Promise<Candle[] | null> {
   const bi = BINANCE_INTERVAL[interval] ?? `${interval}m`;
-  try { const r = await fetch(`${BINANCE}/klines?symbol=${symbol}&interval=${bi}&limit=${limit}`); const l = (await r.json()) as unknown[][]; if (!Array.isArray(l) || !l.length) return null; return l.map((c) => ({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) })).sort((a, b) => a.timestamp - b.timestamp); } catch { return null; }
+  try { const r = await fetch(`${BINANCE}/klines?symbol=${symbol}&interval=${bi}&limit=${limit}`); const l = (await r.json()) as unknown; if (!Array.isArray(l) || !l.length) return null; return toCandles(l); } catch { return null; }
 }
 async function fetchKlines(symbol: string, interval: string, limit: number): Promise<Candle[]> {
   return (await fetchBybit(symbol, interval, limit)) || (await fetchBinance(symbol, interval, limit)) || [];

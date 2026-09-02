@@ -20,12 +20,12 @@ import {
 } from './tradeEngine';
 import {
   detectProRegime,
-  evaluateProSignals,
   routeProTradeType,
   calculateProRisk,
   evaluateProExit,
   ProActivePosition,
 } from './proAlgEngine';
+import { computeProAdvancedAnalysis } from './proAdvancedAnalysis';
 import { sizingMultiplierFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT } from './adaptiveRisk';
 import { getCachedHistory, saveCachedHistory } from '../../server/historicalCandleCache';
 import type { ActivePosition, TradeSide, SignalEngineResult } from '../types/crypto';
@@ -204,7 +204,24 @@ function proEvaluate(
   const slice = candles.slice(0, idx + 1);
   const currentPrice = candles[idx].close;
   const regime = detectProRegime(slice, currentPrice);
-  const signalResult = evaluateProSignals(slice, currentPrice, 0, regime);
+  const adv = computeProAdvancedAnalysis({
+    candles: slice,
+    currentPrice,
+    priceChange24h: 0,
+    fearGreedIndex: 50,
+    marketCap: 0,
+    volume24h: 0,
+    symbol
+  });
+  const signalResult = {
+    action: adv.action,
+    buyScore: adv.action === 'BUY' ? adv.confidence : adv.action === 'SELL' ? 0 : 50,
+    sellScore: adv.action === 'SELL' ? adv.confidence : adv.action === 'BUY' ? 0 : 50,
+    rawConfidence: adv.confidence,
+    confidence: adv.confidence,
+    signals: [],
+    penalties: adv.penalties
+  } as unknown as Parameters<typeof routeProTradeType>[0];
   const routeResult = routeProTradeType(
     signalResult, regime,
     {
@@ -258,10 +275,17 @@ function checkExitPro(pos: SimPosition, candle: Candle, candles: Candle[], idx: 
   const currentAtr = getAtr(candles, idx);
   const eq = equity(state, { [pos.symbol]: candle.close });
   const dailyDD = state.peakEquity > 0 ? Math.max(0, (state.peakEquity - eq) / state.peakEquity * 100) : 0;
-  // Compute actual signal scores for reversal exit detection
   const slice = candles.slice(0, idx + 1);
-  const signalResult = evaluateProSignals(slice, candle.close, 0, detectProRegime(slice, candle.close));
-  const signalScores = { buy: signalResult.action === 'BUY' ? signalResult.rawConfidence : 0, sell: signalResult.action === 'SELL' ? signalResult.rawConfidence : 0 };
+  const adv = computeProAdvancedAnalysis({
+    candles: slice,
+    currentPrice: candle.close,
+    priceChange24h: 0,
+    fearGreedIndex: 50,
+    marketCap: 0,
+    volume24h: 0,
+    symbol: pos.symbol
+  });
+  const signalScores = { buy: adv.action === 'BUY' ? adv.confidence : 0, sell: adv.action === 'SELL' ? adv.confidence : 0 };
   const exitResult = evaluateProExit(activePos, candle.close, currentAtr, signalScores, { dailyDrawdownPercent: dailyDD, weeklyDrawdownPercent: dailyDD, systemLocked: false });
   if (!exitResult.shouldExit) return { shouldExit: false, exitType: 'NONE', pnl: 0 };
   let pnl = 0;
@@ -272,6 +296,48 @@ function checkExitPro(pos: SimPosition, candle: Candle, candles: Candle[], idx: 
     pnl = (candle.close - pos.entryPrice) * pos.quantity * dir * pos.leverage;
   }
   return { shouldExit: true, exitType: exitResult.exitType, pnl };
+}
+
+// ── Intrabar exit + position PnL ─────────────────────────────────────────────
+// Fidelity helpers: a stop-loss / take-profit that the candle's RANGE crosses
+// fires at the LEVEL, not at the H1 close. The old close-only check let
+// intrabar SL/TP hits run through and close on a favourable close — WinRate
+// and MaxDrawdown were systematically biased vs. the live engines.
+
+type IntrabarExitType = 'SL' | 'TP1' | 'TP2';
+
+function intrabarExit(pos: SimPosition, candle: Candle): { exitType: IntrabarExitType; price: number } | null {
+  const isLong = pos.side === 'LONG' || pos.side === 'BUY';
+  if (isLong) {
+    if (candle.low <= pos.stopLoss) {
+      return { exitType: 'SL', price: Math.min(pos.stopLoss, candle.open) };
+    }
+    if (!pos.tp1Hit && typeof pos.takeProfit1 === 'number' && candle.high >= pos.takeProfit1) {
+      return { exitType: 'TP1', price: Math.max(pos.takeProfit1, candle.open) };
+    }
+    if (pos.tp1Hit && typeof pos.takeProfit2 === 'number' && candle.high >= pos.takeProfit2) {
+      return { exitType: 'TP2', price: Math.max(pos.takeProfit2, candle.open) };
+    }
+  } else {
+    if (candle.high >= pos.stopLoss) {
+      return { exitType: 'SL', price: Math.max(pos.stopLoss, candle.open) };
+    }
+    if (!pos.tp1Hit && typeof pos.takeProfit1 === 'number' && candle.low <= pos.takeProfit1) {
+      return { exitType: 'TP1', price: Math.min(pos.takeProfit1, candle.open) };
+    }
+    if (pos.tp1Hit && typeof pos.takeProfit2 === 'number' && candle.low <= pos.takeProfit2) {
+      return { exitType: 'TP2', price: Math.min(pos.takeProfit2, candle.open) };
+    }
+  }
+  return null;
+}
+
+function positionPnl(pos: SimPosition, price: number): number {
+  if (pos.type === 'SPOT') {
+    return (price - pos.entryPrice) * pos.quantity;
+  }
+  const dir = pos.side === 'LONG' || pos.side === 'BUY' ? 1 : -1;
+  return (price - pos.entryPrice) * pos.quantity * dir * pos.leverage;
 }
 
 // ── Open position ──────────────────────────────────────────────────────────
@@ -322,17 +388,29 @@ interface BacktestResult {
 // Fee and slippage constants (matching simExecution.ts fillDueOrders)
 const FEE_PERCENT = 0.001;      // 0.1% taker fee (entry + exit = 0.2% total)
 const SLIPPAGE_PERCENT = 0.001; // 0.1% slippage on entry
+// Per-symbol post-loss entry cooldown (matches the live per-symbol streak gate).
+const STREAK_COOLDOWN_MS = 30 * 60 * 1000;
 
-function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engine: EngineType): BacktestResult {
+function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engine: EngineType): Promise<BacktestResult> {
   const state = initState();
+  let lossCooldownUntil = 0; // per-symbol 30-min post-loss entry cooldown (matches the live streak gate)
+  return (async () => {
   for (let idx = 50; idx < candles.length; idx++) {
+    if (idx % 100 === 0) {
+      await sleep(0);
+    }
     const candle = candles[idx];
     const currentPrice = candle.close;
     // 1. Check exits
     const toRemove: number[] = [];
     for (let i = 0; i < state.positions.length; i++) {
       const pos = state.positions[i];
-      const check = engine === 'legacy' ? checkExitLegacy(pos, candle, candles, idx, state) : checkExitPro(pos, candle, candles, idx, state);
+      // Intrabar SL/TP hit takes precedence over the close-based evaluation:
+      // a level crossed by the candle's own range fires at the level.
+      const intrabar = intrabarExit(pos, candle);
+      const check = intrabar
+        ? { shouldExit: true, exitType: (intrabar.exitType === 'TP1' ? 'PARTIAL_50' : 'FULL') as ExitType, pnl: positionPnl(pos, intrabar.price) }
+        : (engine === 'legacy' ? checkExitLegacy(pos, candle, candles, idx, state) : checkExitPro(pos, candle, candles, idx, state));
       if (check.shouldExit) {
         // Apply exit fee (0.1% of notional value)
         const exitNotional = pos.type === 'SPOT' ? pos.quantity * currentPrice : pos.sizeUsd + check.pnl;
@@ -352,6 +430,7 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
         } else {
           // FULL, TRAILING_STOP, REVERSAL, TIME_BASED: full close
           state.closedTrades.push({ pnl: pnlAfterFee, at: candle.timestamp });
+          if (pnlAfterFee < 0) lossCooldownUntil = Math.max(lossCooldownUntil, candle.timestamp + STREAK_COOLDOWN_MS);
           if (pos.type === 'SPOT') { state.cash += pos.quantity * currentPrice - exitFee; } else { state.cash += pos.sizeUsd + pnlAfterFee; }
           toRemove.push(i);
         }
@@ -368,6 +447,7 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
     state.maxDrawdown = Math.max(state.maxDrawdown, drawdown);
     // 3. New entry
     if (state.positions.some(p => p.symbol === symbol)) continue;
+    if (candle.timestamp < lossCooldownUntil) continue; // per-symbol post-loss cooldown
     const evalResult = engine === 'legacy' ? legacyEvaluate(symbol, candles, idx, state, slConfig) : proEvaluate(symbol, candles, idx, state, slConfig);
     if (!evalResult.willExecute) continue;
     const pos = engine === 'legacy' ? openPositionLegacy(symbol, candles, idx, state, evalResult.tradeType as 'SPOT' | 'FUTURES', evalResult.side, evalResult.signalScore, slConfig) : openPositionPro(symbol, candles, idx, state, evalResult.tradeType as 'SPOT' | 'FUTURES', evalResult.side, evalResult.signalScore, slConfig);
@@ -383,6 +463,122 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
       state.positions.push(pos);
     }
   }
+  const totalTrades = state.closedTrades.length;
+  const wins = state.closedTrades.filter(t => t.pnl > 0).length;
+  const losses = totalTrades - wins;
+  const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+  const netProfit = state.closedTrades.reduce((s, t) => s + t.pnl, 0);
+  const grossWin = state.closedTrades.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0);
+  const grossLoss = Math.abs(state.closedTrades.filter(t => t.pnl < 0).reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0);
+  const expectancy = totalTrades > 0 ? netProfit / totalTrades : 0;
+  return { totalTrades, wins, losses, winRate, netProfit, profitFactor, expectancy, maxDrawdown: state.maxDrawdown };
+  })();
+}
+
+// ── Portfolio backtest (cross-symbol) ──────────────────────────────────────
+// Runs ALL symbols together on a merged time axis so the portfolio-level
+// gates (maxPositions=7, maxFutures=2) actually bind — matching how the live
+// bots trade. Per-bar logic (intrabar SL/TP, close-based exits, entries,
+// per-symbol post-loss cooldown) is identical to runBacktest; positions stay
+// scoped per-symbol while the capacity caps are global.
+
+const PORTFOLIO_MAX_POSITIONS = 7;
+const PORTFOLIO_MAX_FUTURES = 2;
+
+async function runPortfolioBacktest(
+  histories: { symbol: string; candles: Candle[] }[],
+  slConfig: SlConfig,
+  engine: EngineType
+): Promise<BacktestResult> {
+  const state = initState();
+  const lossCooldownUntil = new Map<string, number>();
+
+  // Merged, time-ordered event stream — one event per (symbol, bar).
+  const events: { ts: number; symbol: string; idx: number }[] = [];
+  for (const h of histories) {
+    for (let i = 50; i < h.candles.length; i++) {
+      events.push({ ts: h.candles[i].timestamp, symbol: h.symbol, idx: i });
+    }
+  }
+  events.sort((a, b) => a.ts - b.ts || a.symbol.localeCompare(b.symbol));
+  const candlesBySymbol = new Map(histories.map(h => [h.symbol, h.candles]));
+  let processed = 0;
+
+  for (const ev of events) {
+    if (++processed % 1000 === 0) await sleep(0);
+    const symbol = ev.symbol;
+    const candles = candlesBySymbol.get(symbol)!;
+    const candle = candles[ev.idx];
+
+    // 1. Exits for THIS symbol's positions
+    const toRemove: number[] = [];
+    for (let i = 0; i < state.positions.length; i++) {
+      const pos = state.positions[i];
+      if (pos.symbol !== symbol) continue;
+      const intrabar = intrabarExit(pos, candle);
+      const check = intrabar
+        ? { shouldExit: true, exitType: (intrabar.exitType === 'TP1' ? 'PARTIAL_50' : 'FULL') as ExitType, pnl: positionPnl(pos, intrabar.price) }
+        : (engine === 'legacy' ? checkExitLegacy(pos, candle, candles, ev.idx, state) : checkExitPro(pos, candle, candles, ev.idx, state));
+      if (check.shouldExit) {
+        const exitPrice = intrabar ? intrabar.price : candle.close;
+        const exitNotional = pos.type === 'SPOT' ? pos.quantity * exitPrice : pos.sizeUsd + check.pnl;
+        const exitFee = exitNotional * FEE_PERCENT;
+        const pnlAfterFee = check.pnl - exitFee;
+        state.totalFees += exitFee;
+
+        if (check.exitType === 'PARTIAL_50') {
+          const halfQty = pos.quantity / 2;
+          const halfPnl = pnlAfterFee / 2;
+          state.closedTrades.push({ pnl: halfPnl, at: ev.ts });
+          pos.quantity = halfQty;
+          pos.tp1Hit = true;
+          if (pos.type === 'SPOT') { state.cash += halfQty * exitPrice - exitFee / 2; } else { state.cash += (pos.sizeUsd / 2) + halfPnl; }
+          pos.sizeUsd = pos.sizeUsd / 2;
+        } else {
+          state.closedTrades.push({ pnl: pnlAfterFee, at: ev.ts });
+          if (pnlAfterFee < 0) lossCooldownUntil.set(symbol, Math.max(lossCooldownUntil.get(symbol) ?? 0, ev.ts + STREAK_COOLDOWN_MS));
+          if (pos.type === 'SPOT') { state.cash += pos.quantity * exitPrice - exitFee; } else { state.cash += pos.sizeUsd + pnlAfterFee; }
+          toRemove.push(i);
+        }
+      } else {
+        pos.highestPrice = Math.max(pos.highestPrice, candle.high);
+        pos.lowestPrice = Math.min(pos.lowestPrice, candle.low);
+      }
+    }
+    for (let i = toRemove.length - 1; i >= 0; i--) state.positions.splice(toRemove[i], 1);
+
+    // 2. Equity (this symbol at its live price; others at their entry price)
+    const eq = equity(state, { [symbol]: candle.close });
+    state.peakEquity = Math.max(state.peakEquity, eq);
+    const drawdown = state.peakEquity > 0 ? (state.peakEquity - eq) / state.peakEquity * 100 : 0;
+    state.maxDrawdown = Math.max(state.maxDrawdown, drawdown);
+
+    // 3. New entry — portfolio-level capacity gates (fixes the old
+    //    "one position per backtest run" fidelity gap)
+    if (state.positions.some(p => p.symbol === symbol)) continue;
+    if (ev.ts < (lossCooldownUntil.get(symbol) ?? 0)) continue; // per-symbol post-loss cooldown
+    if (state.positions.length >= PORTFOLIO_MAX_POSITIONS) continue;
+    const evalResult = engine === 'legacy'
+      ? legacyEvaluate(symbol, candles, ev.idx, state, slConfig)
+      : proEvaluate(symbol, candles, ev.idx, state, slConfig);
+    if (!evalResult.willExecute) continue;
+    if (evalResult.tradeType === 'FUTURES' && state.positions.filter(p => p.type === 'FUTURES').length >= PORTFOLIO_MAX_FUTURES) continue;
+    const pos = engine === 'legacy'
+      ? openPositionLegacy(symbol, candles, ev.idx, state, evalResult.tradeType as 'SPOT' | 'FUTURES', evalResult.side, evalResult.signalScore, slConfig)
+      : openPositionPro(symbol, candles, ev.idx, state, evalResult.tradeType as 'SPOT' | 'FUTURES', evalResult.side, evalResult.signalScore, slConfig);
+    if (pos) {
+      const entryNotional = pos.type === 'SPOT' ? pos.quantity * candle.close : pos.sizeUsd;
+      const entryFee = entryNotional * FEE_PERCENT;
+      const slippage = entryNotional * SLIPPAGE_PERCENT;
+      const totalEntryCost = entryFee + slippage;
+      state.cash -= totalEntryCost;
+      state.totalFees += totalEntryCost;
+      if (pos.type === 'SPOT') { state.cash -= pos.quantity * candle.close; } else { state.cash -= pos.sizeUsd; }
+      state.positions.push(pos);
+    }
+  }
+
   const totalTrades = state.closedTrades.length;
   const wins = state.closedTrades.filter(t => t.pnl > 0).length;
   const losses = totalTrades - wins;
@@ -442,18 +638,20 @@ export async function runBacktestSweep(options: BacktestOptions): Promise<SweepR
     throw new Error('No symbols with sufficient data');
   }
 
-  // Run sweep
+  // Run sweep — multi-symbol runs use the portfolio backtest so the live
+  // capacity gates (maxPositions=7, maxFutures=2) actually bind; a single
+  // symbol still goes through the per-symbol runner.
   const results: SweepResult[] = [];
   for (const slConfig of slGrid) {
     let totalTrades = 0, wins = 0, netProfit = 0, pfSum = 0, pfCount = 0, expSum = 0, maxDD = 0;
-    for (const { symbol, candles } of histories) {
-      const r = runBacktest(symbol, candles, slConfig, engine);
-      totalTrades += r.totalTrades;
-      wins += r.wins;
-      netProfit += r.netProfit;
-      maxDD = Math.max(maxDD, r.maxDrawdown);
-      if (r.totalTrades > 0) { pfSum += r.profitFactor; pfCount++; expSum += r.expectancy; }
-    }
+    const r = await (histories.length > 1
+      ? runPortfolioBacktest(histories, slConfig, engine)
+      : runBacktest(histories[0].symbol, histories[0].candles, slConfig, engine));
+    totalTrades += r.totalTrades;
+    wins += r.wins;
+    netProfit += r.netProfit;
+    maxDD = Math.max(maxDD, r.maxDrawdown);
+    if (r.totalTrades > 0) { pfSum += r.profitFactor; pfCount++; expSum += r.expectancy; }
     results.push({
       ...slConfig, engine, totalTrades,
       winRate: totalTrades > 0 ? (wins / totalTrades) * 100 : 0,

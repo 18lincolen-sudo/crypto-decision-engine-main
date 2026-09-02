@@ -116,7 +116,7 @@ function setCors(req: { headers: Record<string, string | string[] | undefined> }
   );
   const allow = allowedOrigins.length === 0 || allowedOrigins.includes('*') ? '*' : (originAllowed ? origin : null);
   if (!allow && origin) {
-    console.warn('[cors] blocked origin: ' + origin + ' | allowed: [' + allowedOrigins.join(', ') + '] | path: ' + req.url);
+    console.warn('[cors] blocked origin: ' + origin + ' | allowed: [' + allowedOrigins.join(', ') + ']');
   }
   if (allow) {
     res.setHeader('Access-Control-Allow-Origin', allow);
@@ -235,7 +235,7 @@ const state = {
   realizedPnlTotal: 0,
   pendingLimitOrders: new Map<string, { orderId: string; symbol: string; placedAt: number; expiresAt: number }>(),
   spotHoldings: new Map<string, { entryPrice: number; qty: number; at: number; reason?: string; confidence?: number }>(),
-  engineVersion: ENGINE_VERSIONS.intraday
+  engineVersion: ENGINE_VERSIONS.intraday as string
 };
 
 function json(res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }, status: number, body: unknown): void {
@@ -475,7 +475,7 @@ const simState = {
   running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
   snapshot: null as unknown | null, leaderId: null as string | null,
   leaderHeartbeat: 0, updatedAt: 0, epoch: 0,
-  engineVersion: ENGINE_VERSIONS.intraday
+  engineVersion: ENGINE_VERSIONS.intraday as string
 };
 
 const simEngine = createSimEngine(() => symbols);
@@ -508,7 +508,7 @@ const DEFAULT_LEGACY_SIM_CONFIG = {
   maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
   executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
 };
-const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.legacy };
+const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.legacy as string };
 
 const legacySimEngine = createLegacySimEngine(() => symbols);
 
@@ -536,7 +536,7 @@ const DEFAULT_PRO_SIM_CONFIG = {
   maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
   executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
 };
-const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.pro };
+const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.pro as string };
 
 const proSimEngine = createProSimEngine(() => symbols);
 
@@ -581,9 +581,18 @@ async function hydrateBacktest(): Promise<void> {
   const saved = await backtestStore.get('state');
   if (!saved) return;
   const s = JSON.parse(saved) as BacktestState;
-  backtestState.status = s.status ?? 'idle';
-  backtestState.startedAt = s.startedAt ?? null;
-  backtestState.finishedAt = s.finishedAt ?? null;
+  const hydratedStatus = s.status ?? 'idle';
+  if (hydratedStatus === 'running') {
+    backtestState.status = 'error';
+    backtestState.error = 'interrupted by restart';
+    backtestState.startedAt = null;
+    backtestState.finishedAt = Date.now();
+    await persistBacktest();
+  } else {
+    backtestState.status = hydratedStatus;
+    backtestState.startedAt = s.startedAt ?? null;
+    backtestState.finishedAt = s.finishedAt ?? null;
+  }
   backtestState.results = Array.isArray(s.results) ? s.results : [];
   backtestState.error = s.error ?? null;
   backtestState.engine = s.engine ?? null;
@@ -660,7 +669,7 @@ async function hydrate(): Promise<void> {
     state.openedSymbols = new Map();
   }
   state.realizedPnlTotal = typeof s.realizedPnlTotal === 'number' ? s.realizedPnlTotal : 0;
-  state.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.intraday;
+  state.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.intraday as string;
   state.skippedSymbols = Array.isArray(s.skippedSymbols) ? s.skippedSymbols as { symbol: string; reason: string }[] : [];
   const savedPending = s.pendingLimitOrders;
   if (savedPending && typeof savedPending === 'object') {
@@ -911,7 +920,24 @@ async function scan(): Promise<void> {
     const decisions: ScanResult[] = [];
     const scannedThisRun = new Set();
     state.skippedSymbols = [...unsupportedSymbols];
-    const runningTotals = { totalOpen: ctx ? ctx.openFuturesCount : 0, futuresOpen: ctx ? ctx.openFuturesCount : 0 };
+    // Count exchange positions plus local reservations. A LIMIT order is not
+    // a filled position yet, but it still consumes a symbol/position slot
+    // until it fills, expires, or is cancelled.
+    const reservedEntries = [...state.openedSymbols.entries()]
+      .filter(([sym]) => !state.pendingLimitOrders.has(sym));
+    const activeSymbols = new Set([
+      ...(ctx?.openFutures.map((p) => p.symbol) ?? []),
+      ...state.spotHoldings.keys(),
+      ...state.pendingLimitOrders.keys(),
+      ...reservedEntries.map(([sym]) => sym)
+    ]);
+    const pendingFutures = [...state.pendingLimitOrders.keys()]
+      .filter((sym) => state.openedSymbols.get(sym)?.type === 'FUTURES').length;
+    const reservedFutures = reservedEntries.filter(([, meta]) => meta.type === 'FUTURES').length;
+    const runningTotals = {
+      totalOpen: activeSymbols.size,
+      futuresOpen: (ctx?.openFuturesCount ?? 0) + reservedFutures + pendingFutures
+    };
     const fearGreed = await fetchFearGreed();
 
     const now = Date.now();
@@ -937,8 +963,17 @@ async function scan(): Promise<void> {
       }
     }
 
-    for (const [sym, meta] of state.openedSymbols) {
-      if (meta.type === 'SPOT' && now - meta.at > REENTRY_COOLDOWN_MS) {
+    // A SPOT reservation (openedSymbols entry) has no exchange to confirm a
+    // close in dry-run mode, and in live mode it can otherwise outlive the
+    // actual holding. Expire the reservation after REENTRY_COOLDOWN_MS so the
+    // symbol gets re-scanned; genuine live closes are still reported by
+    // checkClosedSpotPositions / checkClosedFuturesPositions below.
+    for (const [sym, meta] of [...state.openedSymbols]) {
+      if (meta.type !== 'SPOT') continue;
+      // Let an unfilled limit order ride out its full TTL (it cancels itself
+      // and cleans openedSymbols in the expiry block above).
+      if (state.pendingLimitOrders.has(sym)) continue;
+      if (Date.now() - meta.at > REENTRY_COOLDOWN_MS) {
         state.openedSymbols.delete(sym);
       }
     }
@@ -1163,8 +1198,13 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/sim/state') {
     const body = await readJsonBody(req);
     if (body && typeof body === 'object' && body !== null) {
-      if (typeof body.leaderId === 'string') {
-        simState.leaderId = body.leaderId;
+      const incomingLeaderId = typeof body.leaderId === 'string' ? body.leaderId : null;
+      const staleLeader = !simState.leaderId || (Date.now() - simState.leaderHeartbeat) > SIM_LEADER_TIMEOUT_MS;
+      if (simState.running && !staleLeader && incomingLeaderId !== simState.leaderId) {
+        return json(res, 409, { error: 'leader mismatch', leaderId: simState.leaderId });
+      }
+      if (incomingLeaderId) {
+        simState.leaderId = incomingLeaderId;
         simState.leaderHeartbeat = Date.now();
       }
       if (body.snapshot && typeof body.snapshot === 'object') {

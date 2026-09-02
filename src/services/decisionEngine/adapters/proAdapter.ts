@@ -40,7 +40,7 @@ import {
 } from '../../proAlgEngine';
 import type { Candle } from '../../tradeEngine';
 import { computeProAdvancedAnalysis } from '../../proAdvancedAnalysis';
-import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
+import { computeDrawdownFactor, computeSizingMultiplier, summarizeRecentPerformance, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
 import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
 // ── Type Mappings ─────────────────────────────────────────────────────────────
@@ -93,6 +93,8 @@ interface ProPipelineContext extends DecisionContext {
 }
 
 // ── Pipeline Stages ───────────────────────────────────────────────────────────
+
+const proResultCache = new Map<string, { result: unknown; h1Last: number }>();
 
 class DetectRegimeStage implements PipelineStage<ProPipelineContext> {
   name = 'detect-regime';
@@ -306,50 +308,62 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
   }
 
   execute(context: DecisionContext): unknown {
-    // Compute adaptive sizing multiplier
-    const closedTrades = (context.closedTrades ?? []) as ClosedTradeRecord[];
-    let sizingMultiplier = 1.0;
-    if (closedTrades.length >= 5) {
-      const perf = {
-        sampleSize: closedTrades.length,
-        lossStreak: 0,
-        winStreak: 0,
-        winRate: 0.5
-      };
-      sizingMultiplier = computeSizingMultiplier(perf, context.portfolio.dailyDrawdownPercent);
-    }
+    const h1Last = context.candles.h1?.length ? context.candles.h1[context.candles.h1.length - 1].timestamp : 0;
+    const p = context.portfolio;
+    const portfolioKey = `${p.dailyDrawdownPercent.toFixed(2)}|${p.weeklyDrawdownPercent.toFixed(2)}|${p.openPositionsCount}|${p.openFuturesPositionsCount}|${p.totalLeveragedExposureUsd.toFixed(2)}|${Object.entries(p.existingExposureByAsset || {}).sort().map(([k,v]) => `${k}=${v.toFixed(2)}`).join(',')}`;
+    const closedTradesKey = (context.closedTrades || []).map(t => `${t.pnl.toFixed(2)}:${t.at}:${t.symbol}`).join(',');
+    const configKey = `${context.config?.minConfidenceOverride ?? 'default'}|${context.config?.maxPositions ?? 'default'}|${context.config?.maxFuturesPositions ?? 'default'}`;
+    const cacheKey = `${context.symbol}|${h1Last}|${portfolioKey}|${closedTradesKey}|${configKey}`;
+    const cached = proResultCache.get(cacheKey);
+    if (cached) return cached.result;
 
-    // Run stages
-    let current: ProPipelineContext = { ...context, sizingMultiplier };
-
-    for (const stage of this.stages) {
-      const result = stage.execute(current);
-      current = result.context as ProPipelineContext;
-      if (result.blocked) {
-        return {
-          outcome: 'NO_SIGNAL' as DecisionOutcome,
-          gate: result.gate ?? 'UNKNOWN',
-          logs: [result.blockReason ?? 'Blocked'],
-          summary: result.blockReason ?? 'Blocked',
-          regime: current.regime,
-          signal: current.signal,
-          router: current.router,
-          risk: current.risk
-        };
+    const result = (() => {
+      const orchestratorMult = (context.params as Record<string, unknown> | undefined)?._adaptiveMultiplier as number | undefined;
+      const closedTrades = (context.closedTrades ?? []) as ClosedTradeRecord[];
+      let sizingMultiplier = orchestratorMult ?? 1;
+      if (sizingMultiplier === 1 && closedTrades.length >= 5) {
+        const perf = summarizeRecentPerformance(closedTrades);
+        sizingMultiplier = computeSizingMultiplier(perf, context.portfolio.dailyDrawdownPercent);
       }
-    }
 
-    return {
-      outcome: current.router?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
-      gate: current.risk ? 'RISK' : current.router?.type === 'HOLD' ? (current.router.blockReason ?? 'ROUTE') : 'RISK',
-      logs: current.signal?.penalties ?? [],
-      summary: current.router?.reason ?? 'No signal',
-      regime: current.regime,
-      signal: current.signal,
-      router: current.router,
-      risk: current.risk,
-      advancedAnalysis: current.advancedAnalysis
-    };
+      let current: ProPipelineContext = { ...context, sizingMultiplier };
+
+      for (const stage of this.stages) {
+        const stageResult = stage.execute(current);
+        current = stageResult.context as ProPipelineContext;
+        if (stageResult.blocked) {
+          return {
+            outcome: 'NO_SIGNAL' as DecisionOutcome,
+            gate: stageResult.gate ?? 'UNKNOWN',
+            logs: [stageResult.blockReason ?? 'Blocked'],
+            summary: stageResult.blockReason ?? 'Blocked',
+            regime: current.regime,
+            signal: current.signal,
+            router: current.router,
+            risk: current.risk
+          };
+        }
+      }
+
+      return {
+        outcome: current.router?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
+        gate: current.risk ? 'RISK' : current.router?.type === 'HOLD' ? (current.router.blockReason ?? 'ROUTE') : 'RISK',
+        logs: current.signal?.penalties ?? [],
+        summary: current.router?.reason ?? 'No signal',
+        regime: current.regime,
+        signal: current.signal,
+        router: current.router,
+        risk: current.risk,
+        advancedAnalysis: current.advancedAnalysis
+      };
+    })();
+
+    proResultCache.set(cacheKey, { result, h1Last });
+    if (proResultCache.size > 200) {
+      const first = proResultCache.keys().next().value;
+      if (first) proResultCache.delete(first);
+    }
+    return result;
   }
 
   normalize(output: unknown, context: DecisionContext): DecisionResult {
@@ -368,12 +382,14 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
     const confidence = result.signal?.confidence ?? 0;
     const tradeType = result.router ? mapTradeType(result.router.type) : 'HOLD';
     const direction = result.router ? mapDirection(result.router.side) : 'NONE';
+    const minConf = (context.config?.minConfidenceOverride ?? (context.params as Record<string, unknown> | undefined)?.minConfidenceOverride) as number | undefined;
+    const blockedByConfidence = typeof minConf === 'number' && result.outcome === 'SIGNAL' && confidence < minConf;
 
     return {
       engineId: this.id,
       symbol: context.symbol,
-      outcome: result.outcome,
-      gate: result.gate,
+      outcome: blockedByConfidence ? 'NO_SIGNAL' : result.outcome,
+      gate: blockedByConfidence ? 'MIN_CONFIDENCE' : result.gate,
       tradeType,
       direction,
       confidence,

@@ -40,11 +40,13 @@ async function fetchKlinesPaged(symbol: string, interval: string, startMs: numbe
       await sleep(300 * (attempt + 1));
     }
     if (!Array.isArray(list) || !list.length) break;
-    for (const c of list) {
-      if (!Array.isArray(c)) continue;
-      out.push({ timestamp: Number(c[0]), open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5]) });
+    for (const row of list) {
+      if (!Array.isArray(row)) continue;
+      out.push({ timestamp: Number(row[0]), open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) });
     }
-    const lastTs = Number(list[list.length - 1][0]);
+    const lastRow = list[list.length - 1];
+    if (!Array.isArray(lastRow)) break;
+    const lastTs = Number(lastRow[0]);
     if (lastTs <= cursor) break;
     cursor = lastTs + 1;
     if (list.length < 1000) break;

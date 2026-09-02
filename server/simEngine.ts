@@ -50,7 +50,7 @@ const intradayStrategy: SimEngineStrategy = {
   telegramTag: 'sim',
   telegramTitle: '🤖 מנוע חדש · Multi-Timeframe',
   statusFooterLabel: 'מצב כולל של הבוט',
-  minConfidence: 40,
+  minConfidence: 52,
   minCandlesForH1View: 0,
   logCandleFetch: true,
 
@@ -112,7 +112,10 @@ const intradayStrategy: SimEngineStrategy = {
         now: Date.now(),
         closedTrades: input.closedTrades,
         config: {
-          minConfidenceOverride: 40,
+          // The server's configured floor comes from the persisted sim config
+          // (DEFAULT_SIM_CONFIG.minConfidenceOverride = 52). The old hardcoded
+          // 40 silently contradicted both the UI default and ALG_intraday.md.
+          minConfidenceOverride: typeof input.config.minConfidenceOverride === 'number' ? input.config.minConfidenceOverride : 52,
           maxPositions: input.config.maxPositions || 7,
           maxFuturesPositions: input.config.maxFuturesPositions || 2
         }
@@ -156,7 +159,7 @@ function convertToSignalEvaluation(
   result: ReturnType<DecisionEngine['evaluate']>,
   currentPrice: number,
   priceChange24h: number,
-  snap: { livePrice?: number; liquidity?: { spreadPercent?: number; quoteVolume24h?: number; quoteVolume24hSpot?: number } }
+  snap: { livePrice?: number; liquidity?: { spreadPercent?: number; quoteVolume24h?: number; quoteVolume24hSpot?: number } | null }
 ): SignalEvaluation {
   const isSignal = result.outcome === 'SIGNAL';
   const tradeType = result.tradeType || 'HOLD';

@@ -29,7 +29,7 @@ services:
       - key: BOT_DRY_RUN
         value: "true"
       - key: BOT_AUTOSTART
-        value: "true"
+        value: "false"
       - key: BOT_RISK_LEVEL
         value: "medium"
       - key: BOT_SYMBOLS
@@ -39,7 +39,9 @@ services:
       - key: BOT_POSITION_PERCENT
         value: "10"
       - key: BOT_MAX_OPEN_POSITIONS
-        value: "9"
+        value: "7"
+      - key: BOT_MAX_FUTURES_POSITIONS
+        value: "2"
       - key: BOT_SCAN_CONCURRENCY
         value: "5"
       - key: BOT_SCAN_INTERVAL_SECONDS

@@ -101,7 +101,7 @@ export function ProSimulationBotProvider({ children }: { children: ReactNode }) 
   // Local fallback engine — same role as the other two contexts' localSim.
   const localSim = useProSimulationBot({
     config,
-    isRunning,
+    isRunning: isRunning && serverSnapshot === null,
     cryptoData: cryptoData || [],
     fearGreedIndex
   });

@@ -41,7 +41,7 @@ import type {
   RiskParametersResult,
   ActivePosition
 } from '../../../types/crypto';
-import { computeDrawdownFactor, computeSizingMultiplier, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
+import { computeDrawdownFactor, computeSizingMultiplier, summarizeRecentPerformance, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
 import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
 // ── Type Mappings ─────────────────────────────────────────────────────────────
@@ -94,6 +94,8 @@ interface LegacyPipelineContext extends DecisionContext {
 }
 
 // ── Pipeline Stages ───────────────────────────────────────────────────────────
+
+const legacyResultCache = new Map<string, { result: unknown; h1Last: number }>();
 
 class DetectRegimeStage implements PipelineStage<LegacyPipelineContext> {
   name = 'detect-regime';
@@ -295,47 +297,62 @@ export class LegacyAdapter implements EngineAdapter<LegacyPipelineContext> {
   }
 
   execute(context: DecisionContext): unknown {
-    // Compute adaptive sizing multiplier
-    const closedTrades = (context.closedTrades ?? []) as ClosedTradeMetric[];
-    let sizingMultiplier = 1;
-    if (closedTrades.length >= 5) {
-      sizingMultiplier = computeSizingMultiplier(
-        { sampleSize: closedTrades.length, lossStreak: 0, winStreak: 0, winRate: 0.5 },
-        context.portfolio.dailyDrawdownPercent
-      );
-    }
+    const h1Last = context.candles.h1?.length ? context.candles.h1[context.candles.h1.length - 1].timestamp : 0;
+    const p = context.portfolio;
+    const portfolioKey = `${p.dailyDrawdownPercent.toFixed(2)}|${p.weeklyDrawdownPercent.toFixed(2)}|${p.openPositionsCount}|${p.openFuturesPositionsCount}|${p.totalLeveragedExposureUsd.toFixed(2)}|${Object.entries(p.existingExposureByAsset || {}).sort().map(([k,v]) => `${k}=${v.toFixed(2)}`).join(',')}`;
+    const closedTradesKey = (context.closedTrades || []).map(t => `${t.pnl.toFixed(2)}:${t.at}:${t.symbol}`).join(',');
+    const configKey = `${context.config?.minConfidenceOverride ?? 'default'}|${context.config?.maxPositions ?? 'default'}|${context.config?.maxFuturesPositions ?? 'default'}`;
+    const cacheKey = `${context.symbol}|${h1Last}|${portfolioKey}|${closedTradesKey}|${configKey}`;
+    const cached = legacyResultCache.get(cacheKey);
+    if (cached) return cached.result;
 
-    // Run stages
-    let current: LegacyPipelineContext = { ...context, sizingMultiplier };
-
-    for (const stage of this.stages) {
-      const result = stage.execute(current);
-      current = result.context as LegacyPipelineContext;
-      if (result.blocked) {
-        return {
-          outcome: 'NO_SIGNAL' as DecisionOutcome,
-          gate: result.gate ?? 'UNKNOWN',
-          logs: [result.blockReason ?? 'Blocked'],
-          summary: result.blockReason ?? 'Blocked',
-          layer0: current.layer0,
-          layer1: current.layer1,
-          layer2: current.layer2,
-          layer3: current.layer3
-        };
+    const result = (() => {
+      const orchestratorMult = (context.params as Record<string, unknown> | undefined)?._adaptiveMultiplier as number | undefined;
+      const closedTrades = (context.closedTrades ?? []) as ClosedTradeMetric[];
+      let sizingMultiplier = orchestratorMult ?? 1;
+      if (sizingMultiplier === 1 && closedTrades.length >= 5) {
+        const perf = summarizeRecentPerformance(closedTrades);
+        sizingMultiplier = computeSizingMultiplier(perf, context.portfolio.dailyDrawdownPercent);
       }
-    }
 
-    return {
-      outcome: current.layer2?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
-      gate: current.layer3 ? 'RISK' : current.layer2?.type === 'HOLD' ? (current.layer2.blockReason ?? 'ROUTE') : 'RISK',
-      logs: current.layer1?.penalties ?? [],
-      summary: current.layer2?.reason ?? 'No signal',
-      layer0: current.layer0,
-      layer1: current.layer1,
-      layer2: current.layer2,
-      layer3: current.layer3,
-      entryTiming: current.entryTiming
-    };
+      let current: LegacyPipelineContext = { ...context, sizingMultiplier };
+
+      for (const stage of this.stages) {
+        const stageResult = stage.execute(current);
+        current = stageResult.context as LegacyPipelineContext;
+        if (stageResult.blocked) {
+          return {
+            outcome: 'NO_SIGNAL' as DecisionOutcome,
+            gate: stageResult.gate ?? 'UNKNOWN',
+            logs: [stageResult.blockReason ?? 'Blocked'],
+            summary: stageResult.blockReason ?? 'Blocked',
+            layer0: current.layer0,
+            layer1: current.layer1,
+            layer2: current.layer2,
+            layer3: current.layer3
+          };
+        }
+      }
+
+      return {
+        outcome: current.layer2?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
+        gate: current.layer3 ? 'RISK' : current.layer2?.type === 'HOLD' ? (current.layer2.blockReason ?? 'ROUTE') : 'RISK',
+        logs: current.layer1?.penalties ?? [],
+        summary: current.layer2?.reason ?? 'No signal',
+        layer0: current.layer0,
+        layer1: current.layer1,
+        layer2: current.layer2,
+        layer3: current.layer3,
+        entryTiming: current.entryTiming
+      };
+    })();
+
+    legacyResultCache.set(cacheKey, { result, h1Last });
+    if (legacyResultCache.size > 200) {
+      const first = legacyResultCache.keys().next().value;
+      if (first) legacyResultCache.delete(first);
+    }
+    return result;
   }
 
   normalize(output: unknown, context: DecisionContext): DecisionResult {
@@ -354,12 +371,14 @@ export class LegacyAdapter implements EngineAdapter<LegacyPipelineContext> {
     const confidence = result.layer1?.confidence ?? 0;
     const tradeType = result.layer2 ? mapTradeType(result.layer2.type) : 'HOLD';
     const direction = result.layer2 ? mapDirection(result.layer2.side) : 'NONE';
+    const minConf = (context.config?.minConfidenceOverride ?? (context.params as Record<string, unknown> | undefined)?.minConfidenceOverride) as number | undefined;
+    const blockedByConfidence = typeof minConf === 'number' && result.outcome === 'SIGNAL' && confidence < minConf;
 
     return {
       engineId: this.id,
       symbol: context.symbol,
-      outcome: result.outcome,
-      gate: result.gate,
+      outcome: blockedByConfidence ? 'NO_SIGNAL' : result.outcome,
+      gate: blockedByConfidence ? 'MIN_CONFIDENCE' : result.gate,
       tradeType,
       direction,
       confidence,

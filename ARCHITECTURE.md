@@ -29,7 +29,7 @@
 │                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Render (Backend Worker)                         │
-│  https://crypto-decision-engine-main.onrender.com                   │
+│  https://crypto-decision-engine-main-hev8.onrender.com                  │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────┐      │
 │  │  tradingWorker.ts (Node.js HTTP Server)                   │      │

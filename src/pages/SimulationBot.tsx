@@ -13,6 +13,9 @@ import { useCryptoData } from '../hooks/useCryptoData';
 import { SIM_BOT_STORAGE_KEY } from '../hooks/useSimulationBot';
 import { LEGACY_SIM_BOT_STORAGE_KEY } from '../hooks/useLegacySimulationBot';
 import { PRO_SIM_BOT_STORAGE_KEY } from '../hooks/useProSimulationBot';
+import { SimulationBotProvider } from '../contexts/SimulationBotContext';
+import { LegacySimulationBotProvider } from '../contexts/LegacySimulationBotContext';
+import { ProSimulationBotProvider } from '../contexts/ProSimulationBotContext';
 
 // Keys that hold the bots' remembered history (positions/trades/equity).
 // Distinct from workerConfig/theme/credentials — those are connection/app
@@ -25,7 +28,7 @@ const SIM_CACHE_KEYS = [
   'crypto-portfolio'
 ];
 
-const SimulationBot = () => {
+const SimulationBotPage = () => {
   const intraday = useSimulationBotContext();
   const legacy = useLegacySimulationBotContext();
   const pro = useProSimulationBotContext();
@@ -328,5 +331,15 @@ const SimulationBot = () => {
   );
 };
 
-export default SimulationBot;
+const SimulationBotWithProvider = () => (
+  <SimulationBotProvider>
+    <LegacySimulationBotProvider>
+      <ProSimulationBotProvider>
+        <SimulationBotPage />
+      </ProSimulationBotProvider>
+    </LegacySimulationBotProvider>
+  </SimulationBotProvider>
+);
+
+export default SimulationBotWithProvider;
 

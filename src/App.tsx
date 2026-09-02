@@ -6,9 +6,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import { SimulationBotProvider } from "./contexts/SimulationBotContext";
-import { LegacySimulationBotProvider } from "./contexts/LegacySimulationBotContext";
-import { ProSimulationBotProvider } from "./contexts/ProSimulationBotContext";
 import { WorkerAuthProvider } from "./contexts/WorkerAuthContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Index from "./pages/Index";
@@ -25,8 +22,8 @@ const queryClient = new QueryClient({
     queries: {
       retry: 3,
       retryDelay: attemptIndex => Math.min(1000 * 2 ** attemptIndex, 30000),
-      staleTime: 5 * 60 * 1000, // 5 minutes
-      gcTime: 10 * 60 * 1000, // 10 minutes
+      staleTime: 5 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
     },
   },
 });
@@ -41,9 +38,6 @@ const App = () => {
             <Sonner />
             <BrowserRouter>
               <WorkerAuthProvider>
-              <SimulationBotProvider>
-              <LegacySimulationBotProvider>
-              <ProSimulationBotProvider>
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/portfolio" element={<Portfolio />} />
@@ -54,9 +48,6 @@ const App = () => {
                 <Route path="/backtest-results" element={<BacktestResults />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
-              </ProSimulationBotProvider>
-              </LegacySimulationBotProvider>
-              </SimulationBotProvider>
               </WorkerAuthProvider>
             </BrowserRouter>
           </TooltipProvider>

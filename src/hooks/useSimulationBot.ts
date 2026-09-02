@@ -455,7 +455,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         now: Date.now(),
         closedTrades: closedTradeRecords,
         config: {
-          minConfidenceOverride: 40,
+          minConfidenceOverride: config.minConfidenceOverride,
           maxPositions: config.maxPositions || 7,
           maxFuturesPositions: config.maxFuturesPositions || 2
         }

@@ -60,7 +60,7 @@ export type { AdaptiveRiskInput, ClosedTradeRecord, PerformanceWindow } from './
 // it always gets DEFAULT_INTRADAY_PARAMS unmodified. Both knobs are being
 // evaluated against real simulation results before being considered for the
 // live bot. See each flag's own doc comment in intradayParams.ts.
-const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
+export const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
   allowShortDuringHighVolatility: true,
   meanReversionMinStopAtrMult: 1.6,
   meanReversionMinStopPercent: 0.25,
@@ -205,195 +205,6 @@ export function isInEntryCooldown(cooldownAt: number | undefined, now: number = 
   return typeof cooldownAt === 'number' && now - cooldownAt < ENTRY_COOLDOWN_MS;
 }
 
-// ── 1. Evaluation ─────────────────────────────────────────────────────────────
-// Builds the per-symbol SignalEvaluation list: runs the shared decision engine
-// on every READY symbol, then applies the portfolio-level guards (circuit
-// breakers, max positions, already-held/-queued) that the decision engine
-// itself can't know about.
-
-export interface EvaluationContext {
-  cryptoData: CryptoData[];
-  /** Multi-timeframe snapshots keyed by BASE asset (e.g. "LIT", not "LITUSDT") — normalize before calling. */
-  mtfData: Record<string, MultiTimeframeSnapshot>;
-  positions: SimPosition[];
-  pending: PendingOrder[];
-  config: SimBotConfig;
-  equity: number;
-  initialAmount: number;
-  dailyDrawdownPercent: number;
-  weeklyDrawdownPercent: number;
-  totalLeveragedExposureUsd: number;
-  /** Current notional exposure per asset for per-asset cap checks. Optional:
-   *  open positions are folded in below regardless, this is only for exposure
-   *  the caller tracks outside `positions`. */
-  existingExposureByAsset?: Record<string, number>;
-  /** Adaptive risk-per-trade override (computed outside, passed in) */
-  riskPerTradePercent?: number;
-  /** Closed-trade history (newest- or oldest-first, `at` is what orders it)
-   *  driving adaptive sizing and the post-losing-streak entry cooldown. Omit
-   *  to run with base sizing and no cooldown. */
-  closedTrades?: ClosedTradeRecord[];
-  /** Correlation gate tuning — see correlation.ts for the defaults' rationale. */
-  correlationThreshold?: number;
-  maxCorrelatedPositions?: number;
-  correlationLookback?: number;
-  /** false only while the client engine is paused; the server engine is only ticked while running, so it never needs this. */
-  isRunning?: boolean;
-  /** Normalizes a symbol (bare or suffixed) to the base asset — differs slightly by caller (toBaseAsset vs a local equivalent) but must match how mtfData/positions/pending are keyed. */
-  toBase: (symbol: string) => string;
-}
-
-export function buildEvaluations(ctx: EvaluationContext): SignalEvaluation[] {
-  const {
-    cryptoData, mtfData, positions: openPos, pending: queued, config,
-    equity, initialAmount, dailyDrawdownPercent, weeklyDrawdownPercent,
-    totalLeveragedExposureUsd, existingExposureByAsset, isRunning = true, toBase,
-    closedTrades,
-    correlationThreshold = DEFAULT_CORRELATION_THRESHOLD,
-    maxCorrelatedPositions = DEFAULT_MAX_CORRELATED,
-    correlationLookback = DEFAULT_CORRELATION_LOOKBACK
-  } = ctx;
-
-  // Adaptive risk-per-trade. Computed here rather than at the call site so
-  // every runtime gets it — it previously lived in the browser hook alone,
-  // which left the 24/7 server engine sizing every trade off the constant.
-  const baseRiskPercent = DEFAULT_INTRADAY_PARAMS.riskPerTradePercent;
-  const riskPerTradePercent =
-    ctx.riskPerTradePercent ??
-    adaptiveRiskPercentFromHistory(baseRiskPercent, closedTrades || [], dailyDrawdownPercent) ??
-    baseRiskPercent;
-
-  const maxTotalPositions = config.maxPositions || 7;
-  const maxFutures = config.maxFuturesPositions || 2;
-  const futuresCount = openPos.filter((p) => p.type === 'FUTURES').length;
-
-  const isCircuitBreakerDaily = dailyDrawdownPercent >= 8;
-  const isCircuitBreakerWeekly = weeklyDrawdownPercent >= 15;
-
-  // Compute per-asset exposure from open positions (notional USD)
-  const exposureByAsset: Record<string, number> = { ...(existingExposureByAsset || {}) };
-  for (const p of openPos) {
-    const base = toBase(p.symbol);
-    exposureByAsset[base] = (exposureByAsset[base] || 0) + (p.notionalUsd || 0);
-  }
-
-  const portfolio = buildPortfolioRiskStats({
-    portfolioValue: equity,
-    initialAmount,
-    dailyDrawdownPercent,
-    weeklyDrawdownPercent,
-    openPositionsCount: openPos.length,
-    openFuturesPositionsCount: futuresCount,
-    totalLeveragedExposureUsd,
-    existingExposureByAsset: exposureByAsset
-  });
-
-  const openPositionsForEngine = openPos.map((p) => ({ symbol: p.symbol, type: p.type as 'SPOT' | 'FUTURES' }));
-
-  // Correlation gate inputs. The H1 series from the multi-timeframe snapshot
-  // is the right timeframe here: 72 H1 bars is the 3-day window the gate is
-  // tuned for, and every symbol in mtfData carries the same bar grid, which
-  // is what makes the pairwise numbers comparable.
-  const correlationCandles: Record<string, Candle[] | undefined> = {};
-  for (const key of Object.keys(mtfData)) correlationCandles[key] = mtfData[key]?.h1;
-  // Queued entries count as held: they are already committed risk, and
-  // without them a single tick can queue an entire correlated cluster before
-  // any of it becomes a position.
-  const heldForCorrelation: CorrelatedHolding[] = [
-    ...openPos.map((p) => ({ symbol: toBase(p.symbol), direction: toPositionDirection(p.side) })),
-    ...queued
-      .filter((o) => ENTRY_ORDER_SIDES.has(o.side))
-      .map((o) => ({ symbol: toBase(o.symbol), direction: toPositionDirection(o.side) }))
-  ];
-
-  const results: SignalEvaluation[] = [];
-
-  for (const crypto of cryptoData) {
-    const symbol = crypto.symbol.toUpperCase();
-    const currentPrice = crypto.current_price;
-    const priceChange24h = crypto.price_change_percentage_24h || 0;
-
-    const snap = mtfData[toBase(symbol)];
-    if (!snap || snap.status !== 'READY') continue;
-
-    const ev = evaluateSymbolFromSnapshot(
-      snap,
-      { price: currentPrice, priceChange24h },
-      portfolio,
-      openPositionsForEngine,
-      // Without this override, the decision engine's own internal position-
-      // count gate silently used the DEFAULT (hardcoded 5) regardless of the
-      // user's actual config.maxPositions/maxFuturesPositions — so raising
-      // the limit in the UI had no real effect once past 5 positions.
-      {
-        ...DEFAULT_INTRADAY_PARAMS,
-        ...SIM_INTRADAY_PARAMS_OVERRIDE,
-        maxOpenPositions: config.maxPositions || DEFAULT_INTRADAY_PARAMS.maxOpenPositions,
-        maxOpenFutures: config.maxFuturesPositions || DEFAULT_INTRADAY_PARAMS.maxOpenFutures,
-        riskPerTradePercent
-      }
-    );
-
-    // `symbol` here is bare (from cryptoData); queued/openPos entries store
-    // the SUFFIXED symbol (ev.symbol → order.symbol → position.symbol traces
-    // back to snap.symbol). Comparing them directly always returned false, so
-    // the engine could never detect it already held or had queued a symbol.
-    const isQueued = queued.some((o) => toBase(o.symbol) === symbol);
-    const isHeld = openPos.some((p) => toBase(p.symbol) === symbol);
-    const hasExistingFutures = openPos.some((p) => toBase(p.symbol) === symbol && p.type === 'FUTURES');
-
-    // Per-symbol streak cooldown: only block entries on symbols that have
-    // had consecutive losses, and only if the loss was <= 5% of portfolio.
-    // Normalize trade symbols to base assets (e.g. "BTCUSDT" → "BTC") to match
-    // the bare `symbol` from cryptoData — otherwise the per-symbol filter never
-    // matches and the cooldown silently dies.
-    const normalizedClosedTrades = (closedTrades || []).map((t) => ({
-      ...t,
-      symbol: t.symbol ? toBase(t.symbol) : undefined,
-    }));
-    const symbolStreakCooldownUntil = streakCooldownFromHistory(normalizedClosedTrades, equity, symbol);
-    const symbolStreakCooldownActive = isInStreakCooldown(symbolStreakCooldownUntil);
-
-    let status = ev.status;
-    let willExecute = ev.willExecute;
-
-    if (!isRunning) { status = 'הבוט מושבת'; willExecute = false; }
-    else if (isCircuitBreakerWeekly) { status = 'נעילת מערכת שבועית (הפסד >= 15%) — מושבת'; willExecute = false; }
-    else if (isCircuitBreakerDaily) { status = 'הגנת תיק יומית (הפסד >= 8%) — חסום'; willExecute = false; }
-    else if (isQueued) { status = 'פקודה כבר נמצאת בתור ביצוע'; willExecute = false; }
-    else if (openPos.length >= maxTotalPositions) { status = `הגעת למקסימום ${maxTotalPositions} פוזיציות פתוחות`; willExecute = false; }
-    else if (ev.tradeType === 'FUTURES' && futuresCount >= maxFutures) { status = `הגעת למקסימום ${maxFutures} פוזיציות Futures`; willExecute = false; }
-    else if (ev.tradeType === 'FUTURES' && hasExistingFutures) { status = 'קיימת כבר פוזיציית Futures פתוחה'; willExecute = false; }
-    else if (ev.tradeType === 'SPOT' && ev.tradeSide === 'BUY' && isHeld) { status = 'כבר מוחזק בתיק (Spot)'; willExecute = false; }
-    else if (symbolStreakCooldownActive) { status = streakCooldownReason(symbolStreakCooldownUntil as number, symbol); willExecute = false; }
-
-    // Confidence floor — minimum signal quality threshold
-    if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {
-      const minConf = config.minConfidenceOverride ?? 52;
-      if (ev.confidence < minConf) { status = `Confidence נמוך מדי (${ev.confidence} < ${minConf})`; willExecute = false; }
-    }
-
-    // Correlation gate — last, because it is the most expensive check and
-    // only meaningful for a candidate that survived every other gate.
-    if (willExecute && ev.tradeType !== 'HOLD' && ev.tradeSide !== 'NONE') {
-      const gate = evaluateCorrelationGate({
-        symbol,
-        direction: toPositionDirection(ev.tradeSide),
-        held: heldForCorrelation,
-        candlesBySymbol: correlationCandles,
-        threshold: correlationThreshold,
-        maxCorrelated: maxCorrelatedPositions,
-        lookback: correlationLookback
-      });
-      if (!gate.allowed) { status = gate.reason as string; willExecute = false; }
-    }
-
-    results.push({ ...ev, status, willExecute });
-  }
-
-  return results;
-}
-
 // ── 2. Order generation ──────────────────────────────────────────────────────
 // Checks every open position for an exit (SL/TP/trailing/reversal/time-stop
 // via evaluatePositionExit), then queues new entry orders for evaluations
@@ -412,25 +223,21 @@ export interface OrderGenContext {
   priceFor: (symbol: string) => number | undefined;
   buildCandlesForSymbol: (symbol: string) => Candle[];
   computeAtr5: (candles: Candle[]) => number;
-  /** Position-count caps — evaluations were gated against the count as it
-   *  stood at the START of this tick (see buildEvaluations), so several
-   *  symbols can all carry willExecute=true simultaneously. Without
-   *  re-checking a running total as THIS batch is built, a tick where N
-   *  symbols qualify at once queues all N regardless of the cap — observed
-   *  live: 10 MEAN_REVERSION signals fired in the same tick and opened 10
-   *  positions against a configured max of 5. */
+  /** Position-count caps — several symbols can all carry willExecute=true
+   *  simultaneously. Without re-checking a running total as THIS batch is
+   *  built, a tick where N symbols qualify at once queues all N regardless
+   *  of the cap — observed live: 10 MEAN_REVERSION signals fired in the
+   *  same tick and opened 10 positions against a configured max of 5. */
   maxPositions: number;
   maxFuturesPositions: number;
   /** Closed-trade history driving the post-losing-streak entry cooldown.
-   *  buildEvaluations already reflects it in each evaluation's status, but
-   *  this is the authoritative stop: evaluations are memoized per tick while
+   *  This is the authoritative stop: evaluations are memoized per tick while
    *  order generation runs on every heartbeat. */
   closedTrades?: ClosedTradeRecord[];
   /** H1 candles per BASE asset for the WITHIN-BATCH correlation check.
-   *  buildEvaluations gates each candidate against what is already open or
-   *  queued, but every evaluation in a tick is judged against the same
-   *  starting book — so a tick in which a whole correlated cluster fires at
-   *  once passes that gate N times over. Omit to skip the batch check. */
+   *  Every evaluation in a tick is judged against the same starting book —
+   *  so a tick in which a whole correlated cluster fires at once passes
+   *  that gate N times over. Omit to skip the batch check. */
   correlationCandles?: Record<string, Candle[] | undefined>;
   /** Must match how correlationCandles is keyed. Defaults to identity. */
   toBase?: (symbol: string) => string;
@@ -568,7 +375,15 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
       : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-    const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
+    // Adaptive sizing (DecisionEngine path): the decision's risk plan carries
+    // the multiplier computed from recent closed-trade performance (clamped to
+    // [0,1] — it only ever de-risks). Evaluations built outside the engine
+    // (tests / legacy paths) carry no multiplier → 1.
+    const rawRisk = (ev.decision as { risk?: { sizingMultiplier?: number } | null } | null | undefined)?.risk;
+    const riskMult = typeof rawRisk?.sizingMultiplier === 'number' && Number.isFinite(rawRisk.sizingMultiplier)
+      ? Math.max(0, Math.min(1, rawRisk.sizingMultiplier))
+      : 1;
+    const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT') * riskMult;
     if (budget < 5) continue;
 
     const evDirection = toPositionDirection(ev.tradeSide as string);

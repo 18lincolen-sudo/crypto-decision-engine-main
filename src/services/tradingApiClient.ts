@@ -42,7 +42,7 @@ export interface WorkerBotState {
   orders: Record<string, unknown>[];
   skippedSymbols: WorkerSkippedSymbol[];
   health: WorkerHealth;
-  openedSymbols?: string[];
+  openedSymbols?: Record<string, { at: number; type: 'SPOT' | 'FUTURES'; reason?: string; confidence?: number }>;
   maxOpenPositions?: number;
 }
 

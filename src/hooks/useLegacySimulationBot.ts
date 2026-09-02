@@ -360,7 +360,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
         now: Date.now(),
         closedTrades: closedTradeMetrics,
         config: {
-          minConfidenceOverride: 58,
+          minConfidenceOverride: config.minConfidenceOverride,
           maxPositions: config.maxPositions || 7,
           maxFuturesPositions: config.maxFuturesPositions || 2
         }

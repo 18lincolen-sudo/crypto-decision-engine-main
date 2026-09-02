@@ -150,6 +150,10 @@ export interface RiskPlanInput {
    *  with a minimal fallback so high-confidence signals are not lost to
    *  portfolio-cap or structural-stop edge-cases. */
   confidence?: number;
+  /** Adaptive sizing multiplier (clamped to [0,1]) injected by the
+   *  DecisionEngine orchestrator from recent closed-trade performance — it
+   *  only ever de-risks. The live scan() path passes none → 1 (base sizing). */
+  sizingMultiplier?: number;
 }
 
 export interface RiskPlan {
@@ -171,6 +175,8 @@ export interface RiskPlan {
   timeStopMs: number;
   positionPercentOfEquity: number;
   riskPercentUsed: number;
+  /** The sizing multiplier actually applied to this plan (1 = base sizing). */
+  sizingMultiplier: number;
 }
 
 const rejected = (reason: string): RiskPlan => ({
@@ -191,7 +197,8 @@ const rejected = (reason: string): RiskPlan => ({
   maxHoldMs: 0,
   timeStopMs: 0,
   positionPercentOfEquity: 0,
-  riskPercentUsed: 0
+  riskPercentUsed: 0,
+  sizingMultiplier: 1
 });
 
 export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
@@ -250,7 +257,13 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
   const rewardRisk2 = Math.abs(takeProfit2 - entry) / stopDistance;
 
   // ── Size: risk first (§33) ────────────────────────────────────────────────
-  const riskUsd = (input.equity * riskPercent) / 100;
+  // Adaptive sizing (DecisionEngine path): the multiplier comes from recent
+  // closed-trade performance and only ever de-risks (clamped to [0,1]).
+  // Applied to riskUsd BEFORE the caps/min-order checks — exactly like the
+  // legacy engine applies it to the Kelly bet fraction — so every cap below
+  // stays respected on the already-shrunk size.
+  const sizingMultiplier = clamp(input.sizingMultiplier ?? 1, 0, 1);
+  const riskUsd = (input.equity * riskPercent) / 100 * sizingMultiplier;
   let quantity = riskUsd / stopDistance;
   let notionalUsd = quantity * entry;
   let leverage = 1;
@@ -322,6 +335,7 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     maxHoldMs,
     timeStopMs: Math.round(maxHoldMs * params.timeStopFraction),
     positionPercentOfEquity: Number(((marginUsd / input.equity) * 100).toFixed(2)),
-    riskPercentUsed: riskPercent
+    riskPercentUsed: riskPercent,
+    sizingMultiplier
   };
 }
