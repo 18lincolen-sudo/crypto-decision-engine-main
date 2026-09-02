@@ -198,6 +198,7 @@ export default function SimulationEngineColumn({
                   const confidence = safeNumber(rec.confidence);
                   const price = safeNumber(rec.price);
                   const priceChange24h = safeNumber(rec.priceChange24h);
+                  const factors = Array.isArray(rec.factors) ? rec.factors : [];
                   return (
                     <div key={rec.symbol} className="p-3.5 border border-border/40 rounded-lg bg-card/30">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -232,12 +233,12 @@ export default function SimulationEngineColumn({
                         className={`mt-2 flex items-center gap-1 text-xs cursor-pointer hover:underline ${accentClass}`}
                       >
                         <FileText className="w-3 h-3" />
-                        פירוט שכבות החלטה ({rec.factors.length})
+                        פירוט שכבות החלטה ({factors.length})
                         <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
                       </button>
                       {open && (
                         <div className="mt-2 border-t border-border/30 pt-2 space-y-1.5 bg-background/40 p-2.5 rounded">
-                          {rec.factors.map((f: DecisionFactor, i: number) => (
+                          {factors.map((f: DecisionFactor, i: number) => (
                             <div key={i} className="flex items-start justify-between gap-2 text-xs py-1 border-b border-border/20 last:border-0">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.impact === 'positive' ? 'bg-green-400' : f.impact === 'negative' ? 'bg-red-400' : 'bg-muted-foreground'}`} />
