@@ -55,8 +55,9 @@ services:
       - key: BOT_REQUEST_TIMEOUT_MS
         value: "15000"
       - key: CORS_ORIGIN
-        # Restricted to the Netlify frontend origin. No wildcard.
-        value: "https://crypto-d.netlify.app"
+        # Explicit frontend origins only; no wildcard. Keep local origins for
+        # browser testing and the production Netlify origin for deployment.
+        value: "https://crypto-d.netlify.app,http://localhost:8080,http://localhost:5173"
       - key: PORT
         value: "3001"
 

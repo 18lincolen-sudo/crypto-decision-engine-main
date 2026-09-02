@@ -13,6 +13,10 @@ import LivePositionChart from './LivePositionChart';
 import type { CryptoData } from '@/types/crypto';
 import type { SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder, SignalEvaluation, DecisionFactor } from '@/hooks/useSimulationBot';
 
+const safeNumber = (value: unknown, fallback = 0): number => {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+};
+
 export interface EngineColumnProps {
   title: string;
   subtitle: string;
@@ -191,6 +195,9 @@ export default function SimulationEngineColumn({
                   const isFutures = rec.tradeType === 'FUTURES';
                   const isSpot = rec.tradeType === 'SPOT';
                   const open = openLogs.includes(rec.symbol);
+                  const confidence = safeNumber(rec.confidence);
+                  const price = safeNumber(rec.price);
+                  const priceChange24h = safeNumber(rec.priceChange24h);
                   return (
                     <div key={rec.symbol} className="p-3.5 border border-border/40 rounded-lg bg-card/30">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -208,12 +215,12 @@ export default function SimulationEngineColumn({
                           >
                             {isFutures ? `FUTURES ${rec.leverage}x ${rec.tradeSide}` : isSpot ? `SPOT ${rec.tradeSide}` : 'HOLD'}
                           </Badge>
-                          <span className={`text-sm font-bold ${accentClass}`}>ביטחון {rec.confidence.toFixed(1)}%</span>
+                          <span className={`text-sm font-bold ${accentClass}`}>ביטחון {confidence.toFixed(1)}%</span>
                         </div>
                         <div className="text-sm text-muted-foreground">
-                          ${rec.price.toFixed(4)}{' '}
-                          <span className={rec.priceChange24h >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            ({rec.priceChange24h >= 0 ? '+' : ''}{rec.priceChange24h.toFixed(2)}%)
+                          ${price.toFixed(4)}{' '}
+                          <span className={priceChange24h >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            ({priceChange24h >= 0 ? '+' : ''}{priceChange24h.toFixed(2)}%)
                           </span>
                         </div>
                         <Badge variant={rec.willExecute ? 'default' : 'secondary'} className="text-xs">{rec.status}</Badge>
@@ -400,6 +407,10 @@ export default function SimulationEngineColumn({
                 <div className="space-y-2 max-h-96 overflow-y-auto font-mono">
                   {trades.map((trade) => (
                     <div key={trade.id} className="p-2 border border-border/30 rounded bg-card/30">
+                      {(() => {
+                        const tradePrice = safeNumber(trade.price);
+                        const tradePnl = trade.pnl === undefined ? undefined : safeNumber(trade.pnl);
+                        return <>
                       <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div className="flex items-center gap-2 text-xs">
                           {trade.side.includes('buy') || trade.side.includes('long') ? (
@@ -414,15 +425,17 @@ export default function SimulationEngineColumn({
                           <span className="text-muted-foreground">{trade.timestamp}</span>
                         </div>
                         <div className="text-xs">
-                          <span className={accentClass}>${trade.price.toFixed(4)}</span>
-                          {trade.pnl !== undefined && (
-                            <span className={`mr-2 font-bold ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}
+                          <span className={accentClass}>${tradePrice.toFixed(4)}</span>
+                          {tradePnl !== undefined && (
+                            <span className={`mr-2 font-bold ${tradePnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {tradePnl >= 0 ? '+' : ''}${tradePnl.toFixed(2)}
                             </span>
                           )}
                         </div>
                       </div>
                       <div className="text-[10px] text-muted-foreground mt-1 truncate">{trade.reason}</div>
+                      </>;
+                    })()}
                     </div>
                   ))}
                 </div>
