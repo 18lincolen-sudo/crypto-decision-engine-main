@@ -32,7 +32,9 @@ export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from
 // with generateNewOrders and UI components.
 function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceChange24h: number): SignalEvaluation {
   const action = result.direction === 'LONG' ? 'buy' : result.direction === 'SHORT' ? 'sell' : 'hold';
-  const tradeSide = result.direction;
+  const tradeSide = result.tradeType === 'SPOT'
+    ? (result.direction === 'LONG' ? 'BUY' : 'NONE')
+    : result.direction === 'LONG' ? 'LONG' : result.direction === 'SHORT' ? 'SHORT' : 'NONE';
   const isSignal = result.outcome === 'SIGNAL';
 
   return {
