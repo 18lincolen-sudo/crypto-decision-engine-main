@@ -6,7 +6,7 @@
  *   Pullback  : retrace → holds support → momentum turns → confirmation candle
  *   Breakout  : breakout → volume → retest / continuation
  *   Reversion : oversold → rejection → recovery
- *
+ *menachem
  * The engine also refuses to chase: if price is already far beyond the trigger
  * level, the EntryScore is penalised and the trade is skipped.
  */

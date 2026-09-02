@@ -33,3 +33,4 @@ server/.data/
 # not part of the app — kept on disk, not tracked.
 LIST.txt
 binancelist.md
+.env.example
