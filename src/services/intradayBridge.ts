@@ -38,6 +38,7 @@ import {
   VolatilityRegimeType
 } from '../types/crypto';
 import { Regime1H } from './intradayRegime';
+import type { DecisionResult } from './decisionEngine/types';
 
 export type { MultiTimeframeSnapshot } from './marketDataService';
 
@@ -410,4 +411,55 @@ export function evaluatePositionExit(
     lastClosedCandleClose
   };
   return evaluateIntradayExit(view, ctx);
+}
+
+const METRIC_CONFIG: Record<string, { label: string; higherIsBetter: boolean; threshold: number }> = {
+  setupScore: { label: 'Setup Score', higherIsBetter: true, threshold: 50 },
+  entryScore: { label: 'Entry Score', higherIsBetter: true, threshold: 50 },
+  edgeRatio: { label: 'Edge Ratio', higherIsBetter: true, threshold: 1 },
+  netRewardRisk: { label: 'Net R/R', higherIsBetter: true, threshold: 0 },
+  riskPercent: { label: 'Risk %', higherIsBetter: false, threshold: 50 },
+  atrPercentile: { label: 'ATR Percentile', higherIsBetter: false, threshold: 70 },
+  adx: { label: 'ADX', higherIsBetter: true, threshold: 25 },
+  atrPercent: { label: 'ATR %', higherIsBetter: false, threshold: 50 },
+  buyScore: { label: 'Buy Score', higherIsBetter: true, threshold: 50 },
+  sellScore: { label: 'Sell Score', higherIsBetter: true, threshold: 50 },
+  signalScore: { label: 'Signal Score', higherIsBetter: true, threshold: 50 },
+  confidence: { label: 'Confidence', higherIsBetter: true, threshold: 50 },
+};
+
+export function buildFactorsFromDecisionResult(result: DecisionResult): DecisionFactor[] {
+  const factors: DecisionFactor[] = [];
+
+  for (const [key, value] of Object.entries(result.metrics)) {
+    const config = METRIC_CONFIG[key];
+    if (!config) continue;
+
+    let impact: 'positive' | 'negative' | 'neutral' = 'neutral';
+    if (config.higherIsBetter) {
+      if (value >= config.threshold) impact = 'positive';
+      else if (value < config.threshold * 0.6) impact = 'negative';
+    } else {
+      if (value <= config.threshold) impact = 'positive';
+      else if (value > config.threshold * 1.4) impact = 'negative';
+    }
+
+    factors.push({
+      label: config.label,
+      value: typeof value === 'number' ? value.toFixed(2) : String(value),
+      impact,
+      note: result.reasoning?.[0] || result.gate || ''
+    });
+  }
+
+  if (result.gate && result.outcome !== 'SIGNAL') {
+    factors.push({
+      label: 'Gate',
+      value: result.gate,
+      impact: 'neutral',
+      note: result.reasoning?.[0] || ''
+    });
+  }
+
+  return factors;
 }

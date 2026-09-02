@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CryptoData, MarketRegimeResult } from '../types/crypto';
 import { useBackgroundWorker } from './useBackgroundWorker';
 import { Candle, ClosedTradeMetric, formatDynamicPrice } from '../services/tradeEngine';
-import type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
+import type { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
 import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
@@ -53,7 +53,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     reasoning: result.reasoning.join('\n'),
     status: isSignal ? `SIGNAL ${result.tradeType} ${result.direction}` : `NO_SIGNAL [${result.gate}]`,
     willExecute: isSignal,
-    factors: [],
+    factors: buildFactorsFromDecisionResult(result),
     confidenceGap: 0,
     leverage: result.riskPlan?.leverage,
     stopLoss: result.riskPlan?.stopLoss,

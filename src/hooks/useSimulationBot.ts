@@ -6,7 +6,8 @@ import {
   computeAtr5,
   MultiTimeframeSnapshot,
   SignalEvaluation,
-  DecisionFactor
+  DecisionFactor,
+  buildFactorsFromDecisionResult
 } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
@@ -45,7 +46,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     reasoning: result.reasoning.join('\n'),
     status: isSignal ? `SIGNAL ${result.tradeType} ${result.direction}` : `NO_SIGNAL [${result.gate}]`,
     willExecute: isSignal,
-    factors: [],
+    factors: buildFactorsFromDecisionResult(result),
     confidenceGap: 0,
     leverage: result.riskPlan?.leverage,
     stopLoss: result.riskPlan?.stopLoss,
