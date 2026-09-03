@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { X } from 'lucide-react';
-import { PortfolioItem, CryptoData } from '../../types/crypto';
+import { PortfolioItem, CryptoData } from '@cde/engine';
 
 interface CurrentPortfolioItemsProps {
   items: PortfolioItem[];

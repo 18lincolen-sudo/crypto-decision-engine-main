@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { TrendingUp, TrendingDown, Clock, AlertTriangle } from 'lucide-react';
-import { CryptoRecommendation } from '../types/crypto';
+import { CryptoRecommendation } from '@cde/engine';
 
 const safeNumber = (value: unknown, fallback = 0): number => {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;

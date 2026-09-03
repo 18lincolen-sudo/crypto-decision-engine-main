@@ -13,14 +13,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Candle } from '../services/tradeEngine';
-import { detectRegime1H } from '../services/intradayRegime';
-import { detectSetup15M } from '../services/intradaySetup';
-import { confirmEntry5M } from '../services/intradayEntry';
-import { evaluateCostEdge, buildRiskPlan } from '../services/intradayRisk';
-import { evaluateIntradayDecision } from '../services/intradayEngine';
-import { runBacktest } from '../services/intradayBacktest';
-import { DEFAULT_INTRADAY_PARAMS } from '../services/intradayParams';
+import { Candle } from '@cde/engine';
+import { detectRegime1H } from '@cde/engine/analysis';
+import { detectSetup15M } from '@cde/engine/analysis';
+import { confirmEntry5M } from '@cde/engine/analysis';
+import { evaluateCostEdge, buildRiskPlan } from '@cde/engine/analysis';
+import { evaluateIntradayDecision } from '@cde/engine/analysis';
+import { runBacktest } from '@cde/engine/analysis';
+import { DEFAULT_INTRADAY_PARAMS } from '@cde/engine';
 
 const TF = { '1h': 3_600_000, '15m': 900_000, '5m': 300_000 } as const;
 

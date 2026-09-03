@@ -1,6 +1,6 @@
 
 import { useState, useEffect } from 'react';
-import { Portfolio, PortfolioItem, PortfolioAnalysis, CryptoRecommendation } from '../types/crypto';
+import { Portfolio, PortfolioItem, PortfolioAnalysis, CryptoRecommendation } from '@cde/engine';
 import { readStoredJSON, writeStoredJSON, sanitizeNumber, sanitizeSymbol } from '../utils/sanitizer';
 
 const PORTFOLIO_STORAGE_KEY = 'crypto-portfolio';

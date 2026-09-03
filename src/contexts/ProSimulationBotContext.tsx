@@ -15,7 +15,7 @@ import {
   SimPoint,
   PendingOrder
 } from '../hooks/useProSimulationBot';
-import type { SignalEvaluation } from '../services/intradayBridge';
+import type { SignalEvaluation } from '@cde/engine';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';

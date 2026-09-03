@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { calculateTechnicalIndicators } from '../utils/technicalAnalysis';
-import { calculateMACD } from '../utils/advancedTechnicalAnalysis';
-import type { HistoricalPrice } from '../types/crypto';
-import { computeProAdvancedAnalysis } from '../services/proAdvancedAnalysis';
+import { calculateTechnicalIndicators } from '@cde/engine/analysis';
+import { calculateMACD } from '@cde/engine/analysis';
+import type { HistoricalPrice } from '@cde/engine';
+import { computeProAdvancedAnalysis } from '@cde/engine/analysis';
 
 // Regression: the site analysis (which both the Advanced Analysis page and the
 // Pro bot consume) must not produce NaN MACD values or a collapsed volume

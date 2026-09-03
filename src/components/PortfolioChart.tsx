@@ -1,7 +1,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { PortfolioAnalysis } from '../types/crypto';
+import { PortfolioAnalysis } from '@cde/engine';
 
 interface PortfolioChartProps {
   analysis: PortfolioAnalysis;

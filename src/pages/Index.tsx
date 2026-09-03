@@ -13,7 +13,7 @@ import { AlertCircle, BarChart3, TrendingUp } from 'lucide-react';
 import SmartTipsPanel from '../components/SmartTipsPanel';
 import MarketOverview from '../components/MarketOverview';
 import { ExecutiveDashboard } from '../components/dashboard/ExecutiveDashboard';
-import { CryptoRecommendation } from '../types/crypto';
+import { CryptoRecommendation } from '@cde/engine';
 
 const Index = () => {
   const { cryptoData, fearGreedData, recommendations, isLoading, error } = useCryptoData();

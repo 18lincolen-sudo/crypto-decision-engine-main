@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "WebWorker", "DOM"],
+    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -15,5 +15,5 @@
     "noUnusedParameters": false,
     "types": ["node"]
   },
-  "include": ["server", "packages/engine"]
+  "include": ["src"]
 }

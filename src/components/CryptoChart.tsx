@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { coinGeckoApi } from '../services/coinGeckoApi';
 import { Loader2, AlertTriangle } from 'lucide-react';
-import { CryptoChartData } from '../types/crypto';
+import { CryptoChartData } from '@cde/engine';
 
 interface CryptoChartProps {
   symbol: string | null;

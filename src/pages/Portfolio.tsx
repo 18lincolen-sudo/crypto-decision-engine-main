@@ -20,7 +20,7 @@ import ParticleBackground from '../components/ParticleBackground';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Loader2, AlertCircle } from 'lucide-react';
-import { CryptoRecommendation } from '../types/crypto';
+import { CryptoRecommendation } from '@cde/engine';
 
 const Portfolio = () => {
   const { cryptoData, recommendations, isLoading, error } = useCryptoData();

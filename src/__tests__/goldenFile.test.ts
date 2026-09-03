@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateEMA, calculateATR, calculateADX, calculateSupertrend, detectMarketRegime, evaluateSignals } from '../services/tradeEngine';
+import { calculateEMA, calculateATR, calculateADX, calculateSupertrend, detectMarketRegime, evaluateSignals } from '@cde/engine/execution';
 
 describe('Indicator golden-file tests', () => {
   const candles = [

@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CryptoData, CryptoRecommendation, MarketRegimeResult } from '../types/crypto';
+import { CryptoData, CryptoRecommendation, MarketRegimeResult } from '@cde/engine';
 import { useBackgroundWorker } from './useBackgroundWorker';
-import { Candle, formatDynamicPrice } from '../services/tradeEngine';
+import type { Candle } from '@cde/engine';
+import { formatDynamicPrice } from '@cde/engine/execution';
 import {
   computeAtr5,
-  MultiTimeframeSnapshot,
   SignalEvaluation,
   DecisionFactor,
   buildFactorsFromDecisionResult
-} from '../services/intradayBridge';
-import { getUniverseMarketData } from '../services/marketDataService';
-import { toBaseAsset } from '../services/assetUniverse';
+} from '@cde/engine';
+import type { MultiTimeframeSnapshot } from '@cde/engine/market-data';
+import { getUniverseMarketData } from '@cde/engine/market-data';
+import { toBaseAsset } from '@cde/engine/market-data';
 import {
   generateNewOrders,
   fillDueOrders,
@@ -20,13 +21,13 @@ import {
   SimPoint,
   PendingOrder,
   SimBotConfig
-} from '../services/simExecution';
-import type { ClosedTradeRecord } from '../services/adaptiveRisk';
-import { DecisionEngine, IntradayAdapter } from '../services/decisionEngine';
-import type { DecisionResult, DecisionContext } from '../services/decisionEngine';
+} from '@cde/engine/execution';
+import type { ClosedTradeRecord } from '@cde/engine/execution';
+import { DecisionEngine, IntradayAdapter } from '@cde/engine';
+import type { DecisionResult, DecisionContext } from '@cde/engine';
 
-export type { SignalEvaluation, DecisionFactor } from '../services/intradayBridge';
-export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../services/simExecution';
+export type { SignalEvaluation, DecisionFactor } from '@cde/engine';
+export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '@cde/engine/execution';
 
 // Convert DecisionEngine result to SignalEvaluation for backward compatibility
 // with generateNewOrders and UI components.

@@ -5,17 +5,17 @@
 // providing a single entry point for all three engines. Order generation still
 // uses the shared simExecution.ts for fill/slippage/fee logic.
 
-import { DecisionEngine, IntradayAdapter } from '../src/services/decisionEngine';
+import { DecisionEngine, IntradayAdapter } from '@cde/engine';
 import {
   createGenericSimEngine,
   SimEngineStrategy,
   StrategyTickInput,
   SimSnapshot
 } from './simEngineFactory';
-import { generateNewOrders } from '../src/services/simExecution';
-import { SignalEvaluation, DecisionFactor } from '../src/services/intradayBridge';
-import { Candle, PortfolioRiskStats } from '../src/services/tradeEngine';
-import { IntradayParams, DEFAULT_INTRADAY_PARAMS } from '../src/services/intradayParams';
+import { generateNewOrders } from '@cde/engine/execution';
+import { SignalEvaluation, DecisionFactor } from '@cde/engine';
+import { Candle, PortfolioRiskStats } from '@cde/engine';
+import { IntradayParams, DEFAULT_INTRADAY_PARAMS } from '@cde/engine';
 
 /** Base asset for a position symbol, keyed the same way the candle maps and
  *  the exposure map are. */
@@ -35,7 +35,7 @@ function exposureByAsset(positions: { symbol: string; notionalUsd?: number }[]):
 }
 
 
-export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../src/services/simExecution';
+export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '@cde/engine/execution';
 export type { SimSnapshot };
 
 // Create the DecisionEngine with IntradayAdapter

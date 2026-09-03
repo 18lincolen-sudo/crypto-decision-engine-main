@@ -5,16 +5,16 @@
 // providing a single entry point for all three engines. Order generation still
 // uses the shared legacySimExecution.ts for fill/slippage/fee logic.
 
-import { DecisionEngine, LegacyAdapter } from '../src/services/decisionEngine';
+import { DecisionEngine, LegacyAdapter } from '@cde/engine';
 import {
   createGenericSimEngine,
   SimEngineStrategy,
   StrategyTickInput,
   SimSnapshot
 } from './simEngineFactory';
-import { generateLegacyOrders, MIN_LEGACY_CANDLES } from '../src/services/legacySimExecution';
-import { SignalEvaluation, DecisionFactor } from '../src/services/intradayBridge';
-import { Candle, PortfolioRiskStats } from '../src/services/tradeEngine';
+import { generateLegacyOrders, MIN_LEGACY_CANDLES } from '@cde/engine/execution';
+import { SignalEvaluation, DecisionFactor } from '@cde/engine';
+import { Candle, PortfolioRiskStats } from '@cde/engine';
 
 /** Base asset for a position symbol, keyed the same way the candle maps and
  *  the exposure map are. */
@@ -34,7 +34,7 @@ function exposureByAsset(positions: { symbol: string; notionalUsd?: number }[]):
 }
 
 
-export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '../src/services/simExecution';
+export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '@cde/engine/execution';
 export type LegacySimSnapshot = SimSnapshot;
 
 // Create the DecisionEngine with LegacyAdapter

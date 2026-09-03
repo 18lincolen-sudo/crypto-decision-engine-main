@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateOptimalEntry, Candle } from '../services/tradeEngine';
+import { calculateOptimalEntry, Candle } from '@cde/engine/execution';
 
 /**
  * Generate realistic oscillating candles with RSI ~ 50 and price centered at basePrice

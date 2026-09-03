@@ -5,7 +5,7 @@
  * Falls back to the static TARGET_SYMBOLS list when the worker is
  * unreachable or not configured — the simulation must keep working offline.
  */
-import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+import { TARGET_SYMBOLS } from '@cde/engine/market-data';
 import { resolveWorkerBaseUrl } from './workerConfig';
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 min — avoid hammering the worker every render

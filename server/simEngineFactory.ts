@@ -17,12 +17,14 @@
 // getSnapshot() already persisted it — cosmetic only, affects nothing but the
 // displayed "last evaluation" timestamp for the few seconds between a
 // restart and the next tick).
-import { formatDynamicPrice, Candle } from '../src/services/tradeEngine';
-import { getAggregatedPrices } from '../src/services/cryptoPriceAggregator';
-import { CryptoData } from '../src/types/crypto';
-import { computeAtr5, MultiTimeframeSnapshot, SignalEvaluation } from '../src/services/intradayBridge';
-import { getUniverseMarketData } from '../src/services/marketDataService';
-import { toBaseAsset } from '../src/services/assetUniverse';
+import { formatDynamicPrice } from '@cde/engine/execution';
+import type { Candle } from '@cde/engine';
+import { getAggregatedPrices } from '@cde/engine/market-data';
+import type { CryptoData } from '@cde/engine';
+import { computeAtr5, SignalEvaluation } from '@cde/engine';
+import type { MultiTimeframeSnapshot } from '@cde/engine/market-data';
+import { getUniverseMarketData } from '@cde/engine/market-data';
+import { toBaseAsset } from '@cde/engine/market-data';
 import {
   fillDueOrders,
   selectFillableOrders,
@@ -31,7 +33,7 @@ import {
   SimPoint,
   PendingOrder,
   SimBotConfig
-} from '../src/services/simExecution';
+} from '@cde/engine/execution';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig };
 

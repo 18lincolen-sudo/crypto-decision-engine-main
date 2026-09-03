@@ -46,7 +46,6 @@ const RealTradingBot = () => {
   // Heartbeat: poll the public /health endpoint with exponential backoff on 429s.
   const { syncStatus, refresh: refreshBot } = useApiPolling<null>(
     async () => {
-      const client = client;
       if (!client.baseUrl || !config.adminToken) {
         setOnline(false);
         setBotState(null);

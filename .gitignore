@@ -34,3 +34,4 @@ server/.data/
 LIST.txt
 binancelist.md
 .env.example
+decisions.baseline*.json

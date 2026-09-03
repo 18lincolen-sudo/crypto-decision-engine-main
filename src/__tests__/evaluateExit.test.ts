@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateExit } from '../services/tradeEngine';
-import type { ActivePosition } from '../types/crypto';
+import { evaluateExit } from '@cde/engine/execution';
+import type { ActivePosition } from '@cde/engine';
 
 function makePosition(overrides: Partial<ActivePosition> = {}): ActivePosition {
   return {

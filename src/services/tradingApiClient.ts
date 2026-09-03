@@ -1,5 +1,8 @@
 // Typed client for the local trading worker (server/tradingWorker.ts or server/dist/worker.js).
-import type { SimBotConfig } from '../hooks/useSimulationBot';
+// SimBotConfig belongs to the engine package, not to this hook — importing it
+// from useSimulationBot.ts was the one place app code reached from a service
+// into the hooks layer. See @cde/engine/execution.
+import type { SimBotConfig } from '@cde/engine/execution';
 import { resolveWorkerBaseUrl as resolveBaseUrl } from './workerConfig';
 // The browser never holds the Bybit secret and never signs orders.
 // Base URL comes from VITE_TRADING_API_URL (set at build time for Netlify),

@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { TrendingUp, TrendingDown, Activity, AlertTriangle, Target } from 'lucide-react';
 import { useCryptoData } from '../hooks/useCryptoData';
-import { CryptoRecommendation, FearGreedIndex } from '../types/crypto';
+import { CryptoRecommendation, FearGreedIndex } from '@cde/engine';
 
 interface MarketOverviewProps {
   /** Recommendations to summarize. Omit to use the shared useCryptoData set.

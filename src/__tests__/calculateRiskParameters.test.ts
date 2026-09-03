@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateRiskParameters } from '../services/tradeEngine';
+import { calculateRiskParameters } from '@cde/engine/execution';
 
 describe('calculateRiskParameters', () => {
   it('returns null for HOLD trade type', () => {

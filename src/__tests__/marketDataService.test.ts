@@ -17,9 +17,9 @@ import {
   getMultiTimeframeData,
   clearMarketDataCache,
   TIMEFRAME_SPECS
-} from '../services/marketDataService';
-import type { Candle } from '../services/tradeEngine';
-import { TARGET_SYMBOLS } from '../shared/targetSymbols';
+} from '@cde/engine/market-data';
+import type { Candle } from '@cde/engine';
+import { TARGET_SYMBOLS } from '@cde/engine/market-data';
 
 // ── fetch mocking helpers ─────────────────────────────────────────────────────
 function makeResponse(body: unknown, status = 200, ok = status >= 200 && status < 300): Response {

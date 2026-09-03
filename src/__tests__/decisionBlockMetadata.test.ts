@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { DecisionEngine, IntradayAdapter, LegacyAdapter, ProAdapter } from '../services/decisionEngine';
-import { buildFactorsFromDecisionResult } from '../services/intradayBridge';
+import { DecisionEngine, IntradayAdapter, LegacyAdapter, ProAdapter } from '@cde/engine';
+import { buildFactorsFromDecisionResult } from '@cde/engine';
 
 /**
  * Regression tests for the "NO_SIGNAL [UNKNOWN] — Blocked Blocked" defect.

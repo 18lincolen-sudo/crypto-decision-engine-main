@@ -1,6 +1,6 @@
 
-import { CryptoData, HistoricalPrice } from '../types/crypto';
-import { CRYPTO_IDS } from './coinGeckoIds';
+import { CryptoData, HistoricalPrice } from '@cde/engine';
+import { CRYPTO_IDS } from '@cde/engine/market-data';
 
 const COINGECKO_BASE_URL = 'https://api.coingecko.com/api/v3';
 

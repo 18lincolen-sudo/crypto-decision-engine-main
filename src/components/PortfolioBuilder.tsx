@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
 import { usePortfolio } from '../hooks/usePortfolio';
-import { CryptoData } from '../types/crypto';
+import { CryptoData } from '@cde/engine';
 import PortfolioSummary from './portfolio/PortfolioSummary';
 import CurrentPortfolioItems from './portfolio/CurrentPortfolioItems';
 import AddCryptoForm from './portfolio/AddCryptoForm';

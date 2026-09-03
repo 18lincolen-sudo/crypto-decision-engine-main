@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { DecisionEngine, IntradayAdapter, LegacyAdapter, ProAdapter } from '../services/decisionEngine';
-import { evaluateIntradayDecision } from '../services/intradayEngine';
-import { DEFAULT_INTRADAY_PARAMS } from '../services/intradayParams';
+import { DecisionEngine, IntradayAdapter, LegacyAdapter, ProAdapter } from '@cde/engine';
+import { evaluateIntradayDecision } from '@cde/engine/analysis';
+import { DEFAULT_INTRADAY_PARAMS } from '@cde/engine';
 
 /**
  * Regression tests for four defects that the existing suite could not catch,

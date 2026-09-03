@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { TrendingDown, TrendingUp, AlertTriangle } from 'lucide-react';
-import { FearGreedIndex } from '../types/crypto';
+import { FearGreedIndex } from '@cde/engine';
 
 interface FearGreedIndicatorProps {
   fearGreedData: FearGreedIndex;

@@ -1,0 +1,12 @@
+{
+  "name": "@cde/engine",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./market-data": "./src/market-data.ts",
+    "./execution": "./src/execution.ts",
+    "./analysis": "./src/analysis.ts"
+  }
+}

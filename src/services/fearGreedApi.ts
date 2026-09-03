@@ -1,5 +1,5 @@
 
-import { FearGreedIndex } from '../types/crypto';
+import { FearGreedIndex } from '@cde/engine';
 import { resolveWorkerBaseUrl } from './workerConfig';
 import { fetchJson, ValidationError } from '../utils/errorHandler';
 

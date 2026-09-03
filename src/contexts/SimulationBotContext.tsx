@@ -9,7 +9,7 @@ import {
 } from '../services/tradingApiClient';
 import type { SimBotSnapshot } from '../services/tradingApiClient';
 import { useSimulationBot, SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder } from '../hooks/useSimulationBot';
-import type { SignalEvaluation } from '../services/intradayBridge';
+import type { SignalEvaluation } from '@cde/engine';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';

@@ -17,18 +17,18 @@ import {
   calculateADX,
   calculateSupertrend,
   ClosedTradeMetric,
-} from './tradeEngine';
+} from '@cde/engine/execution';
 import {
   detectProRegime,
   routeProTradeType,
   calculateProRisk,
   evaluateProExit,
   ProActivePosition,
-} from './proAlgEngine';
-import { computeProAdvancedAnalysis } from './proAdvancedAnalysis';
-import { sizingMultiplierFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT } from './adaptiveRisk';
-import { getCachedHistory, saveCachedHistory } from '../../server/historicalCandleCache';
-import type { ActivePosition, TradeSide, SignalEngineResult } from '../types/crypto';
+  computeProAdvancedAnalysis,
+} from '@cde/engine/analysis';
+import { sizingMultiplierFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT } from '@cde/engine/execution';
+import { getCachedHistory, saveCachedHistory } from './historicalCandleCache';
+import type { ActivePosition, TradeSide, SignalEngineResult } from '@cde/engine';
 
 const BINANCE = 'https://api.binance.com/api/v3';
 

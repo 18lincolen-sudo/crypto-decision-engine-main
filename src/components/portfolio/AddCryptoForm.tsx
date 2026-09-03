@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Plus } from 'lucide-react';
-import { CryptoData, PortfolioItem } from '../../types/crypto';
+import { CryptoData, PortfolioItem } from '@cde/engine';
 
 interface AddCryptoFormProps {
   selectedCrypto: string;

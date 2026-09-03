@@ -56,8 +56,8 @@ async function bybitApiCall<T>(endpoint: string, params: Record<string, string> 
 // Wrapped tokens (WBTC) excluded — same price action as underlying.
 
 import { getActiveSymbols } from './liveUniverse';
-import { TARGET_SYMBOLS as STATIC_TARGET_SYMBOLS } from '../shared/targetSymbols';
-import { toBaseAsset, toBybitSymbol } from './assetUniverse';
+import { TARGET_SYMBOLS as STATIC_TARGET_SYMBOLS } from '@cde/engine/market-data';
+import { toBaseAsset, toBybitSymbol } from '@cde/engine/market-data';
 
 // This file used to carry its own naive USDT-stripping/-adding pair, which (a)
 // duplicated assetUniverse.ts's logic and (b) wasn't idempotent — calling it

@@ -13,7 +13,7 @@ import {
 } from 'recharts';
 import { Target, ShieldAlert, Crosshair, DollarSign, Loader2, Activity, ShoppingBag } from 'lucide-react';
 import { formatFullPrice } from '@/utils/formatPrice';
-import { getAggregatedCandles } from '@/services/cryptoPriceAggregator';
+import { getAggregatedCandles } from '@cde/engine/market-data';
 
 export interface LivePositionChartProps {
   symbol: string;

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { generateLegacyOrders } from '../services/legacySimExecution';
-import { Candle } from '../services/tradeEngine';
-import type { SimPosition, PendingOrder } from '../services/simExecution';
-import type { SignalEvaluation } from '../services/intradayBridge';
+import { generateLegacyOrders } from '@cde/engine/execution';
+import { Candle } from '@cde/engine';
+import type { SimPosition, PendingOrder } from '@cde/engine/execution';
+import type { SignalEvaluation } from '@cde/engine';
 
 // These tests exist because the correlation filter and the adaptive-risk
 // helpers previously existed as EXPORTED BUT UNCALLED functions — the unit

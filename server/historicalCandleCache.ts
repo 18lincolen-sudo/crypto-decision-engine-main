@@ -17,7 +17,7 @@
  * Use dynamic import() with a Node.js environment check.
  */
 
-import type { Candle } from '../src/services/tradeEngine';
+import type { Candle } from '@cde/engine';
 
 // Lazy-initialized modules — only loaded when first accessed in Node.js env.
 // This prevents Vite from trying to bundle server-only code for the browser.

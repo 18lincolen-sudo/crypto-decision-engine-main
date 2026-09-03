@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { TrendingUp, TrendingDown, BarChart3 } from 'lucide-react';
-import { PortfolioAnalysis, CryptoRecommendation, CryptoData } from '../../types/crypto';
+import { PortfolioAnalysis, CryptoRecommendation, CryptoData } from '@cde/engine';
 
 interface PortfolioHoldingsProps {
   portfolioAnalysis: PortfolioAnalysis | null;

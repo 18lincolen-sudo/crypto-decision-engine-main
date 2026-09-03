@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateIntradayExit } from '../services/intradayExit';
-import { DEFAULT_INTRADAY_PARAMS } from '../services/intradayParams';
-import { evaluateProExit, PRO_FUTURES_TIME_STOP_EXTENDED_HOURS } from '../services/proAlgEngine';
+import { evaluateIntradayExit } from '@cde/engine/analysis';
+import { DEFAULT_INTRADAY_PARAMS } from '@cde/engine';
+import { evaluateProExit, PRO_FUTURES_TIME_STOP_EXTENDED_HOURS } from '@cde/engine/analysis';
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;

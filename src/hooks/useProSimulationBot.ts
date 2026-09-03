@@ -12,18 +12,19 @@
 // and serves as the LOCAL FALLBACK when the server isn't reachable, same
 // role useSimulationBot.ts / useLegacySimulationBot.ts play for their bots.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CryptoData, MarketRegimeResult } from '../types/crypto';
+import { CryptoData, MarketRegimeResult } from '@cde/engine';
 import { useBackgroundWorker } from './useBackgroundWorker';
-import { Candle, formatDynamicPrice } from '../services/tradeEngine';
-import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
-import { getUniverseMarketData } from '../services/marketDataService';
-import { toBaseAsset } from '../services/assetUniverse';
-import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
+import type { Candle } from '@cde/engine';
+import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '@cde/engine';
+import { getUniverseMarketData } from '@cde/engine/market-data';
+import { toBaseAsset } from '@cde/engine/market-data';
+import { fillDueOrders, selectFillableOrders } from '@cde/engine/execution';
 import {
   generateProOrders,
-  activeMarketRegimesFrom,
-  MIN_PRO_CANDLES
-} from '../services/proSimExecution';
+  activeProMarketRegimesFrom as activeMarketRegimesFrom,
+  MIN_PRO_CANDLES,
+  formatDynamicPrice
+} from '@cde/engine/execution';
 import type {
   SimPosition,
   SimTrade,
@@ -31,9 +32,9 @@ import type {
   PendingOrder,
   SimBotConfig
 } from './useSimulationBot';
-import { DecisionEngine, ProAdapter } from '../services/decisionEngine';
-import type { DecisionResult, DecisionContext } from '../services/decisionEngine';
-import { ProMarketRegimeResult } from '../services/proAlgEngine';
+import { DecisionEngine, ProAdapter } from '@cde/engine';
+import type { DecisionResult, DecisionContext } from '@cde/engine';
+import { ProMarketRegimeResult } from '@cde/engine/analysis';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from './useSimulationBot';
 

@@ -4,9 +4,9 @@ import { coinGeckoApi } from '../services/coinGeckoApi';
 import { bybitApi } from '../services/bybitApi';
 import { binancePublicApi } from '../services/binancePublicApi';
 import { fearGreedApi } from '../services/fearGreedApi';
-import { calculateTechnicalIndicators } from '../utils/technicalAnalysis';
-import { generateSmartRecommendation } from '../utils/smartRecommendationEngine';
-import { CryptoData, CryptoRecommendation, HistoricalPrice } from '../types/crypto';
+import { calculateTechnicalIndicators } from '@cde/engine/analysis';
+import { generateSmartRecommendation } from '@cde/engine/analysis';
+import { CryptoData, CryptoRecommendation, HistoricalPrice } from '@cde/engine';
 import { getActiveSymbols } from '../services/liveUniverse';
 
 /** Map a Bybit USDT symbol to our internal symbol name (e.g. BTCUSDT → btc) */

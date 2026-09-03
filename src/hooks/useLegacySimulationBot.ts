@@ -11,18 +11,20 @@
 // and serves as the LOCAL FALLBACK when the server isn't reachable, same role
 // useSimulationBot.ts plays for the new engine.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CryptoData, MarketRegimeResult } from '../types/crypto';
+import { CryptoData, MarketRegimeResult } from '@cde/engine';
 import { useBackgroundWorker } from './useBackgroundWorker';
-import { Candle, ClosedTradeMetric, formatDynamicPrice } from '../services/tradeEngine';
-import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
-import { getUniverseMarketData } from '../services/marketDataService';
-import { toBaseAsset } from '../services/assetUniverse';
-import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
+import type { Candle } from '@cde/engine';
+import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '@cde/engine';
+import { getUniverseMarketData } from '@cde/engine/market-data';
+import { toBaseAsset } from '@cde/engine/market-data';
+import { fillDueOrders, selectFillableOrders } from '@cde/engine/execution';
 import {
   generateLegacyOrders,
-  activeMarketRegimesFrom,
-  MIN_LEGACY_CANDLES
-} from '../services/legacySimExecution';
+  activeLegacyMarketRegimesFrom as activeMarketRegimesFrom,
+  MIN_LEGACY_CANDLES,
+  formatDynamicPrice
+} from '@cde/engine/execution';
+import type { ClosedTradeMetric } from '@cde/engine/execution';
 import type {
   SimPosition,
   SimTrade,
@@ -30,8 +32,8 @@ import type {
   PendingOrder,
   SimBotConfig
 } from './useSimulationBot';
-import { DecisionEngine, LegacyAdapter } from '../services/decisionEngine';
-import type { DecisionResult, DecisionContext } from '../services/decisionEngine';
+import { DecisionEngine, LegacyAdapter } from '@cde/engine';
+import type { DecisionResult, DecisionContext } from '@cde/engine';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from './useSimulationBot';
 

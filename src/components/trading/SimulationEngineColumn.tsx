@@ -10,7 +10,7 @@ import { Play, Pause, Square, Zap, Settings, ArrowDownCircle, ArrowUpCircle, Che
 import PortfolioPulseCard from './PortfolioPulseCard';
 import ProfitScale from './ProfitScale';
 import LivePositionChart from './LivePositionChart';
-import type { CryptoData } from '@/types/crypto';
+import type { CryptoData } from '@cde/engine';
 import type { SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder, SignalEvaluation, DecisionFactor } from '@/hooks/useSimulationBot';
 
 const safeNumber = (value: unknown, fallback = 0): number => {

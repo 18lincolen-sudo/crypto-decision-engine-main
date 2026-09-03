@@ -10,7 +10,7 @@ import {
   isInStreakCooldown,
   STREAK_COOLDOWN_MS,
   STREAK_COOLDOWN_BIG_LOSS_THRESHOLD
-} from '../services/adaptiveRisk';
+} from '@cde/engine/execution';
 
 const T0 = 1_700_000_000_000;
 const t = (i: number) => T0 + i * 60_000;

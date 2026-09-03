@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { Candle } from '../services/tradeEngine';
+import { Candle } from '@cde/engine';
 import {
   toLogReturns,
   pearsonCorrelation,
   correlationBetween,
   evaluateCorrelationGate,
   alignCloses
-} from '../services/correlation';
+} from '@cde/engine';
 
 const HOUR = 3_600_000;
 const T0 = 1_700_000_000_000;

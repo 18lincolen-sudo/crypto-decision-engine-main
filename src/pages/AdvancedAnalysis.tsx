@@ -11,9 +11,9 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { coinGeckoApi } from '../services/coinGeckoApi';
 import { bybitApi } from '../services/bybitApi';
 import { useCryptoData } from '../hooks/useCryptoData';
-import { HistoricalPrice } from '../types/crypto';
-import { calculateTechnicalIndicators } from '../utils/technicalAnalysis';
-import { calculateAdvancedIndicators } from '../utils/advancedTechnicalAnalysis';
+import { HistoricalPrice } from '@cde/engine';
+import { calculateTechnicalIndicators } from '@cde/engine/analysis';
+import { calculateAdvancedIndicators } from '@cde/engine/analysis';
 
 interface TechnicalIndicator {
   name: string;

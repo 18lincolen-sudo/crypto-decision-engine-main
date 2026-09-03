@@ -25,13 +25,13 @@ import { createLegacySimEngine, LegacySimSnapshot } from './legacySimEngine.ts';
 // server, same infra, only the decision logic differs (see proSimEngine.ts).
 import { createProSimEngine, ProSimSnapshot } from './proSimEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
-import { evaluateIntradayDecision, IntradayDecision, TradeType } from '../src/services/intradayEngine';
-import { buildPortfolioRiskStats } from '../src/services/intradayBridge';
-import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '../src/services/marketDataService';
-import { toBybitSymbol } from '../src/services/assetUniverse';
-import { TARGET_SYMBOLS } from '../src/shared/targetSymbols';
+import { evaluateIntradayDecision, IntradayDecision, IntradayTradeType as TradeType } from '@cde/engine/analysis';
+import { buildPortfolioRiskStats } from '@cde/engine';
+import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '@cde/engine/market-data';
+import { toBybitSymbol } from '@cde/engine/market-data';
+import { TARGET_SYMBOLS } from '@cde/engine/market-data';
 import { createKVStore } from './kvStore';
-import { runBacktestSweep } from '../src/services/backtestRunner';
+import { runBacktestSweep } from './backtestRunner';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Local development reads the repository .env; Render variables retain precedence.
@@ -208,7 +208,7 @@ async function refreshUniverseIfStale(): Promise<void> {
     }
     if (!isStale) return;
 
-    const { computeLiquidUniverse } = await import('../src/services/symbolUniverse');
+    const { computeLiquidUniverse } = await import('@cde/engine/market-data');
     const fresh = await computeLiquidUniverse();
     if (!fresh.symbols.length) return;
     symbols = fresh.symbols;
@@ -560,7 +560,7 @@ async function persistProSim() {
 }
 
 // ── Backtest state ──────────────────────────────────────────────────────────
-import type { SweepResult } from '../src/services/backtestRunner';
+import type { SweepResult } from './backtestRunner';
 
 interface BacktestState {
   status: 'idle' | 'running' | 'done' | 'error';

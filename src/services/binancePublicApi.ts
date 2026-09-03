@@ -5,7 +5,7 @@
  */
 
 import { readJson } from '../utils/errorHandler';
-import { isBinanceUnlistedSymbol } from './marketDataService';
+import { isBinanceUnlistedSymbol } from '@cde/engine/market-data';
 
 const BINANCE_BASE_URL = 'https://api.binance.com/api/v3';
 

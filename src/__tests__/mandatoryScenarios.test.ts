@@ -4,8 +4,8 @@ import {
   calculateRiskParameters,
   calculateOptimalEntry,
   Candle
-} from '../services/tradeEngine';
-import type { MarketRegimeResult, SignalEngineResult } from '../types/crypto';
+} from '@cde/engine/execution';
+import type { MarketRegimeResult, SignalEngineResult } from '@cde/engine';
 
 const makeSignal = (overrides: Partial<SignalEngineResult> = {}): SignalEngineResult => ({
   action: 'BUY',

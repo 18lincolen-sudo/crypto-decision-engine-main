@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { DecisionEngine } from '../services/decisionEngine';
-import { IntradayAdapter } from '../services/decisionEngine/adapters/intradayAdapter';
-import { LegacyAdapter } from '../services/decisionEngine/adapters/legacyAdapter';
-import { ProAdapter } from '../services/decisionEngine/adapters/proAdapter';
-import { Candle } from '../services/tradeEngine';
+import { DecisionEngine } from '@cde/engine';
+import { IntradayAdapter } from '@cde/engine';
+import { LegacyAdapter } from '@cde/engine';
+import { ProAdapter } from '@cde/engine';
+import { Candle } from '@cde/engine';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ describe('DecisionEngine golden — intraday', () => {
     const engine = new DecisionEngine({ verbose: false });
     engine.registerAdapter(new IntradayAdapter());
 
-    const ctx = baseContext() as Parameters<typeof engine.evaluate>[0];
+    const ctx = baseContext() as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'intraday');
 
     expect(result.engineId).toBe('intraday');
@@ -95,7 +95,7 @@ describe('DecisionEngine golden — intraday', () => {
 
     const ctx = baseContext({
       candles: { h1: makeCandles(50), m15: makeCandles(100), m5: makeCandles(200) }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'intraday');
 
     expect(result.outcome).toBe('NO_SIGNAL');
@@ -130,7 +130,7 @@ describe('DecisionEngine golden — intraday', () => {
         priceChange24h: 5
       },
       config: { minConfidenceOverride: 0, maxPositions: 7, maxFuturesPositions: 2 }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'intraday');
 
     expect(result.outcome).toBe('SIGNAL');
@@ -150,7 +150,7 @@ describe('DecisionEngine golden — intraday', () => {
         dailyDrawdownPercent: 10,
         weeklyDrawdownPercent: 5
       }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'intraday');
 
     expect(result.outcome).toBe('NO_SIGNAL');
@@ -168,7 +168,7 @@ describe('DecisionEngine golden — legacy', () => {
     const ctx = baseContext({
       candles: { h1: makeCandles(200, 100, 0.1) },
       marketData: { priceChange24h: 2, fearGreedIndex: 50 }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'legacy');
 
     expect(result.engineId).toBe('legacy');
@@ -187,7 +187,7 @@ describe('DecisionEngine golden — legacy', () => {
 
     const ctx = baseContext({
       candles: { h1: makeCandles(30) }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'legacy');
 
     expect(result.outcome).toBe('NO_SIGNAL');
@@ -210,7 +210,7 @@ describe('DecisionEngine golden — pro', () => {
         marketCap: 1000000000,
         volume24h: 50000000
       }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'pro');
 
     expect(result.engineId).toBe('pro');
@@ -229,7 +229,7 @@ describe('DecisionEngine golden — pro', () => {
 
     const ctx = baseContext({
       candles: { h1: makeCandles(30) }
-    }) as Parameters<typeof engine.evaluate>[0];
+    }) as unknown as Parameters<typeof engine.evaluate>[0];
     const result = engine.evaluate(ctx, 'pro');
 
     expect(result.outcome).toBe('NO_SIGNAL');
@@ -248,9 +248,9 @@ describe('DecisionEngine cross-engine contract', () => {
 
     const base = baseContext();
 
-    const intradayResult = engine.evaluate(base as Parameters<typeof engine.evaluate>[0], 'intraday');
-    const legacyResult = engine.evaluate(base as Parameters<typeof engine.evaluate>[0], 'legacy');
-    const proResult = engine.evaluate(base as Parameters<typeof engine.evaluate>[0], 'pro');
+    const intradayResult = engine.evaluate(base as unknown as Parameters<typeof engine.evaluate>[0], 'intraday');
+    const legacyResult = engine.evaluate(base as unknown as Parameters<typeof engine.evaluate>[0], 'legacy');
+    const proResult = engine.evaluate(base as unknown as Parameters<typeof engine.evaluate>[0], 'pro');
 
     // All must have the same top-level shape
     for (const result of [intradayResult, legacyResult, proResult]) {
@@ -271,8 +271,11 @@ describe('DecisionEngine cross-engine contract', () => {
     const engine = new DecisionEngine({ verbose: false });
     engine.registerAdapter(new IntradayAdapter());
 
-    const ctx = baseContext() as Parameters<typeof engine.evaluate>[0];
-    const result = engine.evaluate(ctx, 'nonexistent');
+    const ctx = baseContext() as unknown as Parameters<typeof engine.evaluate>[0];
+    // Deliberately out-of-band: verifies runtime behavior for an id that was
+    // never registered, which the EngineId union correctly disallows at
+    // compile time — this is the one place that must bypass it.
+    const result = engine.evaluate(ctx, 'nonexistent' as never);
 
     expect(result.outcome).toBe('NO_SIGNAL');
     expect(result.gate).toBe('NO_ADAPTER');

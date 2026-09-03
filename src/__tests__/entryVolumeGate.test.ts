@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { calculateOptimalEntry, computeRelativeVolume, Candle } from '../services/tradeEngine';
-import { calculateProOptimalEntry } from '../services/proAlgEngine';
+import { calculateOptimalEntry, computeRelativeVolume, Candle } from '@cde/engine/execution';
+import { calculateProOptimalEntry } from '@cde/engine/analysis';
 
 const MINUTE = 60_000;
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { routeTradeType } from '../services/tradeEngine';
-import type { MarketRegimeResult, SignalEngineResult } from '../types/crypto';
+import { routeTradeType } from '@cde/engine/execution';
+import type { MarketRegimeResult, SignalEngineResult } from '@cde/engine';
 
 const makeSignal = (overrides: Partial<SignalEngineResult> = {}): SignalEngineResult => ({
   action: 'HOLD',

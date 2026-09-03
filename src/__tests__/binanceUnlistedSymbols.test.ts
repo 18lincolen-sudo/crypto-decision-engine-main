@@ -16,7 +16,7 @@
  * scan, and the console filled with what looked like a CORS misconfiguration.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { fetchTimeframe, fetchBinanceKlines } from '../services/marketDataService';
+import { fetchTimeframe, fetchBinanceKlines } from '@cde/engine/market-data';
 
 function makeResponse(body: unknown, status = 200, ok = status >= 200 && status < 300): Response {
   return {
