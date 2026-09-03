@@ -1147,7 +1147,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, { value: fg.value, value_classification: fg.value_classification, timestamp: fg.timestamp, cachedAt: fg.at });
   }
 
-  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/legacy-sim/') && !url.pathname.startsWith('/api/pro-sim/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
+  if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sim/') && !url.pathname.startsWith('/api/legacy-sim/') && !url.pathname.startsWith('/api/pro-sim/') && !url.pathname.startsWith('/api/backtest/') && !url.pathname.startsWith('/api/public/') && !authorized(req)) {
     return json(res, 401, { error: 'Unauthorized' });
   }
 
