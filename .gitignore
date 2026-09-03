@@ -35,3 +35,7 @@ LIST.txt
 binancelist.md
 .env.example
 decisions.baseline*.json
+
+# A/B harness output (scripts/abBacktest.ts): candle snapshots are large and
+# re-downloadable; run results are local measurements, not source.
+backtest-ab/

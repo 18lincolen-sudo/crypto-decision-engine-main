@@ -132,12 +132,16 @@ useEffect(() => {
 ### F6 — 🟠 ה-Backtest בודק מנוע שונה מזה שבייצור + פערי נאמנות (P1)
 
 **6א. מקור האותות של Pro ב-backtest אינו מקור האותות בייצור.**
+
+> ✅ **נסגר ב-2026-09-03, קומיט `c8d83ba` — אך בכיוון ההפוך למוצע כאן.** במקום ליישר את ה-backtest ל-Advanced Analysis, **הייצור** הוחזר ל-`evaluateProSignals`. שני הצדדים משתמשים היום באותה פונקציה (`proAdapter.ts:141`, `backtestRunner.ts:210, 269`) והפער סגור. הפסקאות הבאות מתעדות את המצב שהיה.
+
 - ב-backtest: `backtestRunner.ts:22–28` מייבא `evaluateProSignals` מ-`proAlgEngine.ts` ומשתמש בו ב-`proEvaluate` וב-`checkExitPro` (שורות 263 ואילך).
 - בייצור (מנוע Pro החי): ה-adapter משתמש ב-**Advanced Analysis engine** של האתר — `proAdapter.ts:42,125–133` → `computeProAdvancedAnalysis` (כפי שמתועד ב-ARCHITECTURE.md §9 "שינוי מקור אותות בבוט פרו").
 - כלומר: הריצה השבועית מכיילת את פרמטרי ה-SL (minStop/maxStop/softTrendBase) מול **מנוע האותות הישן**, והתוצאות בעמוד Backtest Sweep אינן מייצגות את התנהגות בוט פרו הנוכחי.
 
 **6ב. פערי נאמנות מול הסימולציה החיה (כל אחד מצוטט מהקוד):**
-- **יציאה רק ב-close של נר H1:** ה-PnL וה-SL/TP נבדקים מול `candle.close` בלבד (`backtestRunner.ts:242–248` ל-Legacy, `268–273` ל-Pro), וה-high/low מתעדכנים **אחרי** בדיקת היציאה (שורות 359–360) — כלומר SL/TP שנפגעו בתוך הנר אבל נסגרו מעל/מתחת לרמה לא יתפסו. בסימולציה החיה הפקודות נבדקות מול מחיר חי כל 4 שניות. התוצאה: המדדים (WinRate/MaxDD) מוטים.
+- ~~**יציאה רק ב-close של נר H1:**~~ ✅ **תוקן.** `intrabarExit()` (`backtestRunner.ts:291–315`) בודק `candle.low <= stopLoss` ו-`candle.high >= takeProfit1/2`, מעדיף SL על TP באותו נר (שמרני), ומטפל בגאפים דרך `Math.min(stopLoss, candle.open)`. משולב ב-`backtestRunner.ts:501–506`, שם `exitPrice = intrabar ? intrabar.price : candle.close`. הטקסט המקורי נשמר להלן להיסטוריה: *ה-PnL וה-SL/TP נבדקים מול `candle.close` בלבד, וה-high/low מתעדכנים אחרי בדיקת היציאה — כלומר SL/TP שנפגעו בתוך הנר אבל נסגרו מעל/מתחת לרמה לא יתפסו.*
+- **אין עלויות funding על החזקות Futures:** ה-backtest אינו גובה מימון תקופתי, ולכן החזקות ארוכות ב-Futures מוצגות רווחיות מהמציאות. (פער פתוח, לא תועד במקור.)
 - **פוזיציה בודדת בכל ריצה:** `runBacktest` שורה 370 — `if (state.positions.some(p => p.symbol === symbol)) continue;`. כל ריצה היא על סמל אחד, ולכן **maxPositions=7, תקרת Futures=2, שער הקורלציה ותקרות החשיפה אף פעם לא נבדקים** — ה-sweep מכייל פרמטרים במשטר שהבוט החי לא מריץ בו.
 - **אין streak-cooldown ואין השהיית ביצוע:** ב-backtest אין `exitCooldown`/`streakCooldownFromHistory` ואין execution-delay/TTL של פקודות limit — כולם קיימים בחי (למשל `simExecution.ts:563, 632, 656–689`).
 - **מודל עלויות שונה:** ב-backtest עמלה אחידה 0.1% + סליפג' 0.1% על כל כניסה (`backtestRunner.ts:323–324`), בעוד הסימולציה החיה מחשבת כניסות limit כ-Maker ללא סליפג' שלילי (`simExecution.ts:734–757`) — כלומר ה-backtest מטיל עלויות גבוהות יותר מהסימולציה שאמורה לייצג את הבוט.
@@ -279,11 +283,11 @@ useEffect(() => {
 | F4ב — SIM overrides | ✅ תוקן | `intradayAdapter.ts:204` — `params: { ...SIM_INTRADAY_PARAMS_OVERRIDE, ...DEFAULT_INTRADAY_PARAMS, ...context.params }` (הקבוע מיוצא מ-`simExecution.ts:63`). |
 | F4ג — מכפיל אדפטיבי | 🟡 חלקי | Legacy/Pro: תקין — `_adaptiveMultiplier` (אמיתי מה-orchestrator, `orchestrator.ts:119–129`) נצרך באדפטטרים (`legacyAdapter.ts:310–316`) ומועבר ל-`calculateRiskParameters`/`calculateProRisk`. **Intraday: עדיין לא מגיע ל-sizing בפועל** — `params._sizingMultiplier` נכתב ב-`intradayAdapter.ts:275` אך אין צרכן בתוך `evaluateIntradayDecision`/`buildRiskPlan`. |
 | F5 — בוררות leader | ✅ תוקן | `tradingWorker.ts:1188–1194` — `POST /api/sim/state` → 409 על leader mismatch; `SimulationBotContext.tsx:108–112` — דחיית push כששרת synced+running. |
-| F6 — מנוע Pro ייצור/בקטסט | ✅ תוקן | `backtestRunner.ts:24–41, 275–285` — `computeProAdvancedAnalysis` במקום `evaluateProSignals` (ב-proEvaluate וב-checkExitPro). |
+| F6 — מנוע Pro ייצור/בקטסט | ✅ תוקן (יושר מחדש ב-`c8d83ba`) | **הכיוון התהפך:** הייצור הוחזר ל-`evaluateProSignals`, ולכן גם ה-backtest. `proAdapter.ts:141` + `backtestRunner.ts:210, 269` — שניהם `evaluateProSignals`. הפער סגור; המנוע המשותף הוא זה של `proAlgEngine`, לא Advanced Analysis. |
 | F7 — snapshot כבד | ✅ תוקן | `simEngineFactory.ts:454–462` — evaluations נגזמו לשדות קלים; `kvStore.ts:138–151` — בדיקת `res.ok` + `JSON.stringify` ללא prettify (שורה 202). |
 | F8 — אינדיקטורים מלאים בכל tick | ✅ תוקן | שלושה `resultCache` באדפטטרים לפי (symbol, last timestamps H1/15M/5M, portfolio, closedTrades, config), capped 200 (`intradayAdapter.ts:252–300`, זהה ב-Legacy/Pro). |
 | F9 — מטמון היסטוריה מת | ✅ תוקן | `historicalCandleCache.ts:52` — TTL = 8 ימים (מכסה המחזור השבועי). |
-| F10 — מנועים בכל טאב | ✅ תוקן | ה-providers הוסרו מ-`App.tsx` והועברו ל-`SimulationBot.tsx` (בתוך הדף בלבד); `marketDataService.ts` — `universeFetchCache` single-flight עם מחיקה ב-`finally`. |
+| F10 — מנועים בכל טאב | ✅ תוקן, אך **הוחזר חלקית** | תוקן במקור בהעברת ה-providers מ-`App.tsx` ל-`SimulationBot.tsx`. **הוחזרו מאז ל-`App.tsx:52–67`** — התיחום לדף אחד ניתק את דף הבית ממצב השרת (הכול הוצג מאופס). ה-single-flight ב-`marketDataService.ts` (`universeFetchCache` עם מחיקה ב-`finally`) הוא מה שמונע היום כפילות קריאות, לא תיחום ה-providers. |
 | F11 — קוד מת | ✅ תוקן | `build*Evaluations` נמחקו (950 שורות — `simExecution/legacySimExecution/proSimExecution`). |
 | F12 — שגיאות worker | ✅ תוקן | 12 → **0**: casts ל-Firestore fields, `engineVersion as string` ×4, הסרת `req.url` מה-CORS log, `tsconfig.worker.json` → `lib: ["ES2022","WebWorker","DOM"]`. |
 

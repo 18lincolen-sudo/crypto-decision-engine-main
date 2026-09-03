@@ -88,6 +88,8 @@ CIRCUIT_BREAKER → EXPOSURE → (Layer 0-4) → Correlation Gate → Cost/Edge 
 
 ### LAYER 1: Advanced Analysis Signal — אותות מנוע הניתוח המתקדם
 
+> ⚠️ **לא עדכני מאז קומיט `c8d83ba` (2026-09-03).** מקור האותות הוחזר ל-`evaluateProSignals()` (`proAlgEngine.ts:111`). הסעיף נשמר כלשונו; המשקלים הפעילים בפועל — ראו **§10 → "המשקלים הפעילים היום"**.
+
 **מקור:** `packages/engine/src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
 
 **תיאור:** במקום חישוב ציון ביטחון פנימי (כפי שהיה בקוד הקודם), בוט פרו משתמש כעת במנוע הניתוח המתקדם של האתר (`generateSmartRecommendation`) כדי לקבל המלצה וציון ביטחון. האלגוריתם מחשב אינדיקטורים טכניים (RSI, MACD, Bollinger Bands, Stochastic, Williams %R) ומשקל אותות לפי עוצמתם.
@@ -280,6 +282,8 @@ if (isShort && buyConfidence >= 65) → FULL (reversal)
 
 ## 4. חישוב Confidence
 
+> ⚠️ **לא עדכני מאז קומיט `c8d83ba` (2026-09-03).** ה-confidence מגיע היום מ-`evaluateProSignals()` (`proAlgEngine.ts:111`) — סכום משוקלל של 7 אינדיקטורים. ראו **§10 → "המשקלים הפעילים היום"**.
+
 **מקור:** `packages/engine/src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
 
 ```typescript
@@ -379,7 +383,7 @@ if (budget < 5) → BLOCK
 
 2. Build Evaluations
     └── buildProEvaluations() — החלטה לכל סימבול
-        ├── computeProAdvancedAnalysis() (Layer 1)
+        ├── evaluateProSignals() (Layer 1)   ← c8d83ba: היה computeProAdvancedAnalysis()
         ├── detectProRegime() (Layer 0)
         ├── routeProTradeType() (Layer 2)
         ├── calculateProOptimalEntry() (Layer 1.5)
@@ -494,6 +498,8 @@ const fee = notional * feePercent / 100;
 
 ### Layer 1 — טבלת המשקלים בסעיף 3 אינה קיימת בקוד
 
+> **עודכן 2026-09-03 (מאוחר יותר באותו יום), קומיט `c8d83ba`:** מקור האותות של Layer 1 הוחזר מ-`computeProAdvancedAnalysis()` ל-`evaluateProSignals()`. הפסקה הבאה מתעדת את המנוע ש**היה** פעיל עד אותו קומיט; המשקלים הפעילים היום מופיעים מיד אחריה.
+
 הטבלה בסעיף 3 (LAYER 1) — "Advanced Analysis 50, RSI 15, MACD 18, Stochastic 10, Williams %R 7" — **אינה מתארת שום פונקציה קיימת**. `computeProAdvancedAnalysis()` (`proAdvancedAnalysis.ts:121`) קורא ל-`generateSmartRecommendation()` (`smartRecommendationEngine.ts:52`), שמחשבת 8 גורמים משוקללים שונים לגמרי, שכן מסתכמים ל-100 (`smartRecommendationEngine.ts:70-98`):
 
 | גורם | משקל בפועל | קיים בטבלת התיעוד? |
@@ -509,7 +515,31 @@ const fee = notional * feePercent / 100;
 | "Advanced Analysis" (50) | — | **לא קיים בקוד בכלל** |
 | "Williams %R" (7) | — | **לא קיים בקוד בכלל** |
 
-הערה: `proAlgEngine.ts` עצמו כולל פונקציה בשם `evaluateProSignals()` עם משקלים אחרים לגמרי (MACD 20, EMA 18, RSI 12, BB 12, Volume 18, Supertrend 12, Stochastic 8 — זהים למשקלי Legacy בפועל, ראו ALG_legacy.md §13) — אך פונקציה זו **מיובאת ולא נקראת בפועל** ב-`proAdapter.ts` (מאומת: ה-pipeline stage היחיד ל-Layer 1 הוא `AdvancedAnalysisStage`, שקורא ל-`computeProAdvancedAnalysis`, לא ל-`evaluateProSignals`). קוד מת, לא מקור אותות פעיל.
+#### המשקלים הפעילים היום (מאז `c8d83ba`)
+
+Layer 1 של Pro מחושב על ידי `evaluateProSignals()` (`proAlgEngine.ts:111`), שנקראת מ-`AdvancedAnalysisStage` ב-`proAdapter.ts:141`. משקליה:
+
+| אינדיקטור | משקל |
+|---|---|
+| MACD | 20 |
+| EMA20/50 | 18 |
+| Volume Surge | 18 |
+| RSI | 12 |
+| Bollinger Bands | 12 |
+| Supertrend | 12 |
+| Stochastic | 8 |
+| **סה"כ** | **100** |
+
+משקלים אלה **זהים למשקלי Legacy בפועל** (ראו ALG_legacy.md §13) — כלומר שני המנועים חולקים היום את אותו מנוע אותות משוקלל, ונבדלים בשכבות 2-4 (ניתוב, סיכון, יציאה) בלבד.
+
+`computeProAdvancedAnalysis()` נותרה בקוד ומיוצאת דרך `@cde/engine/analysis`, אך **אינה נקראת יותר על ידי אף אחד משלושת הבוטים**. היא עדיין בשימוש בטסטים (`src/__tests__/advancedAnalysisBugs.test.ts`).
+
+**להחזרת המצב הקודם:**
+```bash
+git checkout checkpoint-pro-advanced-analysis -- \
+  packages/engine/src/services/decisionEngine/adapters/proAdapter.ts \
+  server/backtestRunner.ts
+```
 
 ### Layer 2 — נוסחת הסף הדינמי: תחילת הרמפה שגויה
 

@@ -356,7 +356,7 @@ function openPositionPro(symbol: string, candles: Candle[], idx: number, state: 
 }
 
 // ── Run single backtest ────────────────────────────────────────────────────
-interface BacktestResult {
+export interface BacktestResult {
   totalTrades: number;
   wins: number;
   losses: number;
@@ -365,6 +365,12 @@ interface BacktestResult {
   profitFactor: number;
   expectancy: number;
   maxDrawdown: number;
+  /** Per-trade records behind the aggregates above. Exposed for the A/B
+   *  harness (scripts/abBacktest.ts), which needs the raw PnL series to
+   *  compute dispersion metrics the aggregates cannot express — per-trade
+   *  Sharpe today, and the R-multiple distribution once ClosedTradeRecord
+   *  carries riskUsd. Purely additive: no caller is required to read it. */
+  closedTrades: ClosedTradeMetric[];
 }
 
 // Fee and slippage constants (matching simExecution.ts fillDueOrders)
@@ -373,7 +379,7 @@ const SLIPPAGE_PERCENT = 0.001; // 0.1% slippage on entry
 // Per-symbol post-loss entry cooldown (matches the live per-symbol streak gate).
 const STREAK_COOLDOWN_MS = 30 * 60 * 1000;
 
-function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engine: EngineType): Promise<BacktestResult> {
+export function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engine: EngineType): Promise<BacktestResult> {
   const state = initState();
   let lossCooldownUntil = 0; // per-symbol 30-min post-loss entry cooldown (matches the live streak gate)
   return (async () => {
@@ -454,7 +460,7 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
   const grossLoss = Math.abs(state.closedTrades.filter(t => t.pnl < 0).reduce((s, t) => s + t.pnl, 0));
   const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0);
   const expectancy = totalTrades > 0 ? netProfit / totalTrades : 0;
-  return { totalTrades, wins, losses, winRate, netProfit, profitFactor, expectancy, maxDrawdown: state.maxDrawdown };
+  return { totalTrades, wins, losses, winRate, netProfit, profitFactor, expectancy, maxDrawdown: state.maxDrawdown, closedTrades: state.closedTrades };
   })();
 }
 
@@ -468,7 +474,7 @@ function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfig, engi
 const PORTFOLIO_MAX_POSITIONS = 7;
 const PORTFOLIO_MAX_FUTURES = 2;
 
-async function runPortfolioBacktest(
+export async function runPortfolioBacktest(
   histories: { symbol: string; candles: Candle[] }[],
   slConfig: SlConfig,
   engine: EngineType
@@ -570,7 +576,7 @@ async function runPortfolioBacktest(
   const grossLoss = Math.abs(state.closedTrades.filter(t => t.pnl < 0).reduce((s, t) => s + t.pnl, 0));
   const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0);
   const expectancy = totalTrades > 0 ? netProfit / totalTrades : 0;
-  return { totalTrades, wins, losses, winRate, netProfit, profitFactor, expectancy, maxDrawdown: state.maxDrawdown };
+  return { totalTrades, wins, losses, winRate, netProfit, profitFactor, expectancy, maxDrawdown: state.maxDrawdown, closedTrades: state.closedTrades };
 }
 
 // ── Main exported function ─────────────────────────────────────────────────
