@@ -355,7 +355,7 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
       }
 
       return {
-        outcome: current.router?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
+        outcome: !current.signal || current.signal.action === 'HOLD' || current.router?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
         gate: current.risk ? 'RISK' : current.router?.type === 'HOLD' ? (current.router.blockReason ?? 'ROUTE') : 'RISK',
         logs: current.signal?.penalties ?? [],
         summary: current.router?.reason ?? 'No signal',

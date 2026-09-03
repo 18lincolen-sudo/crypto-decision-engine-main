@@ -335,7 +335,7 @@ export class LegacyAdapter implements EngineAdapter<LegacyPipelineContext> {
       }
 
       return {
-        outcome: current.layer2?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
+        outcome: !current.layer1 || current.layer1.action === 'hold' || current.layer2?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
         gate: current.layer3 ? 'RISK' : current.layer2?.type === 'HOLD' ? (current.layer2.blockReason ?? 'ROUTE') : 'RISK',
         logs: current.layer1?.penalties ?? [],
         summary: current.layer2?.reason ?? 'No signal',
