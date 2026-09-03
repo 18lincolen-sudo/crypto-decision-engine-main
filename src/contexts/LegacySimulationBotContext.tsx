@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useMemo, ReactNode } from 'react';
 import {
   getLegacySimState,
   startLegacySim,
@@ -125,9 +125,10 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
   }, []);
 
   // Poll server state with exponential backoff on 429s / network errors.
+  const pollingOptions = useMemo(() => ({ baseInterval: 5000, maxInterval: 30000 }), []);
   const { data: legacySimStateData, syncStatus, syncError } = useApiPolling<LegacySimBotStateResponse>(
     () => getLegacySimState(baseUrl),
-    { baseInterval: 5000, maxInterval: 30000 }
+    pollingOptions
   );
 
   useEffect(() => {

@@ -119,7 +119,7 @@ export async function getSimState(configuredBaseUrl?: string): Promise<SimBotSta
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/state`);
-  if (!res.ok) throw new Error(`Sim ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to fetch sim state: ${res.status} ${res.statusText}`);
   return (await res.json()) as SimBotStateResponse;
 }
 
@@ -146,7 +146,7 @@ export async function claimSimLeadership(leaderId: string, configuredBaseUrl?: s
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ leaderId })
   });
-  if (!res.ok) throw new Error(`Sim claim ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to claim sim leadership: ${res.status} ${res.statusText}`);
   return (await res.json()) as { claimed: boolean; leaderId: string | null };
 }
 
@@ -154,7 +154,7 @@ export async function startSim(configuredBaseUrl?: string): Promise<SimBotStateR
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/sim/start`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Sim start ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to start sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as SimBotStateResponse;
 }
 
@@ -202,7 +202,7 @@ export async function getLegacySimState(configuredBaseUrl?: string): Promise<Leg
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/legacy-sim/state`);
-  if (!res.ok) throw new Error(`Legacy sim ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to fetch legacy sim state: ${res.status} ${res.statusText}`);
   return (await res.json()) as LegacySimBotStateResponse;
 }
 
@@ -210,7 +210,7 @@ export async function startLegacySim(configuredBaseUrl?: string): Promise<Legacy
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/legacy-sim/start`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Legacy sim start ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to start legacy sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as LegacySimBotStateResponse;
 }
 
@@ -218,7 +218,7 @@ export async function stopLegacySim(configuredBaseUrl?: string): Promise<LegacyS
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/legacy-sim/stop`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Legacy sim stop ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to stop legacy sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as LegacySimBotStateResponse;
 }
 
@@ -226,7 +226,7 @@ export async function resetLegacySim(configuredBaseUrl?: string): Promise<Legacy
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/legacy-sim/reset`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Legacy sim reset ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to reset legacy sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as LegacySimBotStateResponse;
 }
 
@@ -238,7 +238,7 @@ export async function setLegacySimConfig(config: SimBotConfig, configuredBaseUrl
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ config })
   });
-  if (!res.ok) throw new Error(`Legacy sim config ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to set legacy sim config: ${res.status} ${res.statusText}`);
   return (await res.json()) as LegacySimBotStateResponse;
 }
 
@@ -258,7 +258,7 @@ export async function getProSimState(configuredBaseUrl?: string): Promise<ProSim
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/pro-sim/state`);
-  if (!res.ok) throw new Error(`Pro sim ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to fetch pro sim state: ${res.status} ${res.statusText}`);
   return (await res.json()) as ProSimBotStateResponse;
 }
 
@@ -266,7 +266,7 @@ export async function startProSim(configuredBaseUrl?: string): Promise<ProSimBot
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/pro-sim/start`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Pro sim start ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to start pro sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as ProSimBotStateResponse;
 }
 
@@ -274,7 +274,7 @@ export async function stopProSim(configuredBaseUrl?: string): Promise<ProSimBotS
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/pro-sim/stop`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Pro sim stop ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to stop pro sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as ProSimBotStateResponse;
 }
 
@@ -282,7 +282,7 @@ export async function resetProSim(configuredBaseUrl?: string): Promise<ProSimBot
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/pro-sim/reset`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Pro sim reset ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to reset pro sim: ${res.status} ${res.statusText}`);
   return (await res.json()) as ProSimBotStateResponse;
 }
 
@@ -294,7 +294,7 @@ export async function setProSimConfig(config: SimBotConfig, configuredBaseUrl?: 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ config })
   });
-  if (!res.ok) throw new Error(`Pro sim config ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to set pro sim config: ${res.status} ${res.statusText}`);
   return (await res.json()) as ProSimBotStateResponse;
 }
 
