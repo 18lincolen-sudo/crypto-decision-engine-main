@@ -485,3 +485,65 @@ const fee = notional * feePercent / 100;
 | `advancedSupport` | רמת תמיכה |
 | `advancedResistance` | רמת התנגדות |
 | `advancedRiskLevel` | רמת סיכון |
+
+---
+
+## 10. נספח אימות — פערים מול הקוד הנוכחי
+
+> **נוסף ב-2026-09-03 כתוצאה מביקורת מספרים מפורשת מול `packages/engine/src/services/proAlgEngine.ts`, `proAdvancedAnalysis.ts` ו-`src/utils/smartRecommendationEngine.ts`. שום שורה בסעיפים 1–9 לא נערכה — הפער מתועד כאן בלבד.**
+
+### Layer 1 — טבלת המשקלים בסעיף 3 אינה קיימת בקוד
+
+הטבלה בסעיף 3 (LAYER 1) — "Advanced Analysis 50, RSI 15, MACD 18, Stochastic 10, Williams %R 7" — **אינה מתארת שום פונקציה קיימת**. `computeProAdvancedAnalysis()` (`proAdvancedAnalysis.ts:121`) קורא ל-`generateSmartRecommendation()` (`smartRecommendationEngine.ts:52`), שמחשבת 8 גורמים משוקללים שונים לגמרי, שכן מסתכמים ל-100 (`smartRecommendationEngine.ts:70-98`):
+
+| גורם | משקל בפועל | קיים בטבלת התיעוד? |
+|---|---|---|
+| RSI | 15 | כן (15 — תואם) |
+| Bollinger Bands | 12 | **לא מוזכר** |
+| MACD | 18 | כן (18 — תואם) |
+| Stochastic | 10 | כן (10 — תואם) |
+| Support/Resistance | 15 | **לא מוזכר** |
+| Volume | 10 | **לא מוזכר** |
+| Market Sentiment (Fear & Greed) | 12 | **לא מוזכר** |
+| Price Momentum | 8 | **לא מוזכר** |
+| "Advanced Analysis" (50) | — | **לא קיים בקוד בכלל** |
+| "Williams %R" (7) | — | **לא קיים בקוד בכלל** |
+
+הערה: `proAlgEngine.ts` עצמו כולל פונקציה בשם `evaluateProSignals()` עם משקלים אחרים לגמרי (MACD 20, EMA 18, RSI 12, BB 12, Volume 18, Supertrend 12, Stochastic 8 — זהים למשקלי Legacy בפועל, ראו ALG_legacy.md §13) — אך פונקציה זו **מיובאת ולא נקראת בפועל** ב-`proAdapter.ts` (מאומת: ה-pipeline stage היחיד ל-Layer 1 הוא `AdvancedAnalysisStage`, שקורא ל-`computeProAdvancedAnalysis`, לא ל-`evaluateProSignals`). קוד מת, לא מקור אותות פעיל.
+
+### Layer 2 — נוסחת הסף הדינמי: תחילת הרמפה שגויה
+
+זהה לפער שתועד ב-ALG_legacy.md §13: `proAlgEngine.ts:420-427` מפעיל את הרמפה מ-**4% ATR**, לא מ-2% כפי שכתוב בסעיף 3:
+
+```typescript
+// proAlgEngine.ts:420-427 — ההתנהגות האמיתית
+if (atrPercent <= 4) return baseThreshold;   // התיעוד: 2%
+if (atrPercent >= 8) return baseThreshold + 15;
+return baseThreshold + ((atrPercent - 4) / 4) * 15;
+```
+
+ערכי הסף הסופיים בטבלה (72→87 Futures, 60→75 Spot, 65→80 SOFT_TREND) **נכונים** — רק תווית "ATR% <= 2" בכותרות העמודות שגויה (צריכה להיות "ATR% <= 4").
+
+שני מנגנונים חסרים מסעיף 3 (Layer 2), זהים לאלה שנמצאו ב-Legacy:
+- **HIGH-vol carve-out** ל-Futures כשהמגמה מאושרת (`proAlgEngine.ts` — לוגיקת `isHighVolCarveOut`, מיד לפני הענף שמחזיר `type: 'FUTURES'`).
+- **חסימת Spot SELL** — אות SELL שנכשל ב-Futures נחסם, לא הופך ל-Spot SELL.
+
+### Layer 3 — ה-SL/TP המבוסס-ATR בסעיף 3 אינו קיים; הקוד משתמש באחוזים קבועים
+
+הטבלה בסעיף 3 (LAYER 3) — "SPOT: SL=entry-ATR×1.8, TP2=entry+ATR×2.7; FUTURES LONG: SL=entry-ATR×1.5, TP1=entry+ATR×2.3, TP2=entry+ATR×3.5" — **המספרים האלה (1.8/2.7/1.5/2.3/3.5 כמכפילי ATR) לא מופיעים בשום מקום בקוד**. המנגנון האמיתי (`calculateProRisk`, זהה ל-`calculateRiskParameters` ב-Legacy):
+
+```typescript
+const fixedSlPercent = 1.8;   // אחוז מהמחיר, לא מכפיל ATR
+const fixedTpPercent = 3.0;
+const riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67 קבוע לכל עסקה
+// SPOT:            SL = entry - 1.8%,  TP  = entry + 3.0%
+// FUTURES LONG:     SL = entry - 1.8%,  TP1 = entry + 3.0%,  TP2 = entry + 4.5%
+// FUTURES SHORT:    מראה
+```
+
+**"ה-High-Confidence Fallback" בסעיף 3 מטעה**: הקטע מציג את 1.8%/3% כערך שמופעל *רק* כש-`calculateProRisk` נדחה — בפועל אלה הערכים הרגילים תמיד, לא ערך גיבוי מיוחד. `buildFallbackProRisk` (אם קיים תחת אותו שם ב-`proSimExecution.ts`) מחשב בדיוק אותה נוסחה, לא נוסחה חלופית.
+
+שני שערים חסרים, זהים לפער שתועד ב-Legacy:
+- תקרת חשיפה ממונפת 20% מהתיק, נחסמת אלא אם `confidence >= 72`.
+- מינימום פקודה $5, נחסם אלא אם `confidence >= 72`.
+

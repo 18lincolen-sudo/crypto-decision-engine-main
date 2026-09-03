@@ -464,3 +464,77 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | Correlation gate | כן | כן | כן |
 | Streak cooldown | לפי מטבע | לפי מטבע | לפי מטבע |
 | High-confidence bypass | 72 (Layer 3) | 72 (NO_ENTRY + COST) | 72 (Layer 3) |
+
+---
+
+## 13. נספח אימות — פערים מול הקוד הנוכחי
+
+> **נוסף ב-2026-09-03 כתוצאה מביקורת מספרים מפורשת מול `packages/engine/src/services/tradeEngine.ts` ו-`legacySimExecution.ts`. שום שורה בסעיפים 1–12 לא נערכה — הפער מתועד כאן בלבד, כפי שהתבקש.**
+>
+> הביקורת המקורית (המיגרציה מ-2026-09-03) תיקנה נתיבי קבצים בלבד ולא בדקה נוסחאות/משקלים/ספים מול הקוד בפועל. הבדיקה הזו עשתה בדיוק את זה, וגילתה שסעיפים 3 ו-2 (Layer 1, Layer 2, Layer 3, Layer 4) **אינם תואמים** את מה שהמערכת מריצה כיום. הפערים העיקריים:
+
+### Layer 1 — משקלי האינדיקטורים שגויים לחלוטין
+
+הטבלה בסעיף 3 (LAYER 1) לא סוכמת ל-100 (10+12+10+8+8+10+8=66) ואינה תואמת את משקלי הקוד בפועל. המשקלים האמיתיים (`tradeEngine.ts:295-299`, מאומת שורה-שורה מול `evaluateSignals()`):
+
+| אינדיקטור | משקל בתיעוד (סעיף 3) | משקל בקוד בפועל |
+|---|---|---|
+| MACD (12/26/9) | 12 | **20** |
+| EMA 20/50 | 10 ("EMA Cross") | **18** |
+| RSI(14) | 10 | **12** |
+| Bollinger Bands (20/2) | 8 | **12** |
+| Volume Surge | 8 | **18** |
+| Supertrend (10/3) | 10 | **12** |
+| Stochastic (14/3) | 8 | 8 ✓ (תואם) |
+| **סה"כ** | **66** | **100** |
+
+בנוסף, סף RSI בקוד הוא דו-שכבתי — לא סף בודד <30/>70 כפי שמופיע בטבלה: `RSI<=25` עוצמה 1.0, `25<RSI<35` עוצמה 0.8 (וסימטרי בצד המכירה, 65–75/`>=75`) — `tradeEngine.ts:416-488`.
+
+### Layer 2 — הניתוב הסטטי בתיעוד אינו קיים בקוד
+
+הקוד מיישם **סף דינמי לפי ATR%**, לא סף סטטי כפי שכתוב בסעיף 3 (כולל קטע הקוד `dynamicConfidenceThreshold` שמוצג שם כפונקציה שמחזירה תמיד את הבסיס — זו אינה ההתנהגות האמיתית):
+
+```typescript
+// tradeEngine.ts:750-759 — ההתנהגות האמיתית
+export function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
+  if (atrPercent <= 4) return baseThreshold;       // התיעוד: הרמפה מתחילה ב-2%, לא 4%
+  if (atrPercent >= 8) return baseThreshold + 15;
+  return baseThreshold + ((atrPercent - 4) / 4) * 15;
+}
+```
+
+| | תיעוד (סעיף 3) | קוד בפועל (`tradeEngine.ts:884-916`) |
+|---|---|---|
+| סף בסיס Futures | 70 (סטטי) | **72**, דינמי — עולה ל-87 ב-ATR>=8% |
+| סף בסיס Spot | 60 (סטטי) | **58**, קבוע (השם `spotThreshold` בקוד מוגדר "Fixed minimum for legacy bot") |
+| תחילת רמפה | 2% ATR | **4% ATR** |
+| Supertrend כתנאי Futures | חובה | **לא קיים** — Supertrend כבר מנוקד ב-Layer 1, אינו תנאי ניתוב נפרד |
+
+שני מנגנונים שלמים חסרים מסעיף 3 (Layer 2) לגמרי:
+- **HIGH-vol carve-out**: כאשר Futures חסום בגלל תנודתיות HIGH, אך המגמה מאושרת והציון עובר את הסף המוגבר — הבוט עדיין סוחר Futures בכיוון המגמה (`tradeEngine.ts:893`).
+- **חסימת Spot SELL**: אות SELL שלא עבר את סף ה-Futures **נחסם** ולא הופך ל-Spot SELL (שאינו נתמך במימוש) — `tradeEngine.ts:919-931`.
+
+### Layer 3 — מנגנון ה-SL/TP שונה לגמרי ממה שמתועד
+
+סעיף 3 (LAYER 3) לא מזכיר את הנוסחה האמיתית לחלוטין. הקוד לא מחשב R:R מהיסטוריה — הוא קובע **SL/TP קבועים כאחוז מהמחיר**, זהים לכל עסקה:
+
+```typescript
+// tradeEngine.ts:1275-1286 ו-legacySimExecution.ts:61-70 (buildFallbackLegacyRisk — אותה נוסחה בדיוק)
+const fixedSlPercent = 1.8;   // תמיד, לא רק ב"fallback"
+const fixedTpPercent = 3.0;
+const riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67 קבוע
+```
+
+זה שונה מהערך שמופיע בטבלת הקונפיגורציה בסעיף 9 (`stopLoss: 4.2%`) — אותו שדה קונפיגורציה קיים ב-UI (`SimBotConfig.stopLoss`) אך **אינו הערך שמופעל בפועל** על ידי `calculateRiskParameters` / `buildFallbackLegacyRisk`, ששניהם משתמשים ב-1.8%/3.0% קשיח בקוד עצמו, לא בקונפיג.
+
+שני שערי סיכון נוספים שסעיף 3 לא מתעד כלל:
+- **תקרת חשיפה ממונפת 20%** מסך התיק (`tradeEngine.ts:1354-1362`) — נחסם אלא אם `signalScore >= 72`.
+- **מינימום פקודה $5** (`tradeEngine.ts:1366`) — נחסם אלא אם `signalScore >= 72`.
+
+### Layer 4 (יציאה) — שלושה מנגנונים חסרים
+
+סעיף 8 (יציאה מפוזיציה) מתעד רק "סגירה מלאה לאחר 48 שעות" ל-Spot. הקוד בפועל (`tradeEngine.ts:1552-1592`):
+- יציאת הזמן ב-Spot **מותנית**: יוצא רק אם המחיר כבר מעבר ל-TP או ל-SL **וגם** ההפסד עולה על 50% ממרחק ה-SL — לא סגירה אוטומטית לאחר 48 שעות כשלעצמה.
+- **Futures בעל יציאת זמן נפרדת**: 24 שעות בלי TP1 → סגירה חלקית 50% (`PARTIAL_50`) — לא מוזכר בסעיף 8 בכלל עבור Legacy.
+- **סף Reversal דינמי לפי ADX** (לא סטטי כפי שהטבלה משתמעת): ADX<20 → סף 55, ADX>30 → סף 70, אחרת 65 (`tradeEngine.ts:1523-1550`).
+- **Trailing Stop עם מכפילי ATR ספציפיים** שאינם מתועדים: Spot — 1.3×ATR משיא (אחרי הגעה ל-TP1); Futures Long/Short — 1.0×ATR משיא/שפל (אחרי TP1) (`tradeEngine.ts:1445-1520`).
