@@ -253,9 +253,17 @@ class KVStore {
     return `${this.prefix}:${key}`;
   }
 
+  // Durable storage is chosen by whether Firestore is actually configured
+  // (a real project id + service account), never by NODE_ENV. Render does not
+  // set NODE_ENV=production on its own and render.yaml never set it either,
+  // so this used to be permanently false in production — every write silently
+  // went to the LOCAL file only, on a free-tier disk that Render wipes on
+  // every spin-down/restart. That's what made "the bots reset" look like a
+  // bug in the sim engines: the persistence layer they trusted had never
+  // actually been persisting.
   async get(key: string): Promise<string | null> {
     const k = this.k(key);
-    if (process.env.NODE_ENV !== 'production') {
+    if (!this.firestore.isConfigured()) {
       return this.local.get(k);
     }
     const remote = await this.firestore.get(k);
@@ -265,7 +273,7 @@ class KVStore {
 
   async set(key: string, value: string, ttlMs?: number): Promise<void> {
     const k = this.k(key);
-    if (process.env.NODE_ENV !== 'production') {
+    if (!this.firestore.isConfigured()) {
       await this.local.set(k, value, ttlMs);
       return;
     }
@@ -282,4 +290,12 @@ class KVStore {
 
 export function createKVStore(prefix: string, localFile: string): KVStore {
   return new KVStore(prefix, localFile);
+}
+
+// Read once at boot to log a loud, one-time warning instead of persistence
+// silently degrading to the ephemeral disk with no signal anywhere that it
+// happened. See the comment on KVStore.get/set for why this matters on a
+// free-tier host whose local disk is wiped on every restart.
+export function isDurableStorageConfigured(): boolean {
+  return new FirestoreKV().isConfigured();
 }

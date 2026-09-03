@@ -30,7 +30,7 @@ import { buildPortfolioRiskStats } from '@cde/engine';
 import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '@cde/engine/market-data';
 import { toBybitSymbol } from '@cde/engine/market-data';
 import { TARGET_SYMBOLS } from '@cde/engine/market-data';
-import { createKVStore } from './kvStore';
+import { createKVStore, isDurableStorageConfigured } from './kvStore';
 import { runBacktestSweep } from './backtestRunner';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1356,6 +1356,14 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
+  // On a free-tier host the local disk is wiped on every restart/spin-down —
+  // without Firestore, bot state (positions, cash, trades) silently resets
+  // to defaults on every one of those, which reads as "the bots keep
+  // restarting themselves" with no error anywhere. Say so loudly, once, at
+  // boot, instead of leaving it to be rediscovered the hard way.
+  if (!isDurableStorageConfigured()) {
+    console.warn('[kv] FIREBASE_PROJECT_ID / FIREBASE_SERVICE_ACCOUNT_KEY not configured — bot state is NOT durable. It will reset to defaults on every restart or free-tier spin-down. Set both in the Render dashboard to persist across restarts.');
+  }
   await refreshUniverseIfStale();
   await hydrate();
   await hydrateMarketCache();

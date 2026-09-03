@@ -1,0 +1,35 @@
+name: Keep worker awake
+
+# Render's free tier spins a web service down after 15 minutes with no
+# INBOUND traffic (https://render.com/docs/free). The worker's own self-ping
+# (server/tradingWorker.ts) can prevent that first spin-down, but it runs
+# INSIDE the process it's trying to keep alive — once the service is actually
+# asleep, nothing inside it can wake it back up. This workflow is the real
+# external ping: a request that reaches Render's public edge from OUTSIDE the
+# container, on a schedule short enough to stay under the 15-minute window
+# with margin for GitHub's own scheduling jitter (documented as "best effort",
+# occasionally several minutes late).
+#
+# This does not make persistence durable — see server/kvStore.ts and the
+# FIREBASE_PROJECT_ID / FIREBASE_SERVICE_ACCOUNT_KEY setup in Render. It only
+# keeps the container running so a restart is something that happens rarely
+# (deploys, crashes), instead of every ~15 idle minutes.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping worker /health
+        run: |
+          url="https://crypto-decision-engine-main-hev8.onrender.com/health"
+          echo "GET $url"
+          # -f fails the step on a non-2xx response (visible in the Actions
+          # log/badge if the worker is down), --max-time bounds a cold-start
+          # wait so this job can't hang past a single scheduling slot.
+          curl -f -sS --max-time 90 "$url" | head -c 500
+          echo
