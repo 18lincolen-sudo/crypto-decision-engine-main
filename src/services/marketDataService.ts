@@ -162,6 +162,62 @@ async function timedFetch(url: string, timeoutMs = 10_000): Promise<Response> {
   }
 }
 
+// ── Binance symbol registry ──────────────────────────────────────────────────
+// Binance omits CORS headers on 4xx responses, so asking it for a pair it does
+// not list reaches the browser as an opaque "blocked by CORS policy" plus
+// net::ERR_FAILED — never as the 400 {"code":-1121,"msg":"Invalid symbol."} it
+// actually sent. The universe comes from Bybit, which lists pairs Binance does
+// not (CAP, H, …), so every scan produced console errors for those symbols, and
+// because `fetch` REJECTS rather than returning a response the message was
+// "Failed to fetch", which matches none of the SYMBOL_NOT_FOUND patterns below
+// — so each one was also retried once, for nothing.
+//
+// /ticker/price names every pair Binance actually trades in one 153KB call.
+const BINANCE_SYMBOLS_TTL_MS = 6 * 60 * 60 * 1000;
+let binanceSymbolsPromise: Promise<Set<string> | null> | null = null;
+let binanceSymbolsFetchedAt = 0;
+
+async function fetchBinanceSymbols(): Promise<Set<string> | null> {
+  try {
+    const res = await timedFetch(`${BINANCE_PUBLIC_BASE}/ticker/price`);
+    if (!res.ok) return null;
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const symbols = rows
+      .map((r) => (r && typeof (r as { symbol?: unknown }).symbol === 'string' ? (r as { symbol: string }).symbol : null))
+      .filter((s): s is string => !!s);
+    // A payload carrying no symbol strings is not the registry — a proxy, an
+    // error page or a stubbed endpoint can return anything. Report it as
+    // unavailable rather than building a Set that would wrongly rule out every
+    // symbol on the exchange.
+    return symbols.length ? new Set(symbols) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function binanceListsSymbol(pair: string): Promise<boolean> {
+  const fresh = binanceSymbolsPromise !== null && Date.now() - binanceSymbolsFetchedAt <= BINANCE_SYMBOLS_TTL_MS;
+  if (!fresh) {
+    binanceSymbolsFetchedAt = Date.now();
+    binanceSymbolsPromise = fetchBinanceSymbols();
+  }
+  const known = await binanceSymbolsPromise;
+  if (known === null) {
+    // Fail OPEN, and do not cache the failure: one transient error must not
+    // disable the guard for the whole TTL. A symbol is ruled out only when the
+    // registry was actually read and does not contain it.
+    binanceSymbolsPromise = null;
+    return true;
+  }
+  return known.has(pair);
+}
+
+/** True when Binance is known NOT to list this pair (registry consulted, symbol absent). */
+export async function isBinanceUnlistedSymbol(pair: string): Promise<boolean> {
+  return !(await binanceListsSymbol(pair));
+}
+
 // ── Bybit klines (primary, paginated) ────────────────────────────────────────
 
 const BYBIT_PAGE_LIMIT = 1000;
@@ -270,6 +326,13 @@ export async function fetchBinanceKlines(
 ): Promise<Candle[]> {
   const spec = TIMEFRAME_SPECS[tf];
   const pair = toBybitSymbol(symbol); // same USDT pair naming on Binance
+
+  // Phrased to match the SYMBOL_NOT_FOUND classifier in fetchTimeframe, so an
+  // unlisted pair is reported as what it is and is never retried.
+  if (!(await binanceListsSymbol(pair))) {
+    throw new Error(`Invalid symbol ${pair} — not listed on Binance`);
+  }
+
   const collected: Candle[] = [];
   let endTime = opts.endTime;
   let guard = 0;
@@ -367,7 +430,27 @@ export async function fetchTimeframe(
             required: spec.minCandles
           };
         }
+        // The source ANSWERED — there is simply no closed candle newer than
+        // `since` yet. That is the normal case, not a failure: the bots poll
+        // every few seconds while a 1h candle closes once an hour. Treating it
+        // as a failure fell through to the next source on EVERY tick, which is
+        // what sent every Bybit-only symbol to Binance to be refused.
+        //
+        // Trade-off: if the primary is briefly returning empty for a pair the
+        // fallback does have, that pair now waits for the next tick instead of
+        // failing over immediately. A genuinely missing symbol still throws
+        // (Bybit retCode 10001) and still fails over, below.
         issues.push(`${source}:no-new-candles`);
+        return {
+          candles: [],
+          source: 'none',
+          reason: 'NO_NEW_CANDLES',
+          issues,
+          received: raw.length,
+          closed: closed.length,
+          valid: 0,
+          required: spec.minCandles
+        };
       } catch (e) {
         const msg = `${source}:${e instanceof Error ? e.message : String(e)}`;
         errors.push(msg);

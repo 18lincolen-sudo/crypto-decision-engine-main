@@ -5,6 +5,7 @@
  */
 
 import { readJson } from '../utils/errorHandler';
+import { isBinanceUnlistedSymbol } from './marketDataService';
 
 const BINANCE_BASE_URL = 'https://api.binance.com/api/v3';
 
@@ -108,6 +109,10 @@ export const binancePublicApi = {
    */
   async getKlines(symbol: string, interval = '1d', limit = 30): Promise<BinanceKline[]> {
     const formatted = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
+    // Binance sends no CORS headers on its 400 "Invalid symbol" response, so an
+    // unlisted pair reaches the console as a CORS violation instead. Ask only
+    // for pairs Binance actually lists. See isBinanceUnlistedSymbol.
+    if (await isBinanceUnlistedSymbol(formatted)) return [];
     const res = await fetchWithBackoff(
       `${BINANCE_BASE_URL}/klines?symbol=${formatted}&interval=${interval}&limit=${limit}`,
       8000

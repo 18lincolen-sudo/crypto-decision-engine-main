@@ -138,7 +138,22 @@ export default function SimulationEngineColumn({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Dialog>
           <DialogTrigger asChild>
-            <Card className="border-border/40 bg-card/50 backdrop-blur cursor-pointer hover:border-primary/50 transition-colors">
+            {/* `DialogTrigger asChild` hands its props to this Card, which renders a
+                plain <div> — so the trigger came out as role=null, tabIndex=-1 and an
+                inert type="button". It could not be reached with Tab at all, and a
+                screen reader was never told it was a control, leaving the decisions
+                and settings mouse-only. Give the div the semantics the button lost. */}
+            <Card
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.currentTarget.click();
+                }
+              }}
+              className="border-border/40 bg-card/50 backdrop-blur cursor-pointer hover:border-primary/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
               <CardContent className="p-3.5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Zap className={`w-5 h-5 shrink-0 ${accentClass}`} />
@@ -291,7 +306,22 @@ export default function SimulationEngineColumn({
 
         <Dialog>
           <DialogTrigger asChild>
-            <Card className="border-border/40 bg-card/50 backdrop-blur cursor-pointer hover:border-primary/50 transition-colors">
+            {/* `DialogTrigger asChild` hands its props to this Card, which renders a
+                plain <div> — so the trigger came out as role=null, tabIndex=-1 and an
+                inert type="button". It could not be reached with Tab at all, and a
+                screen reader was never told it was a control, leaving the decisions
+                and settings mouse-only. Give the div the semantics the button lost. */}
+            <Card
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.currentTarget.click();
+                }
+              }}
+              className="border-border/40 bg-card/50 backdrop-blur cursor-pointer hover:border-primary/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
               <CardContent className="p-3.5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Settings className={`w-5 h-5 shrink-0 ${accentClass}`} />
