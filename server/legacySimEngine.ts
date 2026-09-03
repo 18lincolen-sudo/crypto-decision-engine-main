@@ -93,7 +93,7 @@ const legacyStrategy: SimEngineStrategy = {
         },
         params: {},
         now: Date.now(),
-        closedTrades: input.closedTradeMetrics?.map(t => ({ pnl: t.pnl, at: t.at, symbol: t.symbol })),
+        closedTrades: input.closedTradeMetrics?.map(t => ({ pnl: t.pnl, at: t.at, symbol: t.symbol, riskUsd: t.riskUsd })),
         config: {
           minConfidenceOverride: typeof input.config.minConfidenceOverride === 'number' ? input.config.minConfidenceOverride : 58,
           maxPositions: input.config.maxPositions || 7,

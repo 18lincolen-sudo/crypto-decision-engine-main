@@ -83,10 +83,12 @@ export interface StrategyTickInput {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   totalLeveragedExposureUsd: number;
-  /** {pnl, at, symbol} — what the intraday strategy's evaluation/order-gen consume. */
-  closedTrades: { pnl: number; at: number; symbol?: string }[];
+  /** {pnl, at, symbol} — what the intraday strategy's evaluation/order-gen consume.
+   *  `riskUsd` is the risk-at-entry that turns Kelly's payoff ratio into
+   *  R-multiples; absent on trades closed before the field existed. */
+  closedTrades: { pnl: number; at: number; symbol?: string; riskUsd?: number }[];
   /** {pnl, pnlPercent, at, symbol} — what the legacy/pro strategies consume. */
-  closedTradeMetrics: { pnl: number; pnlPercent: number; at: number; symbol?: string }[];
+  closedTradeMetrics: { pnl: number; pnlPercent: number; at: number; symbol?: string; riskUsd?: number }[];
   fearGreedIndex: number;
   cash: number;
   exitCooldown: Record<string, number>;
@@ -343,10 +345,10 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     // `symbol` is the base asset — used for per-symbol cooldown tracking.
     const closedTrades = trades
       .filter((t) => typeof t.pnl === 'number')
-      .map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: t.symbol }));
+      .map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: t.symbol, riskUsd: t.riskUsd }));
     const closedTradeMetrics = trades
       .filter((t) => typeof t.pnl === 'number')
-      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at, symbol: t.symbol }));
+      .map((t) => ({ pnl: t.pnl ?? 0, pnlPercent: t.pnlPercent ?? 0, at: t.at, symbol: t.symbol, riskUsd: t.riskUsd }));
 
     const candlesBySymbol: Record<string, Candle[]> = {};
     for (const key of Object.keys(liveCandles)) candlesBySymbol[key] = buildH1CandlesForSymbol(key);

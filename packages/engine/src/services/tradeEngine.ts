@@ -20,7 +20,7 @@ import {
   RiskParametersResult,
   ActivePosition
 } from '../types/crypto';
-import { MIN_STOP_PERCENT, MAX_STOP_PERCENT } from './adaptiveRisk';
+import { MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER } from './adaptiveRisk';
 
 export interface Candle {
   timestamp: number;
@@ -1232,6 +1232,16 @@ export interface ClosedTradeMetric {
    *  adaptiveRisk.ts orders the history by it, and without it a caller whose
    *  trade array is newest-first has its streak read backwards. */
   at?: number;
+  /** Capital at risk when the position was OPENED: |entryPrice - stopLoss| ×
+   *  quantity (× leverage for Futures). Snapshot at entry, never recomputed:
+   *  pos.stopLoss moves under trailing stops and TP1 reanchoring, so deriving
+   *  it at close time yields the wrong denominator.
+   *
+   *  Kelly needs the payoff ratio in units of risk. Measured in dollars it is
+   *  contaminated by position size — and since betFraction is itself dynamic,
+   *  the estimate feeds on its own output. Optional because persisted history
+   *  predates the field; see kellyPayoffRatio() for the fallback. */
+  riskUsd?: number;
 }
 
 export function calculateRiskParameters(
@@ -1314,29 +1324,31 @@ export function calculateRiskParameters(
   }
 
   // 3. Position Sizing — Direct Kelly Criterion (§Layer3.3)
-  // BetSize = Portfolio × clamp(Kelly×0.5, 0, 0.10), default 6% without >=30 closed trades.
-  // This is a materially different formula from the previous risk-first approach
-  // (risk 0.75% of equity / stop distance scaled by half-Kelly) — the spec
-  // defines Kelly as DIRECTLY setting the bet size as a fraction of portfolio.
+  // BetSize = Portfolio × clamp(Kelly×KELLY_MULTIPLIER, 0, 0.10), default 6%
+  // below KELLY_MIN_SAMPLE closed trades. This is a materially different
+  // formula from the previous risk-first approach (risk 0.75% of equity /
+  // stop distance scaled by half-Kelly) — the spec defines Kelly as DIRECTLY
+  // setting the bet size as a fraction of portfolio.
+  //
+  // The payoff ratio comes from kellyPayoffRatio(), which prefers R-multiples
+  // over dollar PnL: measured in dollars the ratio is contaminated by position
+  // size, and since betFraction is itself dynamic the estimate fed on its own
+  // output. See adaptiveRisk.ts for the derivation.
   let kellyFraction = 0;
   let betFraction = 0.06;
-  if (closedTrades.length >= 30) {
-    const winning = closedTrades.filter(t => t.pnl > 0);
-    const losing = closedTrades.filter(t => t.pnl < 0);
-    const winRate = winning.length / closedTrades.length;
-
-    const avgWin = winning.length ? winning.reduce((s, t) => s + t.pnl, 0) / winning.length : atr * 2;
-    const avgLoss = losing.length ? Math.abs(losing.reduce((s, t) => s + t.pnl, 0) / losing.length) : atr * 1.5;
-    const historicalR = avgLoss > 0 ? avgWin / avgLoss : riskRewardRatio;
+  if (closedTrades.length >= KELLY_MIN_SAMPLE) {
+    const winRate = closedTrades.filter(t => t.pnl > 0).length / closedTrades.length;
+    const payoff = kellyPayoffRatio(closedTrades);
+    const historicalR = payoff && payoff.r > 0 ? payoff.r : riskRewardRatio;
 
     if (historicalR > 0) {
       kellyFraction = winRate - (1 - winRate) / historicalR;
     }
-    betFraction = Math.min(Math.max(0, kellyFraction * 0.5), 0.10);
+    betFraction = Math.min(Math.max(0, kellyFraction * KELLY_MULTIPLIER), 0.10);
   }
   // Applied to BOTH branches — the pre-Kelly 6% default was previously the
   // one path where a losing streak or an open drawdown changed nothing at
-  // all, which is exactly the phase (first 30 trades) where it matters most.
+  // all, which is exactly the phase (first trades) where it matters most.
   betFraction = Math.min(Math.max(0, betFraction * Math.max(0, sizingMultiplier)), 0.10);
   const betSizeUsd = portfolioValue * betFraction;
 
@@ -1363,6 +1375,10 @@ export function calculateRiskParameters(
   }
 
   // Minimal order size constraint ($5) — bypassed for high-confidence signals
+  // A zero-size bet is not a trade — see the identical guard in
+  // proAlgEngine.calculateProRisk for why the high-confidence bypass must not
+  // let one through.
+  if (betSizeUsd <= 0) return null;
   if (betSizeUsd < 5 && signalScore < 72) return null;
 
   const stopDistance = Math.abs(entryPrice - stopLoss);

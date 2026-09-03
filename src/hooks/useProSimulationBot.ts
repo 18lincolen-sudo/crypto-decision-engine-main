@@ -292,7 +292,7 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
 
   const closedTrades = useMemo(() => trades.filter((t) => typeof t.pnl === 'number'), [trades]);
   const closedTradeMetrics = useMemo(
-    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol) })),
+    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol), riskUsd: t.riskUsd })),
     [closedTrades]
   );
 

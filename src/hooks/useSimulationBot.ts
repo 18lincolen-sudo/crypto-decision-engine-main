@@ -382,7 +382,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
   // `symbol` is normalized to base asset (e.g. "BTCUSDT" → "BTC") for per-symbol
   // cooldown tracking — matching the bare symbol used in evaluations.
   const closedTradeRecords = useMemo<ClosedTradeRecord[]>(
-    () => trades.filter((t) => typeof t.pnl === 'number').map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol) })),
+    () => trades.filter((t) => typeof t.pnl === 'number').map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol), riskUsd: t.riskUsd })),
     [trades]
   );
 

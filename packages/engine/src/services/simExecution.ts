@@ -97,6 +97,16 @@ export interface SimPosition {
   reason: string;
   confidence: number;
   entryFee: number;
+  /** Capital at risk at ENTRY: |entryPrice - stopLoss| × quantity, in the same
+   *  units as the pnl computed at close (quantity already carries leverage for
+   *  Futures, since it is derived from the leveraged notional).
+   *
+   *  Snapshotted here and never recomputed: stopLoss moves under trailing stops
+   *  and TP1 reanchoring, so a close-time derivation gives the wrong risk. This
+   *  is the denominator that turns Kelly's payoff ratio into R-multiples —
+   *  see kellyPayoffRatio() in adaptiveRisk.ts. Optional because positions
+   *  restored from state persisted before this field existed will not have it. */
+  initialRiskUsd?: number;
   /** Per-setup-type hold budget from the entry-time RiskPlan (intradayRisk.ts).
    *  Without these, the exit engine falls back to a single hardcoded default
    *  (TREND_PULLBACK's 90min) for every position regardless of its actual
@@ -127,6 +137,10 @@ export interface SimTrade {
   confidence: number;
   pnl?: number;
   pnlPercent?: number;
+  /** Risk-at-entry of the position this trade closed, carried from
+   *  SimPosition.initialRiskUsd. Present on exit trades only — entries have no
+   *  pnl and are filtered out before the Kelly history is built. */
+  riskUsd?: number;
 }
 
 export interface SimPoint {
@@ -601,6 +615,10 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
         timeStopMs: order.timeStopMs,
         setupType: order.setupType
       };
+      // Snapshot risk-at-entry AFTER newPos is built: it needs the reanchored
+      // stopLoss actually stored on the position, not order.stopLoss, which was
+      // computed against the signal price rather than the fill price.
+      newPos.initialRiskUsd = Math.abs(fillPrice - newPos.stopLoss) * quantity;
 
       workingPositions.push(newPos);
       newTrades.push({
@@ -645,7 +663,11 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
           notionalUsd: (pos.quantity - closeQty) * fillPrice,
           tp1Hit: true,
           highestPriceSinceTP1: fillPrice,
-          lowestPriceSinceTP1: fillPrice
+          lowestPriceSinceTP1: fillPrice,
+          // The remainder was opened against half the original risk. Without
+          // halving here, the eventual full close would divide the remaining
+          // half's pnl by the whole position's risk and understate its R.
+          initialRiskUsd: pos.initialRiskUsd !== undefined ? pos.initialRiskUsd / 2 : undefined
         };
 
         const partialPnlPercent = (pnl / (pos.marginUsd * 0.5)) * 100;
@@ -653,7 +675,10 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
           id: order.id, symbol: order.symbol, type: 'FUTURES', side: 'partial_tp1',
           price: fillPrice, requestedPrice: order.signalPrice, slippagePercent, fee, delayMs,
           quantity: closeQty, usdValue: notional, leverage: pos.leverage, timestamp: now, at: Date.now(),
-          reason: order.reason, confidence: order.confidence, pnl, pnlPercent: partialPnlPercent
+          reason: order.reason, confidence: order.confidence, pnl, pnlPercent: partialPnlPercent,
+          // Half the position closed, so half the risk it was opened against —
+          // matching how pnl above is already the half-position's pnl.
+          riskUsd: pos.initialRiskUsd !== undefined ? pos.initialRiskUsd / 2 : undefined
         });
 
         events.push({
@@ -698,7 +723,8 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
           id: order.id, symbol: order.symbol, type: pos.type, side: order.side,
           price: fillPrice, requestedPrice: order.signalPrice, slippagePercent, fee, delayMs,
           quantity: pos.quantity, usdValue: notional, leverage: pos.leverage, timestamp: now, at: Date.now(),
-          reason: order.reason, confidence: order.confidence, pnl, pnlPercent
+          reason: order.reason, confidence: order.confidence, pnl, pnlPercent,
+          riskUsd: pos.initialRiskUsd
         });
 
         events.push({

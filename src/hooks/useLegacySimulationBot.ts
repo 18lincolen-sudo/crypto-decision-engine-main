@@ -288,7 +288,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   // `symbol` is normalized to base asset for per-symbol cooldown tracking.
   const closedTrades = useMemo(() => trades.filter((t) => typeof t.pnl === 'number'), [trades]);
   const closedTradeMetrics = useMemo(
-    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol) })),
+    () => closedTrades.map((t) => ({ pnl: t.pnl ?? 0, at: t.at, symbol: toBaseAsset(t.symbol), riskUsd: t.riskUsd })),
     [closedTrades]
   );
 

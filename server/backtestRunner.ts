@@ -130,6 +130,10 @@ interface SimPosition {
   lowestPrice: number;
   tp1Hit: boolean;
   sizeUsd: number;
+  /** Risk-at-entry, mirroring SimPosition.initialRiskUsd in simExecution.ts.
+   *  Without it the backtest would feed Kelly dollar-based payoff ratios while
+   *  production feeds R-multiples — i.e. measure a different engine. */
+  initialRiskUsd: number;
 }
 
 interface SimState {
@@ -336,7 +340,7 @@ function openPositionLegacy(symbol: string, candles: Candle[], idx: number, stat
   if (!risk) return null;
   const sizeUsd = risk.betSizeUsd;
   const quantity = sizeUsd / currentPrice;
-  return { symbol, type: tradeType, side, entryPrice: currentPrice, stopLoss: risk.stopLoss, takeProfit1: risk.takeProfit1, takeProfit2: risk.takeProfit2, quantity, leverage: risk.leverage, openTimestamp: candles[idx].timestamp, highestPrice: currentPrice, lowestPrice: currentPrice, tp1Hit: false, sizeUsd };
+  return { symbol, type: tradeType, side, entryPrice: currentPrice, stopLoss: risk.stopLoss, takeProfit1: risk.takeProfit1, takeProfit2: risk.takeProfit2, quantity, leverage: risk.leverage, openTimestamp: candles[idx].timestamp, highestPrice: currentPrice, lowestPrice: currentPrice, tp1Hit: false, sizeUsd, initialRiskUsd: Math.abs(currentPrice - risk.stopLoss) * quantity };
 }
 
 function openPositionPro(symbol: string, candles: Candle[], idx: number, state: SimState, tradeType: 'SPOT' | 'FUTURES', side: TradeSide, signalScore: number, slConfig: SlConfig): SimPosition | null {
@@ -352,7 +356,7 @@ function openPositionPro(symbol: string, candles: Candle[], idx: number, state: 
   if (!risk) return null;
   const sizeUsd = risk.betSizeUsd;
   const quantity = sizeUsd / currentPrice;
-  return { symbol, type: tradeType, side, entryPrice: currentPrice, stopLoss: risk.stopLoss, takeProfit1: risk.takeProfit1, takeProfit2: risk.takeProfit2, quantity, leverage: risk.leverage, openTimestamp: candles[idx].timestamp, highestPrice: currentPrice, lowestPrice: currentPrice, tp1Hit: false, sizeUsd };
+  return { symbol, type: tradeType, side, entryPrice: currentPrice, stopLoss: risk.stopLoss, takeProfit1: risk.takeProfit1, takeProfit2: risk.takeProfit2, quantity, leverage: risk.leverage, openTimestamp: candles[idx].timestamp, highestPrice: currentPrice, lowestPrice: currentPrice, tp1Hit: false, sizeUsd, initialRiskUsd: Math.abs(currentPrice - risk.stopLoss) * quantity };
 }
 
 // ── Run single backtest ────────────────────────────────────────────────────
@@ -410,14 +414,15 @@ export function runBacktest(symbol: string, candles: Candle[], slConfig: SlConfi
           // Partial close: 50% of position
           const halfQty = pos.quantity / 2;
           const halfPnl = pnlAfterFee / 2;
-          state.closedTrades.push({ pnl: halfPnl, at: candle.timestamp });
+          state.closedTrades.push({ pnl: halfPnl, at: candle.timestamp, riskUsd: pos.initialRiskUsd / 2 });
           pos.quantity = halfQty;
+          pos.initialRiskUsd = pos.initialRiskUsd / 2;
           pos.tp1Hit = true;
           if (pos.type === 'SPOT') { state.cash += halfQty * currentPrice - exitFee / 2; } else { state.cash += (pos.sizeUsd / 2) + halfPnl; }
           pos.sizeUsd = pos.sizeUsd / 2;
         } else {
           // FULL, TRAILING_STOP, REVERSAL, TIME_BASED: full close
-          state.closedTrades.push({ pnl: pnlAfterFee, at: candle.timestamp });
+          state.closedTrades.push({ pnl: pnlAfterFee, at: candle.timestamp, riskUsd: pos.initialRiskUsd });
           if (pnlAfterFee < 0) lossCooldownUntil = Math.max(lossCooldownUntil, candle.timestamp + STREAK_COOLDOWN_MS);
           if (pos.type === 'SPOT') { state.cash += pos.quantity * currentPrice - exitFee; } else { state.cash += pos.sizeUsd + pnlAfterFee; }
           toRemove.push(i);
@@ -518,13 +523,14 @@ export async function runPortfolioBacktest(
         if (check.exitType === 'PARTIAL_50') {
           const halfQty = pos.quantity / 2;
           const halfPnl = pnlAfterFee / 2;
-          state.closedTrades.push({ pnl: halfPnl, at: ev.ts });
+          state.closedTrades.push({ pnl: halfPnl, at: ev.ts, riskUsd: pos.initialRiskUsd / 2 });
           pos.quantity = halfQty;
+          pos.initialRiskUsd = pos.initialRiskUsd / 2;
           pos.tp1Hit = true;
           if (pos.type === 'SPOT') { state.cash += halfQty * exitPrice - exitFee / 2; } else { state.cash += (pos.sizeUsd / 2) + halfPnl; }
           pos.sizeUsd = pos.sizeUsd / 2;
         } else {
-          state.closedTrades.push({ pnl: pnlAfterFee, at: ev.ts });
+          state.closedTrades.push({ pnl: pnlAfterFee, at: ev.ts, riskUsd: pos.initialRiskUsd });
           if (pnlAfterFee < 0) lossCooldownUntil.set(symbol, Math.max(lossCooldownUntil.get(symbol) ?? 0, ev.ts + STREAK_COOLDOWN_MS));
           if (pos.type === 'SPOT') { state.cash += pos.quantity * exitPrice - exitFee; } else { state.cash += pos.sizeUsd + pnlAfterFee; }
           toRemove.push(i);

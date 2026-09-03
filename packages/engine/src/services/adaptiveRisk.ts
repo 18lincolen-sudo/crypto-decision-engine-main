@@ -28,7 +28,70 @@ export interface ClosedTradeRecord {
   /** Base symbol (e.g. "BTC") — used for per-symbol cooldown tracking. */
   symbol?: string;
   at?: number;
+  /** Capital at risk at ENTRY — see ClosedTradeMetric.riskUsd in tradeEngine.ts
+   *  for why this is snapshotted rather than derived at close. */
+  riskUsd?: number;
 }
+
+/** Kelly's payoff ratio R = avgWin / avgLoss.
+ *
+ *  Measured in DOLLARS this is contaminated by position size: a run of wins
+ *  taken at large size inflates R, which inflates betFraction, which inflates
+ *  the next R — the estimator feeds on its own output. Measured in R-multiples
+ *  (pnl / risk-at-entry) the size cancels and what is left is the edge.
+ *
+ *  Returns null when the history cannot support the R-multiple form, so the
+ *  caller can fall back rather than silently mixing units. Requires EVERY
+ *  trade in the window to carry riskUsd: a partial mix would divide dollar
+ *  wins by R-multiple losses, which is worse than either alone.
+ */
+export function kellyPayoffRatio(
+  trades: ReadonlyArray<ClosedTradeRecord>
+): { r: number; basis: 'r-multiple' | 'dollar' } | null {
+  const winning = trades.filter((t) => t.pnl > 0);
+  const losing = trades.filter((t) => t.pnl < 0);
+  if (!winning.length || !losing.length) return null;
+
+  const usable = (t: ClosedTradeRecord) => typeof t.riskUsd === 'number' && t.riskUsd > 0;
+  if (trades.every(usable)) {
+    const avgWinR = winning.reduce((s, t) => s + t.pnl / t.riskUsd!, 0) / winning.length;
+    const avgLossR = Math.abs(losing.reduce((s, t) => s + t.pnl / t.riskUsd!, 0) / losing.length);
+    if (avgLossR > 0) return { r: avgWinR / avgLossR, basis: 'r-multiple' };
+  }
+
+  const avgWin = winning.reduce((s, t) => s + t.pnl, 0) / winning.length;
+  const avgLoss = Math.abs(losing.reduce((s, t) => s + t.pnl, 0) / losing.length);
+  if (avgLoss > 0) return { r: avgWin / avgLoss, basis: 'dollar' };
+  return null;
+}
+
+/** Trades required before Kelly is trusted to size at all.
+ *
+ *  KEPT AT 30 ON EVIDENCE, against the statistical argument for raising it.
+ *
+ *  The argument for 100 is sound in isolation: at n=30 the standard error on a
+ *  win rate near 50% is ~9.1pp, which swings the resulting bet fraction 3.5x on
+ *  sampling noise alone. But raising it was measured (A/B, 6 symbols x 6 months,
+ *  scripts/abBacktest.ts) and made both engines dramatically worse — Pro went
+ *  from +$17.66 to -$103.21 and its max drawdown from 1.66% to 7.22%.
+ *
+ *  The reason is the fallback, not the threshold. Below this floor the engines
+ *  size at a FLAT 6% with no edge feedback at all, so raising the floor simply
+ *  buys more trades taken blind. Noisy Kelly still beats no Kelly here because
+ *  it clamps to zero on a losing book — the protection comes from the sign of
+ *  the edge, which 30 trades does resolve, not its magnitude, which it doesn't.
+ *
+ *  The real fix is to make the sub-threshold path edge-aware rather than flat;
+ *  until then this stays at 30. See PLAN_ENGINE_FIXES.md. */
+export const KELLY_MIN_SAMPLE = 30;
+
+/** Fraction of full Kelly actually bet. Was 0.5 (half-Kelly).
+ *
+ *  Half-Kelly is the growth-optimal ceiling when the edge is KNOWN. Here it is
+ *  estimated from a rolling window and drifts with regime, so the quarter is
+ *  the standard allowance for estimation error. Measured: +$12.15 -> +$17.66
+ *  on Pro over the A/B window, with drawdown flat. */
+export const KELLY_MULTIPLIER = 0.25;
 
 export interface PerformanceWindow {
   /** Number of closed trades actually considered. */
