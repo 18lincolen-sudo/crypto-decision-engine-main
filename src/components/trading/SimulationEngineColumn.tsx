@@ -58,22 +58,29 @@ export default function SimulationEngineColumn({
   status, isRunning, start, pause, resetAll
 }: EngineColumnProps) {
   const [openLogs, setOpenLogs] = useState<string[]>([]);
-  const [countdown, setCountdown] = useState(0);
+  // null = no schedule known yet; 0 = the tick is overdue (server is still
+  // working on it). Anything > 0 is a real number of seconds.
+  const [countdown, setCountdown] = useState<number | null>(null);
   const [evalFilter, setEvalFilter] = useState('');
   const [evalSort, setEvalSort] = useState<'default' | 'confidence-desc' | 'confidence-asc'>('confidence-desc');
 
   useEffect(() => {
     if (!isRunning) {
-      setCountdown(0);
+      setCountdown(null);
       return;
     }
     const updateCountdown = () => {
       if (!nextTickAt) {
-        setCountdown(5);
+        setCountdown(null);
         return;
       }
-      const remaining = Math.max(0, nextTickAt - Date.now());
-      setCountdown(remaining > 0 ? Math.min(5, Math.ceil(remaining / 1000)) : 1);
+      const remaining = nextTickAt - Date.now();
+      // Two bugs lived on this line. `Math.min(5, …)` capped the display at 5s
+      // even when the real wait was 20s, and the `: 1` fallback pinned it to
+      // "1s" for as long as the tick was overdue — so the label sat frozen at
+      // "טיק בעוד 1s" for ~90% of every cycle and the page looked hung.
+      // Overdue is now reported as overdue.
+      setCountdown(remaining > 0 ? Math.min(120, Math.ceil(remaining / 1000)) : 0);
     };
     updateCountdown();
     const id = setInterval(updateCountdown, 200);
@@ -340,7 +347,11 @@ export default function SimulationEngineColumn({
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
             <span className="text-sm font-medium">
               {status === 'running' ? 'פעיל — סורק ומבצע' : status === 'paused' ? 'מושהה' : 'מושבת'}
-              {isRunning && countdown > 0 && <span className={`mr-2 font-bold ${accentClass}`}>· טיק בעוד {countdown}s</span>}
+              {isRunning && countdown !== null && (
+                <span className={`mr-2 font-bold ${accentClass}`}>
+                  {countdown > 0 ? `· טיק בעוד ${countdown}s` : '· מעבד טיק…'}
+                </span>
+              )}
             </span>
             <div className="flex gap-2 flex-wrap justify-center">
               <Button onClick={start} disabled={isRunning} size="sm" className="bg-green-600 hover:bg-green-700 cursor-pointer">

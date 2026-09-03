@@ -373,7 +373,12 @@ export class LegacyAdapter implements EngineAdapter<LegacyPipelineContext> {
       }
 
       return {
-        outcome: !current.layer1 || current.layer1.action === 'hold' || current.layer2?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
+        // SignalEngineResult['action'] is 'BUY' | 'SELL' | 'HOLD' — the lowercase
+        // 'hold' this compared against could never match, so the guard that is
+        // supposed to stop a HOLD signal from being reported as an executable
+        // SIGNAL was dead code. Only tsconfig.worker.json's stricter settings
+        // caught it.
+        outcome: !current.layer1 || current.layer1.action === 'HOLD' || current.layer2?.type === 'HOLD' ? 'NO_SIGNAL' as DecisionOutcome : 'SIGNAL' as DecisionOutcome,
         gate: current.layer3 ? 'RISK' : current.layer2?.type === 'HOLD' ? (current.layer2.blockReason ?? 'ROUTE') : 'RISK',
         logs: current.layer1?.penalties ?? [],
         summary: current.layer2?.reason ?? 'No signal',

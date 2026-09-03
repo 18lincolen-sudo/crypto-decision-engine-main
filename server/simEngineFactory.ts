@@ -302,7 +302,16 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     }
   }
 
+  // TICK_MS is the interval the worker POLLS on, not the cadence snapshots
+  // actually land at: a tick whose market-data refresh takes ~16s makes the
+  // caller's `tickInProgress` guard skip four intervals, so snapshots arrive
+  // ~20s apart. Advertising `now + TICK_MS` therefore promised a tick in 4s
+  // that took 20s, and the client's countdown sat pinned at its floor for the
+  // remaining ~16s — which reads as a frozen page. Measure the real thing.
+  let lastTickDurationMs = 0;
+
   async function tick(config: SimBotConfig, fearGreed = 50) {
+    const tickStartedAt = Date.now();
     initialAmount = config.initialAmount || 10000;
     if ((cash === 0 || !Number.isFinite(cash)) && positions.length === 0 && trades.length === 0) {
       cash = initialAmount;
@@ -430,6 +439,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     }
 
     lastEvaluation = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
+    lastTickDurationMs = Date.now() - tickStartedAt;
     return getSnapshot();
   }
 
@@ -475,7 +485,9 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       })),
       minConfidence: strategy.minConfidence,
       hasSavedSession: trades.length > 0 || positions.length > 0,
-      nextTickAt: Date.now() + TICK_MS,
+      // The next snapshot lands at most one poll interval from now, plus however
+      // long the tick itself takes — measured, not assumed. See lastTickDurationMs.
+      nextTickAt: Date.now() + TICK_MS + lastTickDurationMs,
       totalLeveragedExposureUsd: leveragedExposure(),
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
