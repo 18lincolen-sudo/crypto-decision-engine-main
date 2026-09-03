@@ -157,7 +157,13 @@ export class DecisionEngine {
             ...result,
             outcome: 'NO_SIGNAL',
             gate: 'CORRELATION',
-            reasoning: [...result.reasoning, `Correlation gate: ${gateResult.reason}`]
+            // The block reason must LEAD: the UI shows reasoning[0] as the
+            // headline, so appending it left a rejected trade explaining itself
+            // with the reason it had been approved.
+            reasoning: [
+              `CORRELATION_GATE — ${gateResult.reason ?? 'correlation threshold exceeded'}`,
+              ...result.reasoning
+            ]
           };
         }
       }

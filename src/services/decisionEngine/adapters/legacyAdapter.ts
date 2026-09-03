@@ -155,7 +155,16 @@ class RouteTradeTypeStage implements PipelineStage<LegacyPipelineContext> {
       isWeeklyLocked: context.portfolio.weeklyDrawdownPercent >= 15
     });
 
-    return { context: { ...context, layer2 }, blocked: layer2.type === 'HOLD' };
+    if (layer2.type === 'HOLD') {
+      return {
+        context: { ...context, layer2 },
+        blocked: true,
+        blockReason: layer2.blockReason || layer2.reason || 'ROUTE — router returned HOLD (no tradable setup)',
+        gate: layer2.hardGateBlocked ? 'HARD_GATE' : 'ROUTE'
+      };
+    }
+
+    return { context: { ...context, layer2 }, blocked: false };
   }
 }
 
@@ -182,7 +191,16 @@ class EntryTimingStage implements PipelineStage<LegacyPipelineContext> {
       context.layer1.confidence
     );
 
-    return { context: { ...context, entryTiming }, blocked: !entryTiming.shouldEnterNow };
+    if (!entryTiming.shouldEnterNow) {
+      return {
+        context: { ...context, entryTiming },
+        blocked: true,
+        blockReason: entryTiming.reason || 'ENTRY_TIMING — waiting for a better entry',
+        gate: 'ENTRY_TIMING'
+      };
+    }
+
+    return { context: { ...context, entryTiming }, blocked: false };
   }
 }
 
@@ -220,7 +238,16 @@ class RiskParametersStage implements PipelineStage<LegacyPipelineContext> {
       context.config?.maxFuturesPositions ?? 2
     );
 
-    return { context: { ...context, layer3: layer3 ?? undefined }, blocked: !layer3 };
+    if (!layer3) {
+      return {
+        context,
+        blocked: true,
+        blockReason: 'RISK — no valid risk plan (stop/target/size limits not satisfiable)',
+        gate: 'RISK'
+      };
+    }
+
+    return { context: { ...context, layer3 }, blocked: false };
   }
 }
 
@@ -247,7 +274,16 @@ class CorrelationGateStage implements PipelineStage<LegacyPipelineContext> {
       lookback: DEFAULT_CORRELATION_LOOKBACK
     });
 
-    return { context, blocked: !gate.allowed };
+    if (!gate.allowed) {
+      return {
+        context,
+        blocked: true,
+        blockReason: `CORRELATION_GATE — ${gate.reason || 'correlation threshold exceeded'}`,
+        gate: 'CORRELATION'
+      };
+    }
+
+    return { context, blocked: false };
   }
 }
 
@@ -323,9 +359,11 @@ export class LegacyAdapter implements EngineAdapter<LegacyPipelineContext> {
         if (stageResult.blocked) {
           return {
             outcome: 'NO_SIGNAL' as DecisionOutcome,
-            gate: stageResult.gate ?? 'UNKNOWN',
-            logs: [stageResult.blockReason ?? 'Blocked'],
-            summary: stageResult.blockReason ?? 'Blocked',
+            // Safety net: a stage that blocks without metadata must still name
+            // itself, otherwise the UI renders a useless "NO_SIGNAL [UNKNOWN] / Blocked".
+            gate: stageResult.gate ?? stage.name.toUpperCase().replace(/-/g, '_'),
+            logs: [stageResult.blockReason ?? `Blocked at stage "${stage.name}" (no reason reported)`],
+            summary: stageResult.blockReason ?? `Blocked at stage "${stage.name}" (no reason reported)`,
             layer0: current.layer0,
             layer1: current.layer1,
             layer2: current.layer2,

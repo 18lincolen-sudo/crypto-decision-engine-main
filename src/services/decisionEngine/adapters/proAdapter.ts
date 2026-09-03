@@ -164,7 +164,16 @@ class RouteTradeTypeStage implements PipelineStage<ProPipelineContext> {
       isWeeklyLocked: context.portfolio.weeklyDrawdownPercent >= 15
     });
 
-    return { context: { ...context, router }, blocked: router.type === 'HOLD' || !!router.hardGateBlocked };
+    if (router.type === 'HOLD' || router.hardGateBlocked) {
+      return {
+        context: { ...context, router },
+        blocked: true,
+        blockReason: router.blockReason || router.reason || 'ROUTE — router returned HOLD (no tradable setup)',
+        gate: router.hardGateBlocked ? 'HARD_GATE' : 'ROUTE'
+      };
+    }
+
+    return { context: { ...context, router }, blocked: false };
   }
 }
 
@@ -188,7 +197,16 @@ class EntryTimingStage implements PipelineStage<ProPipelineContext> {
       context.signal.rawConfidence
     );
 
-    return { context: { ...context, entryTiming: timing }, blocked: !timing.shouldEnter };
+    if (!timing.shouldEnter) {
+      return {
+        context: { ...context, entryTiming: timing },
+        blocked: true,
+        blockReason: timing.reason || 'ENTRY_TIMING — waiting for a better entry',
+        gate: 'ENTRY_TIMING'
+      };
+    }
+
+    return { context: { ...context, entryTiming: timing }, blocked: false };
   }
 }
 
@@ -231,7 +249,16 @@ class RiskParametersStage implements PipelineStage<ProPipelineContext> {
       context.config?.maxFuturesPositions ?? 2
     );
 
-    return { context: { ...context, risk: risk ?? undefined }, blocked: !risk };
+    if (!risk) {
+      return {
+        context,
+        blocked: true,
+        blockReason: 'RISK — no valid risk plan (stop/target/size limits not satisfiable)',
+        gate: 'RISK'
+      };
+    }
+
+    return { context: { ...context, risk }, blocked: false };
   }
 }
 
@@ -343,9 +370,11 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
         if (stageResult.blocked) {
           return {
             outcome: 'NO_SIGNAL' as DecisionOutcome,
-            gate: stageResult.gate ?? 'UNKNOWN',
-            logs: [stageResult.blockReason ?? 'Blocked'],
-            summary: stageResult.blockReason ?? 'Blocked',
+            // Safety net: a stage that blocks without metadata must still name
+            // itself, otherwise the UI renders a useless "NO_SIGNAL [UNKNOWN] / Blocked".
+            gate: stageResult.gate ?? stage.name.toUpperCase().replace(/-/g, '_'),
+            logs: [stageResult.blockReason ?? `Blocked at stage "${stage.name}" (no reason reported)`],
+            summary: stageResult.blockReason ?? `Blocked at stage "${stage.name}" (no reason reported)`,
             regime: current.regime,
             signal: current.signal,
             router: current.router,

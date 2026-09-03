@@ -281,9 +281,11 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
           const raw = (current as unknown as { _rawResult?: IntradayDecision })._rawResult;
           return {
             outcome: 'NO_SIGNAL' as DecisionOutcome,
-            gate: stageResult.gate ?? 'UNKNOWN',
-            logs: [stageResult.blockReason ?? 'Blocked'],
-            summary: stageResult.blockReason ?? 'Blocked',
+            // Safety net: a stage that blocks without metadata must still name
+            // itself, otherwise the UI renders a useless "NO_SIGNAL [UNKNOWN] / Blocked".
+            gate: stageResult.gate ?? stage.name.toUpperCase().replace(/-/g, '_'),
+            logs: [stageResult.blockReason ?? `Blocked at stage "${stage.name}" (no reason reported)`],
+            summary: stageResult.blockReason ?? `Blocked at stage "${stage.name}" (no reason reported)`,
             _rawResult: raw
           };
         }
