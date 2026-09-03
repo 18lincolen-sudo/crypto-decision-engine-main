@@ -16,11 +16,11 @@
 **קבצים מרכזיים:**
 | קובץ | תפקיד |
 |------|-------|
-| `src/services/tradeEngine.ts` | מנוע מסחר בסיסי — אינדיקטורים, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters, evaluateExit |
-| `src/services/legacySimExecution.ts` | לוגיקת ביצוע סימולציה Legacy — buildLegacyEvaluations, generateLegacyOrders |
-| `src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown (משותף) |
-| `src/services/correlation.ts` | מניעת קורלציה (משותף) |
-| `src/services/simExecution.ts` | ביצוע פקודות משותף (fillDueOrders) |
+| `packages/engine/src/services/tradeEngine.ts` | מנוע מסחר בסיסי — אינדיקטורים, detectMarketRegime, evaluateSignals, routeTradeType, calculateRiskParameters, evaluateExit |
+| `packages/engine/src/services/legacySimExecution.ts` | לוגיקת ביצוע סימולציה Legacy — buildLegacyEvaluations, generateLegacyOrders |
+| `packages/engine/src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown (משותף) |
+| `packages/engine/src/services/correlation.ts` | מניעת קורלציה (משותף) |
+| `packages/engine/src/services/simExecution.ts` | ביצוע פקודות משותף (fillDueOrders) |
 | `server/legacySimEngine.ts` | adapter למנוע סימולציה 24/7 בשרת |
 | `server/simEngineFactory.ts` | tick loop, hydrate, persist, getSnapshot משותף |
 
@@ -51,7 +51,7 @@ CIRCUIT_BREAKER → EXPOSURE → (Layer 0-3) → Entry Timing → Correlation Ga
 
 ### LAYER 0: Market Regime Detection — זיהוי משטר שוק
 
-**מקור:** `src/services/tradeEngine.ts` → `detectMarketRegime()`
+**מקור:** `packages/engine/src/services/tradeEngine.ts` → `detectMarketRegime()`
 
 **מדדים מרכזיים:**
 | מדד | תיאור |
@@ -79,7 +79,7 @@ CIRCUIT_BREAKER → EXPOSURE → (Layer 0-3) → Entry Timing → Correlation Ga
 
 ### LAYER 1: Signal Scoring — חישוב ציון ביטחון
 
-**מקור:** `src/services/tradeEngine.ts` → `evaluateSignals()`
+**מקור:** `packages/engine/src/services/tradeEngine.ts` → `evaluateSignals()`
 
 **אינדיקטורים ומשקלות:**
 | אינדיקטור | משקל | תנאי BUY | תנאי SELL |
@@ -120,7 +120,7 @@ if (regime === 'RANGING') confidence *= 0.7;
 
 ### LAYER 2: Trade Routing — ניתוב סוג עסקה
 
-**מקור:** `src/services/tradeEngine.ts` → `routeTradeType()`
+**מקור:** `packages/engine/src/services/tradeEngine.ts` → `routeTradeType()`
 
 **שערול קשיחים (Hard Gates):**
 | # | שערול | תנאי |
@@ -162,7 +162,7 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 
 ### LAYER 3: Risk Management — ניהול סיכונים
 
-**מקור:** `src/services/tradeEngine.ts` → `calculateRiskParameters()`
+**מקור:** `packages/engine/src/services/tradeEngine.ts` → `calculateRiskParameters()`
 
 **פרמטרים:**
 | פרמטר | תיאור |
@@ -205,7 +205,7 @@ betFraction = 0.06 (6%)
 
 ## 4. Entry Timing — תזמון כניסה
 
-**מקור:** `src/services/tradeEngine.ts` → `calculateOptimalEntry()`
+**מקור:** `packages/engine/src/services/tradeEngine.ts` → `calculateOptimalEntry()`
 
 **מטרה:** מניעת רטיטות — כניסה רק אחרי pullback ל-EMA20.
 
@@ -238,7 +238,7 @@ else if (action === 'SELL') {
 
 ## 5. חישוב Confidence
 
-**מקור:** `src/services/legacySimExecution.ts`
+**מקור:** `packages/engine/src/services/legacySimExecution.ts`
 
 ```typescript
 // חישוב confidence מ-Layer 1
@@ -287,7 +287,7 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 
 ### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
 
-מקור: `src/services/adaptiveRisk.ts`
+מקור: `packages/engine/src/services/adaptiveRisk.ts`
 
 streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
@@ -387,7 +387,7 @@ const fee = notional * feePercent / 100;
 
 ## 8. יציאה מפוזיציה (Exit)
 
-**מקור:** `src/services/tradeEngine.ts` → `evaluateExit()`
+**מקור:** `packages/engine/src/services/tradeEngine.ts` → `evaluateExit()`
 
 **סוגי יציאה:**
 | סוג | תנאי |
@@ -464,18 +464,3 @@ if (position.type === 'SPOT' && hoursHeld >= 48) → FULL (time exit)
 | Correlation gate | כן | כן | כן |
 | Streak cooldown | לפי מטבע | לפי מטבע | לפי מטבע |
 | High-confidence bypass | 72 (Layer 3) | 72 (NO_ENTRY + COST) | 72 (Layer 3) |
-
----
-
-## 12. תיקוני באגים
-
-### תיקון: `MIN_ENTRY_RELATIVE_VOLUME` לא מוגדר
-
-**קובץ:** `src/services/legacySimExecution.ts`
-
-**בעיה:** המשתנה `MIN_ENTRY_RELATIVE_VOLUME` שייוצא מ-`src/services/tradeEngine.ts` נעשה שימוש ב-`legacySimExecution.ts` ללא ייבוא, גרם ל-`ReferenceError: MIN_ENTRY_RELATIVE_VOLUME is not defined` בזמן ריצה.
-
-**תיקון:** נוסף הייבוא החסר:
-```typescript
-import { ..., MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
-```

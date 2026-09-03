@@ -19,17 +19,17 @@
 **קבצים מרכזיים:**
 | קובץ | תפקיד |
 |------|-------|
-| `src/services/intradayEngine.ts` | מרכז ההחלטות — evaluateIntradayDecision |
-| `src/services/intradayRegime.ts` | זיהוי משטר שוק (Layer 0) |
-| `src/services/intradaySetup.ts` | זיהוי Setup (Layer 1) — TREND_PULLBACK, BREAKOUT_RETEST, MEAN_REVERSION |
-| `src/services/intradayEntry.ts` | אישור כניסה (Layer 2) |
-| `src/services/intradayRisk.ts` | Cost/Edge + תכנון סיכון (Layer 3) |
-| `src/services/intradayExit.ts` | לוגיקת יציאה מפוזיציה |
-| `src/services/intradayBridge.ts` | גשר בין סימולציה ל-intradayEngine + מיפוי ל-SignalEvaluation |
-| `src/services/intradayParams.ts` | פרמטרים מרכזיים (DEFAULT_INTRADAY_PARAMS) |
-| `src/services/simExecution.ts` | לוגיקת ביצוע סימולציה (משותף) |
-| `src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown |
-| `src/services/correlation.ts` | מניעת קורלציה (Pearson log-returns) |
+| `packages/engine/src/services/intradayEngine.ts` | מרכז ההחלטות — evaluateIntradayDecision |
+| `packages/engine/src/services/intradayRegime.ts` | זיהוי משטר שוק (Layer 0) |
+| `packages/engine/src/services/intradaySetup.ts` | זיהוי Setup (Layer 1) — TREND_PULLBACK, BREAKOUT_RETEST, MEAN_REVERSION |
+| `packages/engine/src/services/intradayEntry.ts` | אישור כניסה (Layer 2) |
+| `packages/engine/src/services/intradayRisk.ts` | Cost/Edge + תכנון סיכון (Layer 3) |
+| `packages/engine/src/services/intradayExit.ts` | לוגיקת יציאה מפוזיציה |
+| `packages/engine/src/services/intradayBridge.ts` | גשר בין סימולציה ל-intradayEngine + מיפוי ל-SignalEvaluation |
+| `packages/engine/src/services/intradayParams.ts` | פרמטרים מרכזיים (DEFAULT_INTRADAY_PARAMS) |
+| `packages/engine/src/services/simExecution.ts` | לוגיקת ביצוע סימולציה (משותף) |
+| `packages/engine/src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown |
+| `packages/engine/src/services/correlation.ts` | מניעת קורלציה (Pearson log-returns) |
 | `server/simEngine.ts` | adapter למנוע סימולציה 24/7 בשרת |
 | `server/simEngineFactory.ts` | tick loop, hydrate, persist, getSnapshot משותף |
 
@@ -98,7 +98,7 @@ maxFutures = 2
 
 ### LAYER A: 1H REGIME — זיהוי משטר שוק
 
-**מקור:** `src/services/intradayRegime.ts` → `detectRegime1H()`
+**מקור:** `packages/engine/src/services/intradayRegime.ts` → `detectRegime1H()`
 
 **תוצאות אפשריות:**
 | Regime | תיאור | Futures |
@@ -131,7 +131,7 @@ maxFutures = 2
 
 ### LAYER B: 15M SETUP — זיהוי Setup
 
-**מקור:** `src/services/intradaySetup.ts` → `detectSetup15M()`
+**מקור:** `packages/engine/src/services/intradaySetup.ts` → `detectSetup15M()`
 
 **סוגי Setup אפשריים:**
 | Setup | תיאור |
@@ -151,7 +151,7 @@ maxFutures = 2
 
 ### LAYER C: 5M ENTRY — אישור כניסה
 
-**מקור:** `src/services/intradayEntry.ts` → `confirmEntry5M()`
+**מקור:** `packages/engine/src/services/intradayEntry.ts` → `confirmEntry5M()`
 
 **תנאי כניסה:**
 - `confirmed` — האם הכניסה מאושרת
@@ -222,7 +222,7 @@ if (strictMode && (!setup.strong || !entry.strong)) → BLOCK
 
 ### COST / EDGE — ניתוח עלות לעומת רווח
 
-**מקור:** `src/services/intradayRisk.ts` → `evaluateCostEdge()`
+**מקור:** `packages/engine/src/services/intradayRisk.ts` → `evaluateCostEdge()`
 
 **חישוב:**
 ```typescript
@@ -243,7 +243,7 @@ if (!cost.approved && confidence >= 72) → BYPASS
 
 ### LAYER D: RISK PLAN — תכנון סיכון
 
-**מקור:** `src/services/intradayRisk.ts` → `buildRiskPlan()`
+**מקור:** `packages/engine/src/services/intradayRisk.ts` → `buildRiskPlan()`
 
 **פרמטרים:**
 | פרמטר | תיאור |
@@ -271,9 +271,9 @@ if (!risk.approved && confidence >= 72) → buildFallbackIntradayRisk()
 
 ## 4. יציאה מפוזיציה (Exit)
 
-**מקור:** `src/services/intradayExit.ts` → `evaluateIntradayExit()`
+**מקור:** `packages/engine/src/services/intradayExit.ts` → `evaluateIntradayExit()`
 
-**גשר:** `src/services/intradayBridge.ts` → `evaluatePositionExit()` + `buildExitView()`
+**גשר:** `packages/engine/src/services/intradayBridge.ts` → `evaluatePositionExit()` + `buildExitView()`
 
 **סוגי יציאה:**
 | סוג | תנאי |
@@ -302,7 +302,7 @@ if (!risk.approved && confidence >= 72) → buildFallbackIntradayRisk()
 
 ## 5. חישוב Confidence
 
-**מקור:** `src/services/intradayBridge.ts` → `mapDecisionToSignalEvaluation()`
+**מקור:** `packages/engine/src/services/intradayBridge.ts` → `mapDecisionToSignalEvaluation()`
 
 ```typescript
 const confidence = d.entry
@@ -345,7 +345,7 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 
 ### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
 
-מקור: `src/services/adaptiveRisk.ts`
+מקור: `packages/engine/src/services/adaptiveRisk.ts`
 
 streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
@@ -439,7 +439,7 @@ const fee = notional * feePercent / 100;
 
 ## 8. קונפיגורציה
 
-**מקור:** `src/services/intradayParams.ts` — `DEFAULT_INTRADAY_PARAMS`
+**מקור:** `packages/engine/src/services/intradayParams.ts` — `DEFAULT_INTRADAY_PARAMS`
 
 **התאמות סימולציה מיוחדות** (`SIM_INTRADAY_PARAMS_OVERRIDE` ב-`simExecution.ts`):
 ```typescript

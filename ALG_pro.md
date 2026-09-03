@@ -16,12 +16,12 @@
 **קבצים מרכזיים:**
 | קובץ | תפקיד |
 |------|-------|
-| `src/services/proAdvancedAnalysis.ts` | מקור אותות Pro — מנוע הניתוח המתקדם של האתר |
-| `src/services/proAlgEngine.ts` | מנוע החלטות Pro — זיהוי משטר, ניתוב, סיכון, יציאה (alg.md) |
-| `src/services/proSimExecution.ts` | לוגיקת ביצוע סימולציה Pro — buildProEvaluations, generateProOrders |
-| `src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown (משותף) |
-| `src/services/correlation.ts` | מניעת קורלציה (משותף) |
-| `src/services/simExecution.ts` | ביצוע פקודות משותף (fillDueOrders) |
+| `packages/engine/src/services/proAdvancedAnalysis.ts` | מקור אותות Pro — מנוע הניתוח המתקדם של האתר |
+| `packages/engine/src/services/proAlgEngine.ts` | מנוע החלטות Pro — זיהוי משטר, ניתוב, סיכון, יציאה (alg.md) |
+| `packages/engine/src/services/proSimExecution.ts` | לוגיקת ביצוע סימולציה Pro — buildProEvaluations, generateProOrders |
+| `packages/engine/src/services/adaptiveRisk.ts` | סיכון אדפטיבי + streak cooldown (משותף) |
+| `packages/engine/src/services/correlation.ts` | מניעת קורלציה (משותף) |
+| `packages/engine/src/services/simExecution.ts` | ביצוע פקודות משותף (fillDueOrders) |
 | `server/proSimEngine.ts` | adapter למנוע סימולציה 24/7 בשרת |
 | `server/simEngineFactory.ts` | tick loop, hydrate, persist, getSnapshot משותף |
 
@@ -54,7 +54,7 @@ CIRCUIT_BREAKER → EXPOSURE → (Layer 0-4) → Correlation Gate → Cost/Edge 
 
 ### LAYER 0: Market Regime Detection — זיהוי משטר שוק
 
-**מקור:** `src/services/proAlgEngine.ts` → `detectProRegime()`
+**מקור:** `packages/engine/src/services/proAlgEngine.ts` → `detectProRegime()`
 
 **מדדים מרכזיים:**
 | מדד | תיאור |
@@ -88,7 +88,7 @@ CIRCUIT_BREAKER → EXPOSURE → (Layer 0-4) → Correlation Gate → Cost/Edge 
 
 ### LAYER 1: Advanced Analysis Signal — אותות מנוע הניתוח המתקדם
 
-**מקור:** `src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
+**מקור:** `packages/engine/src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
 
 **תיאור:** במקום חישוב ציון ביטחון פנימי (כפי שהיה בקוד הקודם), בוט פרו משתמש כעת במנוע הניתוח המתקדם של האתר (`generateSmartRecommendation`) כדי לקבל המלצה וציון ביטחון. האלגוריתם מחשב אינדיקטורים טכניים (RSI, MACD, Bollinger Bands, Stochastic, Williams %R) ומשקל אותות לפי עוצמתם.
 
@@ -117,7 +117,7 @@ CIRCUIT_BREAKER → EXPOSURE → (Layer 0-4) → Correlation Gate → Cost/Edge 
 
 ### LAYER 1.5: Entry Timing — תזמון כניסה
 
-**מקור:** `src/services/proAlgEngine.ts` → `calculateProOptimalEntry()`
+**מקור:** `packages/engine/src/services/proAlgEngine.ts` → `calculateProOptimalEntry()`
 
 **מטרה:** מניעת רטיטות — כניסה רק אחרי pullback ל-EMA20.
 
@@ -152,7 +152,7 @@ else if (action === 'SELL') {
 
 ### LAYER 2: Trade Routing — ניתוב סוג עסקה
 
-**מקור:** `src/services/proAlgEngine.ts` → `routeProTradeType()`
+**מקור:** `packages/engine/src/services/proAlgEngine.ts` → `routeProTradeType()`
 
 **קלט:** אות מהמנוע המתקדם (`action`, `rawConfidence`) + משטר שוק מ-Layer 0.
 
@@ -198,7 +198,7 @@ function dynamicConfidenceThreshold(baseThreshold, atrPercent) {
 
 ### LAYER 3: Risk Management — ניהול סיכונים
 
-**מקור:** `src/services/proAlgEngine.ts` → `calculateProRisk()`
+**מקור:** `packages/engine/src/services/proAlgEngine.ts` → `calculateProRisk()`
 
 **מגבלות פורפוליו:**
 | מגבלה | ערך |
@@ -243,7 +243,7 @@ if (!risk.approved && signal.rawConfidence >= HIGH_CONFIDENCE_BYPASS) → buildF
 
 ### LAYER 4: Exit Logic — לוגיקת יציאה
 
-**מקור:** `src/services/proAlgEngine.ts` → `evaluateProExit()`
+**מקור:** `packages/engine/src/services/proAlgEngine.ts` → `evaluateProExit()`
 
 **סוגי יציאה:**
 | סוג | תנאי |
@@ -280,7 +280,7 @@ if (isShort && buyConfidence >= 65) → FULL (reversal)
 
 ## 4. חישוב Confidence
 
-**מקור:** `src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
+**מקור:** `packages/engine/src/services/proAdvancedAnalysis.ts` → `computeProAdvancedAnalysis()`
 
 ```typescript
 // confidence = הציון מהמנוע המתקדם (0-100)
@@ -325,7 +325,7 @@ if (isInStreakCooldown(symbolStreakCooldownUntil)) → BLOCK
 
 ### Adaptive Sizing Multiplier — הקטנת גודל לפי ביצועים
 
-מקור: `src/services/adaptiveRisk.ts`
+מקור: `packages/engine/src/services/adaptiveRisk.ts`
 
 streakFactor:   רצף 2 הפסדים → ×0.75, רצף 3 → ×0.5, רצף 5+ → ×0.25
 drawdownFactor: ליניארי מ-1.0 (drawdown=0%) עד 0.25 (drawdown=11.25%), רצפה שם
