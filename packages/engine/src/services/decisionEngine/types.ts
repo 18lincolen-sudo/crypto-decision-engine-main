@@ -42,6 +42,10 @@ export interface MarketDataSnapshot {
   priceChange24h?: number;
   marketCap?: number;
   volume24h?: number;
+  /** Current perpetual funding for this symbol. Optional throughout: the
+   *  funding gate abstains when it is missing or stale, so a feed outage costs
+   *  the engines an opinion, not their ability to trade. */
+  funding?: { lastFundingRate: number; at: number };
 }
 
 /** Portfolio risk statistics — shared across all engines */

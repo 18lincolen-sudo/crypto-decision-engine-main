@@ -25,6 +25,16 @@ export {
 
 export type { ProAdvancedSignal, ProAdvancedPredictions, ProAdvancedResult, ProAdvancedInput } from './services/proAdvancedAnalysis';
 export { computeProAdvancedAnalysis } from './services/proAdvancedAnalysis';
+export {
+  evaluateFundingGate,
+  annualisedFundingPct,
+  FUNDING_PERIODS_PER_YEAR,
+  FUNDING_CROWDED_ANNUAL_PCT,
+  FUNDING_EXTREME_ANNUAL_PCT,
+  FUNDING_MIN_SIZE_MULTIPLIER,
+  FUNDING_MAX_AGE_MS
+} from './services/fundingRate';
+export type { FundingSnapshot, FundingVerdict } from './services/fundingRate';
 
 // ── Multi-Timeframe intraday engine ──────────────────────────────────────────
 export type { IntradayDecisionInput, IntradayDecision } from './services/intradayEngine';

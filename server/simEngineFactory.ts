@@ -23,7 +23,8 @@ import { getAggregatedPrices } from '@cde/engine/market-data';
 import type { CryptoData } from '@cde/engine';
 import { computeAtr5, SignalEvaluation } from '@cde/engine';
 import type { MultiTimeframeSnapshot } from '@cde/engine/market-data';
-import { getUniverseMarketData } from '@cde/engine/market-data';
+import { getUniverseMarketData, fetchFundingRates } from '@cde/engine/market-data';
+import type { FundingSnapshot } from '@cde/engine/analysis';
 import { toBaseAsset } from '@cde/engine/market-data';
 import {
   fillDueOrders,
@@ -90,6 +91,10 @@ export interface StrategyTickInput {
   /** {pnl, pnlPercent, at, symbol} — what the legacy/pro strategies consume. */
   closedTradeMetrics: { pnl: number; pnlPercent: number; at: number; symbol?: string; riskUsd?: number }[];
   fearGreedIndex: number;
+  /** Current perpetual funding, keyed by Binance futures pair (e.g. "BTCUSDT").
+   *  Empty when the feed is unavailable — the funding gate abstains, so an
+   *  outage costs an opinion rather than the ability to trade. */
+  fundingBySymbol: Map<string, FundingSnapshot>;
   cash: number;
   exitCooldown: Record<string, number>;
   priceFor: (symbol: string) => number | undefined;
@@ -323,6 +328,10 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     await refreshMarketData();
     for (const c of cryptoData) lastPrices[toBaseAsset(c.symbol)] = c.current_price;
 
+    // Perpetual funding — one request for the whole universe, cached 30 min.
+    // Never throws: returns an empty map on any failure.
+    const fundingBySymbol = await fetchFundingRates();
+
     // Mark-to-market live price updates on each tick for open positions
     positions = positions.map((p) => {
       const live = priceFor(p.symbol) ?? p.currentPrice;
@@ -373,6 +382,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       closedTrades,
       closedTradeMetrics,
       fearGreedIndex: fearGreed,
+      fundingBySymbol,
       cash,
       exitCooldown,
       priceFor,

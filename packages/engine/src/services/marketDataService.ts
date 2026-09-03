@@ -16,6 +16,7 @@
 
 import { Candle } from './tradeEngine';
 import { toBybitSymbol, toBaseAsset } from './assetUniverse';
+import type { FundingSnapshot } from './fundingRate';
 
 // ── Endpoints ────────────────────────────────────────────────────────────────
 const BYBIT_PUBLIC_BASE = 'https://api.bybit.com';
@@ -194,6 +195,68 @@ async function fetchBinanceSymbols(): Promise<Set<string> | null> {
   } catch {
     return null;
   }
+}
+
+// ── Perpetual funding rates ────────────────────────────────────────────────
+// One call to Binance's USD-M futures endpoint returns every perpetual's
+// current funding rate, so this is a single request for the whole universe
+// rather than one per symbol. Public, unauthenticated, free.
+//
+// Funding settles every 8h; a 30-minute cache is far tighter than the data
+// actually moves and keeps the request count negligible.
+const BINANCE_FUTURES_BASE = 'https://fapi.binance.com/fapi/v1';
+const FUNDING_TTL_MS = 30 * 60 * 1000;
+let fundingPromise: Promise<Map<string, FundingSnapshot> | null> | null = null;
+let fundingFetchedAt = 0;
+
+async function fetchFundingFromBinance(): Promise<Map<string, FundingSnapshot> | null> {
+  try {
+    const res = await timedFetch(`${BINANCE_FUTURES_BASE}/premiumIndex`);
+    if (!res.ok) return null;
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const out = new Map<string, FundingSnapshot>();
+    const at = Date.now();
+    for (const r of rows) {
+      const row = r as { symbol?: unknown; lastFundingRate?: unknown };
+      if (typeof row.symbol !== 'string') continue;
+      const rate = Number(row.lastFundingRate);
+      if (!Number.isFinite(rate)) continue;
+      out.set(row.symbol.toUpperCase(), { lastFundingRate: rate, at });
+    }
+    return out.size ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Current perpetual funding rates, keyed by Binance futures pair (e.g. "BTCUSDT").
+ *
+ * Returns an EMPTY map when the feed is unavailable, never throws and never
+ * caches a failure: the funding gate abstains on missing data, so an outage
+ * must degrade to "no opinion", not to a stalled bot. Callers should treat a
+ * missing key exactly the same way.
+ */
+export async function fetchFundingRates(): Promise<Map<string, FundingSnapshot>> {
+  const fresh = fundingPromise !== null && Date.now() - fundingFetchedAt <= FUNDING_TTL_MS;
+  if (!fresh) {
+    fundingFetchedAt = Date.now();
+    fundingPromise = fetchFundingFromBinance();
+  }
+  const rates = await fundingPromise;
+  if (rates === null) {
+    // Do not let one transient error suppress the feed for a whole TTL.
+    fundingPromise = null;
+    return new Map();
+  }
+  return rates;
+}
+
+/** Test seam — drops the cached funding response. */
+export function clearFundingCache(): void {
+  fundingPromise = null;
+  fundingFetchedAt = 0;
 }
 
 async function binanceListsSymbol(pair: string): Promise<boolean> {

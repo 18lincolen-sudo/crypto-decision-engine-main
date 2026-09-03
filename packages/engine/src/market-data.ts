@@ -34,7 +34,9 @@ export {
   importMarketDataCache,
   getMultiTimeframeData,
   getUniverseMarketData,
-  fetchBacktestHistory
+  fetchBacktestHistory,
+  fetchFundingRates,
+  clearFundingCache
 } from './services/marketDataService';
 
 // ── Cross-exchange price/candle aggregation ──────────────────────────────────

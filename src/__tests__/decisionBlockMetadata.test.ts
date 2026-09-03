@@ -110,7 +110,7 @@ describe('a blocked decision always names the gate that blocked it', () => {
       } as never;
     };
 
-    const KNOWN_GATES = /^(ROUTE|HARD_GATE|ENTRY_TIMING|RISK|CORRELATION|COST_EDGE|NO_DATA|ERROR|MIN_CONFIDENCE|CIRCUIT_BREAKER|EXPOSURE)/;
+    const KNOWN_GATES = /^(ROUTE|HARD_GATE|ENTRY_TIMING|RISK|CORRELATION|COST_EDGE|NO_DATA|ERROR|MIN_CONFIDENCE|CIRCUIT_BREAKER|EXPOSURE|FUNDING)/;
 
     for (const Adapter of [LegacyAdapter, ProAdapter]) {
       const engine = engineFor(Adapter);

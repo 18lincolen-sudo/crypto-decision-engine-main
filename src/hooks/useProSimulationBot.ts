@@ -16,7 +16,7 @@ import { CryptoData, MarketRegimeResult } from '@cde/engine';
 import { useBackgroundWorker } from './useBackgroundWorker';
 import type { Candle } from '@cde/engine';
 import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '@cde/engine';
-import { getUniverseMarketData } from '@cde/engine/market-data';
+import { getUniverseMarketData, fetchFundingRates } from '@cde/engine/market-data';
 import { toBaseAsset } from '@cde/engine/market-data';
 import { fillDueOrders, selectFillableOrders } from '@cde/engine/execution';
 import {
@@ -296,6 +296,24 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
     [closedTrades]
   );
 
+  // Perpetual funding for the positioning gate. Refreshed on the same cadence
+  // the data actually moves (settles every 8h; the service caches 30 min), and
+  // held in a ref so a new reading never re-triggers the evaluation memo — the
+  // gate reads whatever is current at tick time. An empty map is the normal
+  // degraded state: the gate abstains and the bot trades as before.
+  const fundingRef = useRef<Map<string, { lastFundingRate: number; at: number }>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      fetchFundingRates()
+        .then((m) => { if (!cancelled) fundingRef.current = m; })
+        .catch(() => { /* abstain — never surface a funding outage as a bot error */ });
+    };
+    refresh();
+    const id = setInterval(refresh, 15 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   // ═══════════════════════════════════════════════════════
   // Evaluation Engine — Layers 0-3 of alg.md
   // ═══════════════════════════════════════════════════════
@@ -374,7 +392,10 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
           priceChange24h,
           fearGreedIndex,
           marketCap: crypto.market_cap || 0,
-          volume24h: crypto.total_volume || 0
+          volume24h: crypto.total_volume || 0,
+          // Binance keys perpetuals as BASE+USDT; a symbol with no perpetual
+          // simply has no entry and the funding gate abstains on it.
+          funding: fundingRef.current.get(`${toBaseAsset(crypto.symbol)}USDT`)
         },
         params: {},
         now: Date.now(),

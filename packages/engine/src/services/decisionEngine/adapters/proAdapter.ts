@@ -40,6 +40,7 @@ import {
 } from '../../proAlgEngine';
 import type { Candle } from '../../tradeEngine';
 import { computeProAdvancedAnalysis } from '../../proAdvancedAnalysis';
+import { evaluateFundingGate, type FundingVerdict } from '../../fundingRate';
 import { computeDrawdownFactor, computeSizingMultiplier, summarizeRecentPerformance, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
 import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
@@ -87,6 +88,10 @@ interface ProPipelineContext extends DecisionContext {
   exitDecision?: ProExitDecision;
   advancedAnalysis?: ReturnType<typeof computeProAdvancedAnalysis>;
   sizingMultiplier?: number;
+  /** Size penalty from the funding gate, folded into the risk stage's
+   *  multiplier. 1 when funding is absent, stale or unremarkable. */
+  fundingSizeMultiplier?: number;
+  fundingVerdict?: FundingVerdict;
   blocked?: boolean;
   blockReason?: string;
   gate?: string;
@@ -212,6 +217,39 @@ class EntryTimingStage implements PipelineStage<ProPipelineContext> {
   }
 }
 
+/**
+ * Positioning gate — the one factor here that is not derived from price.
+ *
+ * Runs AFTER routing (it needs a direction) and BEFORE risk (it feeds the size
+ * multiplier). It can veto a crowded trade or trim its size; it can never
+ * initiate one, and it never blocks on missing data — a funding feed outage
+ * degrades to "no opinion", not to a stalled bot.
+ */
+class FundingGateStage implements PipelineStage<ProPipelineContext> {
+  name = 'funding-gate';
+
+  execute(context: ProPipelineContext): StageResult<ProPipelineContext> {
+    if (!context.router || context.router.type === 'HOLD' || context.router.hardGateBlocked) {
+      return { context, blocked: false };
+    }
+
+    const direction = context.router.side === 'SHORT' ? 'SHORT' : 'LONG';
+    const verdict = evaluateFundingGate(context.marketData.funding, direction, context.now);
+
+    if (verdict.kind === 'veto') {
+      return {
+        context: { ...context, fundingVerdict: verdict },
+        blocked: true,
+        blockReason: verdict.reason,
+        gate: 'FUNDING'
+      };
+    }
+
+    const fundingSizeMultiplier = verdict.kind === 'abstain' ? 1 : verdict.sizeMultiplier;
+    return { context: { ...context, fundingSizeMultiplier, fundingVerdict: verdict }, blocked: false };
+  }
+}
+
 class RiskParametersStage implements PipelineStage<ProPipelineContext> {
   name = 'risk-parameters';
 
@@ -230,7 +268,8 @@ class RiskParametersStage implements PipelineStage<ProPipelineContext> {
     // Combine entry timing size reduction with adaptive multiplier
     const entrySizeMultiplier = context.entryTiming?.sizeMultiplier ?? 1.0;
     const adaptiveMult = context.sizingMultiplier ?? 1.0;
-    const combinedMultiplier = Math.max(0, adaptiveMult * entrySizeMultiplier);
+    const fundingMult = context.fundingSizeMultiplier ?? 1.0;
+    const combinedMultiplier = Math.max(0, adaptiveMult * entrySizeMultiplier * fundingMult);
 
     const risk = calculateProRisk(
       entryPrice,
@@ -333,6 +372,7 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
     new AdvancedAnalysisStage(),
     new RouteTradeTypeStage(),
     new EntryTimingStage(),
+    new FundingGateStage(),
     new RiskParametersStage(),
     new CorrelationGateStage(),
     new CostEdgeGateStage()

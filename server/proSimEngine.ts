@@ -91,7 +91,10 @@ const proStrategy: SimEngineStrategy = {
           priceChange24h,
           fearGreedIndex: input.fearGreedIndex,
           marketCap: crypto.market_cap || 0,
-          volume24h: crypto.total_volume || 0
+          volume24h: crypto.total_volume || 0,
+          // Binance keys perpetuals as BASE+USDT. A symbol with no perpetual
+          // simply has no entry, and the funding gate abstains on it.
+          funding: input.fundingBySymbol.get(`${toBase(crypto.symbol)}USDT`)
         },
         params: {},
         now: Date.now(),
