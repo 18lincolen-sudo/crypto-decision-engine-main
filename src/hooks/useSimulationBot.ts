@@ -37,6 +37,29 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     : result.direction === 'LONG' ? 'LONG' : result.direction === 'SHORT' ? 'SHORT' : 'NONE';
   const isSignal = result.outcome === 'SIGNAL';
 
+  // Extract layer data from raw engine output
+  const raw = result.raw as unknown as {
+    regime?: { regime: string; bias: string; adx: number; atrPercent: number; volatility: string; futuresAllowed: boolean };
+    setup?: { setupType: string; setupScore: number; direction: string; strong: boolean };
+    entry?: { entryScore: number; confirmed: boolean; trigger: string };
+    funnel?: { regimePassed: boolean; setupCandidates: number; entryCandidates: number; approved: boolean };
+    metrics?: { setupScore: number; entryScore: number; edgeRatio: number; netRewardRisk: number };
+  } | undefined;
+
+  // Build regime in MarketRegimeResult format for UI compatibility
+  const rawRegime = raw?.regime;
+  const regime = rawRegime ? {
+    regime: rawRegime.regime === 'BULL_TREND' || rawRegime.regime === 'BEAR_TREND' || rawRegime.regime === 'SOFT_TREND'
+      ? 'TRENDING' as const
+      : rawRegime.regime as 'RANGING' | 'TRANSITIONAL',
+    direction: rawRegime.bias === 'LONG' ? 'BULL' as const : rawRegime.bias === 'SHORT' ? 'BEAR' as const : 'NEUTRAL' as const,
+    volatility: rawRegime.volatility as 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME',
+    adx: rawRegime.adx,
+    atr: 0,
+    atrPercent: rawRegime.atrPercent,
+    supertrend: { value: 0, direction: 'BULL' as const }
+  } : undefined;
+
   return {
     symbol: result.symbol,
     action: action as 'buy' | 'sell' | 'hold',
@@ -50,6 +73,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     willExecute: isSignal,
     factors: buildFactorsFromDecisionResult(result),
     confidenceGap: 0,
+    regime,
     leverage: result.riskPlan?.leverage,
     stopLoss: result.riskPlan?.stopLoss,
     takeProfit1: result.riskPlan?.takeProfit1,

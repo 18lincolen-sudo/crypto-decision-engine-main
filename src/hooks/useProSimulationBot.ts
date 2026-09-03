@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CryptoData, MarketRegimeResult } from '../types/crypto';
 import { useBackgroundWorker } from './useBackgroundWorker';
 import { Candle, formatDynamicPrice } from '../services/tradeEngine';
-import type { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
+import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
 import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
@@ -33,6 +33,7 @@ import type {
 } from './useSimulationBot';
 import { DecisionEngine, ProAdapter } from '../services/decisionEngine';
 import type { DecisionResult, DecisionContext } from '../services/decisionEngine';
+import { ProMarketRegimeResult } from '../services/proAlgEngine';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from './useSimulationBot';
 
@@ -42,6 +43,27 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
   const action = result.direction === 'LONG' ? 'buy' : result.direction === 'SHORT' ? 'sell' : 'hold';
   const tradeSide = result.direction;
   const isSignal = result.outcome === 'SIGNAL';
+
+  // Extract layer data from raw engine output (Pro format)
+  const raw = result.raw as unknown as {
+    regime?: ProMarketRegimeResult;
+    signal?: { confidence: number; buyScore: number; sellScore: number };
+    router?: { type: string; side: string; reason: string };
+    risk?: { stopLoss: number; takeProfit1: number; leverage: number };
+    advancedAnalysis?: { support: number; resistance: number; riskLevel: string };
+  } | undefined;
+
+  // Convert ProMarketRegimeResult to MarketRegimeResult format for UI compatibility
+  const rawRegime = raw?.regime;
+  const regime = rawRegime ? {
+    regime: rawRegime.regime as 'TRENDING' | 'RANGING' | 'TRANSITIONAL',
+    direction: rawRegime.direction as 'BULL' | 'BEAR' | 'NEUTRAL',
+    volatility: rawRegime.volatility as 'LOW' | 'NORMAL' | 'HIGH',
+    adx: rawRegime.adx,
+    atr: rawRegime.atr,
+    atrPercent: rawRegime.atrPercent,
+    supertrend: rawRegime.supertrend
+  } : undefined;
 
   return {
     symbol: result.symbol,
@@ -56,6 +78,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     willExecute: isSignal,
     factors: buildFactorsFromDecisionResult(result),
     confidenceGap: 0,
+    regime,
     leverage: result.riskPlan?.leverage,
     stopLoss: result.riskPlan?.stopLoss,
     takeProfit1: result.riskPlan?.takeProfit1,

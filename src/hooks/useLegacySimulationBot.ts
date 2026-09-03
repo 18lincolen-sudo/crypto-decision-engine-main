@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CryptoData, MarketRegimeResult } from '../types/crypto';
 import { useBackgroundWorker } from './useBackgroundWorker';
 import { Candle, ClosedTradeMetric, formatDynamicPrice } from '../services/tradeEngine';
-import type { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
+import { SignalEvaluation, DecisionFactor, buildFactorsFromDecisionResult } from '../services/intradayBridge';
 import { getUniverseMarketData } from '../services/marketDataService';
 import { toBaseAsset } from '../services/assetUniverse';
 import { fillDueOrders, selectFillableOrders } from '../services/simExecution';
@@ -42,6 +42,17 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
   const tradeSide = result.direction;
   const isSignal = result.outcome === 'SIGNAL';
 
+  // Extract layer data from raw engine output (Legacy format: layer0-3)
+  const raw = result.raw as unknown as {
+    layer0?: MarketRegimeResult;
+    layer1?: { confidence: number; buyScore: number; sellScore: number; signalScore: number };
+    layer2?: { type: string; side: string; reason: string };
+    layer3?: { stopLoss: number; takeProfit1: number; leverage: number };
+  } | undefined;
+
+  // Legacy uses MarketRegimeResult format directly
+  const regime = raw?.layer0;
+
   return {
     symbol: result.symbol,
     action: action as 'buy' | 'sell' | 'hold',
@@ -55,6 +66,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     willExecute: isSignal,
     factors: buildFactorsFromDecisionResult(result),
     confidenceGap: 0,
+    regime,
     leverage: result.riskPlan?.leverage,
     stopLoss: result.riskPlan?.stopLoss,
     takeProfit1: result.riskPlan?.takeProfit1,
