@@ -7,6 +7,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { WorkerAuthProvider } from "./contexts/WorkerAuthContext";
+import { SimulationBotProvider } from "./contexts/SimulationBotContext";
+import { LegacySimulationBotProvider } from "./contexts/LegacySimulationBotContext";
+import { ProSimulationBotProvider } from "./contexts/ProSimulationBotContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Index from "./pages/Index";
 import Portfolio from "./pages/Portfolio";
@@ -38,6 +41,17 @@ const App = () => {
             <Sonner />
             <BrowserRouter>
               <WorkerAuthProvider>
+              {/* The three sim-bot contexts live here, at the app root, not just on
+                  /simulation-bot. Each one polls the server for its engine's real
+                  state (see LegacySimulationBotContext.tsx etc.) — mounting them
+                  only on one page meant every OTHER page's `useXContextSafe()`
+                  returned null, so the home page's dashboard fell through to a
+                  localStorage snapshot that nothing kept in sync, and looked
+                  permanently reset regardless of what the bots were actually doing
+                  on the server. */}
+              <SimulationBotProvider>
+              <LegacySimulationBotProvider>
+              <ProSimulationBotProvider>
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/portfolio" element={<Portfolio />} />
@@ -48,6 +62,9 @@ const App = () => {
                 <Route path="/backtest-results" element={<BacktestResults />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
+              </ProSimulationBotProvider>
+              </LegacySimulationBotProvider>
+              </SimulationBotProvider>
               </WorkerAuthProvider>
             </BrowserRouter>
           </TooltipProvider>

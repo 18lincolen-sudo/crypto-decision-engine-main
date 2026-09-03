@@ -14,9 +14,6 @@ import { useCryptoData } from '../hooks/useCryptoData';
 import { SIM_BOT_STORAGE_KEY } from '../hooks/useSimulationBot';
 import { LEGACY_SIM_BOT_STORAGE_KEY } from '../hooks/useLegacySimulationBot';
 import { PRO_SIM_BOT_STORAGE_KEY } from '../hooks/useProSimulationBot';
-import { SimulationBotProvider } from '../contexts/SimulationBotContext';
-import { LegacySimulationBotProvider } from '../contexts/LegacySimulationBotContext';
-import { ProSimulationBotProvider } from '../contexts/ProSimulationBotContext';
 
 // Keys that hold the bots' remembered history (positions/trades/equity).
 // Distinct from workerConfig/theme/credentials — those are connection/app
@@ -354,15 +351,7 @@ const SimulationBotPage = () => {
   );
 };
 
-const SimulationBotWithProvider = () => (
-  <SimulationBotProvider>
-    <LegacySimulationBotProvider>
-      <ProSimulationBotProvider>
-        <SimulationBotPage />
-      </ProSimulationBotProvider>
-    </LegacySimulationBotProvider>
-  </SimulationBotProvider>
-);
-
-export default SimulationBotWithProvider;
+// The three sim-bot providers now live at the app root (see App.tsx) so every
+// page — not just this one — sees live, server-synced bot state.
+export default SimulationBotPage;
 

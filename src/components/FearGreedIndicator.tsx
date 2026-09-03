@@ -1,22 +1,26 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { TrendingDown, TrendingUp, AlertTriangle } from 'lucide-react';
 import { FearGreedIndex } from '@cde/engine';
+import Gauge, { GaugeZone } from '@/components/Gauge';
+
+// Same red→green scale a race-car tachometer uses for "danger zone" vs safe
+// cruising, mapped onto the index: fear (low value) reads as caution on the
+// investor's actual position — the historical buy signal — so the zone
+// coloring intentionally does not follow "red = bad".
+const FEAR_GREED_ZONES: GaugeZone[] = [
+  { upTo: 25, color: '#dc2626' },  // Extreme Fear
+  { upTo: 50, color: '#f97316' },  // Fear
+  { upTo: 75, color: '#eab308' },  // Neutral / Greed
+  { upTo: 100, color: '#16a34a' }  // Extreme Greed
+];
 
 interface FearGreedIndicatorProps {
   fearGreedData: FearGreedIndex;
 }
 
 const FearGreedIndicator = ({ fearGreedData }: FearGreedIndicatorProps) => {
-  const getColorClass = (value: number) => {
-    if (value < 25) return 'text-red-600';
-    if (value < 50) return 'text-orange-500';
-    if (value < 75) return 'text-yellow-500';
-    return 'text-green-600';
-  };
-
   const getBackgroundColor = (value: number) => {
     if (value < 25) return 'bg-red-50 border-red-200';
     if (value < 50) return 'bg-orange-50 border-orange-200';
@@ -85,27 +89,14 @@ const FearGreedIndicator = ({ fearGreedData }: FearGreedIndicatorProps) => {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="text-center">
-          <div className={`text-5xl font-bold mb-2 ${getColorClass(fearGreedData.value)}`}>
-            {fearGreedData.value}
-          </div>
-          <div className="text-lg font-medium mb-2">
-            {getDescription(fearGreedData.value_classification)}
-          </div>
-        </div>
-        
-        <div className="space-y-2">
-          <Progress 
-            value={fearGreedData.value} 
-            className="h-3"
+        <div className="max-w-[260px] mx-auto">
+          <Gauge
+            value={fearGreedData.value}
+            zones={FEAR_GREED_ZONES}
+            caption={getDescription(fearGreedData.value_classification).toUpperCase()}
           />
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>פחד קיצוני (0)</span>
-            <span>נייטרלי (50)</span>
-            <span>חמדנות קיצונית (100)</span>
-          </div>
         </div>
-        
+
         {/* Market Recommendation */}
         <div className="p-3 bg-background rounded-lg border">
           <div className={`flex items-center gap-2 font-medium mb-2 ${recommendation.color}`}>

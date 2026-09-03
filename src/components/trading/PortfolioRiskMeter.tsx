@@ -4,6 +4,16 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Shield, AlertTriangle, Zap, Activity, Flame, Lock } from 'lucide-react';
 import { MarketRegimeResult } from '@cde/engine';
+import Gauge, { GaugeZone } from '@/components/Gauge';
+
+// Exposure meters: low is safe, high is danger — the opposite polarity from
+// the Fear & Greed dial's zones, same race-car-dashboard visual language.
+const EXPOSURE_ZONES: GaugeZone[] = [
+  { upTo: 50, color: '#16a34a' },
+  { upTo: 75, color: '#eab308' },
+  { upTo: 90, color: '#f97316' },
+  { upTo: 100, color: '#dc2626' }
+];
 
 interface PortfolioRiskMeterProps {
   portfolioValue: number;
@@ -121,12 +131,11 @@ export const PortfolioRiskMeter: React.FC<PortfolioRiskMeterProps> = ({
         {/* Meters Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* 1. Total Portfolio Exposure */}
-          <div className="p-3 bg-background/50 rounded-lg border border-primary/10 space-y-2">
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-muted-foreground">חשיפה כוללת מהתיק</span>
-              <span className="font-bold text-primary">{totalExposurePercent.toFixed(1)}%</span>
+          <div className="p-3 bg-background/50 rounded-lg border border-primary/10 space-y-1">
+            <div className="text-xs font-mono text-muted-foreground text-center">חשיפה כוללת מהתיק</div>
+            <div className="max-w-[140px] mx-auto">
+              <Gauge value={totalExposurePercent} zones={EXPOSURE_ZONES} readout={`${totalExposurePercent.toFixed(0)}%`} size={140} />
             </div>
-            <Progress value={totalExposurePercent} className="h-2 bg-muted" />
             <div className="flex justify-between text-[11px] font-mono text-muted-foreground">
               <span>${totalInvestedUsd.toFixed(2)}</span>
               <span>מתוך ${portfolioValue.toFixed(2)}</span>
@@ -134,24 +143,24 @@ export const PortfolioRiskMeter: React.FC<PortfolioRiskMeterProps> = ({
           </div>
 
           {/* 2. Leveraged Exposure (Strict 20% limit) */}
-          <div className={`p-3 bg-background/50 rounded-lg border space-y-2 ${isLeveragedOverLimit ? 'border-red-500/50 bg-red-500/5' : 'border-primary/10'}`}>
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-muted-foreground flex items-center gap-1">
-                <Zap className="w-3.5 h-3.5 text-yellow-400" />
-                חשיפה ממונפת (Futures)
-              </span>
-              <span className={`font-bold ${isLeveragedOverLimit ? 'text-red-400' : 'text-yellow-400'}`}>
-                {leveragedExposurePercent.toFixed(1)}% / 20%
-              </span>
+          <div className={`p-3 bg-background/50 rounded-lg border space-y-1 ${isLeveragedOverLimit ? 'border-red-500/50 bg-red-500/5' : 'border-primary/10'}`}>
+            <div className="text-xs font-mono text-muted-foreground text-center flex items-center justify-center gap-1">
+              <Zap className="w-3.5 h-3.5 text-yellow-400" />
+              חשיפה ממונפת (Futures)
             </div>
-            <Progress
-              value={(leveragedExposurePercent / 20) * 100}
-              className="h-2 bg-muted"
-            />
+            <div className="max-w-[140px] mx-auto">
+              <Gauge
+                value={(leveragedExposurePercent / 20) * 100}
+                zones={EXPOSURE_ZONES}
+                readout={`${leveragedExposurePercent.toFixed(0)}%`}
+                caption="מקס' 20%"
+                size={140}
+              />
+            </div>
             <div className="flex justify-between text-[11px] font-mono text-muted-foreground">
               <span>${totalLeveragedExposureUsd.toFixed(2)} נומינלי</span>
               <span className={isLeveragedOverLimit ? 'text-red-400 font-bold' : ''}>
-                {isLeveragedOverLimit ? 'חריגת מגבלה!' : 'מגבלה מקס\' 20%'}
+                {isLeveragedOverLimit ? 'חריגת מגבלה!' : ''}
               </span>
             </div>
           </div>
