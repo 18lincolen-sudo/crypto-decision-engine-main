@@ -154,7 +154,7 @@ export default function BacktestResults() {
       const interval = setInterval(performFetch, 10000);
       return () => clearInterval(interval);
     }
-  }, [state.status === 'running', performFetch]);
+  }, [state.status, performFetch]);
 
   const handleRun = async () => {
     if (!workerBaseUrl) {

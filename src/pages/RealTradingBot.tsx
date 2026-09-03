@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Bot, AlertTriangle, Server, Play, Square, Wifi, WifiOff } from 'lucide-react';
@@ -38,13 +38,15 @@ const RealTradingBot = () => {
   const [busy, setBusy] = useState(false);
   const [lastHeartbeat, setLastHeartbeat] = useState<number>(0);
 
-  const clientRef = useRef(createTradingApiClient(config.baseUrl, config.adminToken));
-  clientRef.current = createTradingApiClient(config.baseUrl, config.adminToken);
+  const client = useMemo(
+    () => createTradingApiClient(config.baseUrl, config.adminToken),
+    [config.baseUrl, config.adminToken]
+  );
 
   // Heartbeat: poll the public /health endpoint with exponential backoff on 429s.
   const { syncStatus, refresh: refreshBot } = useApiPolling<null>(
     async () => {
-      const client = clientRef.current;
+      const client = client;
       if (!client.baseUrl || !config.adminToken) {
         setOnline(false);
         setBotState(null);
@@ -97,7 +99,7 @@ const RealTradingBot = () => {
     if (!confirmed) return;
     setBusy(true);
     try {
-      const state = await clientRef.current.start();
+      const state = await client.start();
       setBotState(state);
       setError(null);
     } catch (e) {
@@ -111,7 +113,7 @@ const RealTradingBot = () => {
     if (!online) return;
     setBusy(true);
     try {
-      const state = await clientRef.current.stop();
+      const state = await client.stop();
       setBotState(state);
       setError(null);
     } catch (e) {
