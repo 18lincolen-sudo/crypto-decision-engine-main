@@ -258,7 +258,16 @@ class CorrelationGateStage implements PipelineStage<ProPipelineContext> {
       lookback: DEFAULT_CORRELATION_LOOKBACK
     });
 
-    return { context, blocked: !gate.allowed };
+    if (!gate.allowed) {
+      return {
+        context,
+        blocked: true,
+        blockReason: `CORRELATION_GATE — ${gate.reason || 'Correlation threshold exceeded'}`,
+        gate: 'CORRELATION'
+      };
+    }
+
+    return { context, blocked: false };
   }
 }
 
