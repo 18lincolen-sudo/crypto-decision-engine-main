@@ -20,7 +20,7 @@ import {
   RiskParametersResult,
   ActivePosition
 } from '../types/crypto';
-import { MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER } from './adaptiveRisk';
+import { MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER, SL_ATR_MULTIPLIER, SL_TP_REWARD_RISK } from './adaptiveRisk';
 
 export interface Candle {
   timestamp: number;
@@ -1282,18 +1282,29 @@ export function calculateRiskParameters(
   const slMin = slConfig?.minStop ?? MIN_STOP_PERCENT;
   const slMax = slConfig?.maxStop ?? MAX_STOP_PERCENT;
 
-  // Fixed SL/TP: 1.8% stop, 3% target — prevents the bot from exiting before
-  // meaningful profit or before a reasonable loss threshold.
-  const fixedSlPercent = 1.8;
-  const fixedTpPercent = 3.0;
-  const slDistance = entryPrice * fixedSlPercent / 100;
-  const tpDistance = entryPrice * fixedTpPercent / 100;
+  // ATR-normalised SL, clamped to [slMin, slMax]. Replaces a flat 1.8% stop.
+  //
+  // A fixed percentage stop is a measurement error: BTC and a small-cap alt
+  // differ 2-3x in daily volatility, so the same 1.8% is noise-width on one and
+  // several sessions' range on the other. The clamp is what keeps the ATR from
+  // collapsing onto the entry in dead markets or ballooning in a panic — those
+  // two constants were already imported here and computed into slMin/slMax, but
+  // nothing read them once the flat percentage was introduced. This reconnects
+  // them. The intraday engine has always sized stops this way (intradayRisk.ts,
+  // minStopAtrMult) — this brings Legacy and Pro in line.
+  //
+  // TP is DERIVED from the stop so the reward:risk ratio is invariant: a wider
+  // stop earns a proportionally wider target rather than a worse ratio.
+  const riskRewardRatio = SL_TP_REWARD_RISK; // 1.67, unchanged
+  const rawSlPercent = atr > 0 ? (atr * SL_ATR_MULTIPLIER / entryPrice) * 100 : slMin;
+  const slPercent = Math.min(Math.max(rawSlPercent, slMin), slMax);
+  const slDistance = entryPrice * slPercent / 100;
+  const tpDistance = slDistance * riskRewardRatio;
 
   let stopLoss: number;
   let takeProfit1: number | undefined;
   let takeProfit2: number | undefined;
   let takeProfit: number | undefined;
-  const riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
 
   if (tradeType === 'SPOT') {
     stopLoss = Math.max(0.00000001, entryPrice - slDistance);

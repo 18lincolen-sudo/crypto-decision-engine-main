@@ -131,6 +131,34 @@ export const PERFORMANCE_WINDOW_SIZE = 20;
 export const MIN_STOP_PERCENT = 1.5;  // floor — minimum SL distance (% of entry)
 export const MAX_STOP_PERCENT = 6;    // ceiling — maximum SL distance (% of entry)
 
+/** ATR multiple defining the stop distance in Legacy and Pro, before the
+ *  [MIN_STOP_PERCENT, MAX_STOP_PERCENT] clamp.
+ *
+ *  Replaces a flat 1.8%, which was a measurement error: the same percentage is
+ *  noise-width on a large cap and multiple sessions' range on a small one. The
+ *  clamp then binds on the quiet majors while the ATR binds on the volatile
+ *  alts, which is the intended division of labour. The intraday engine's
+ *  equivalent is intradayParams.minStopAtrMult.
+ *
+ *  Swept over the A/B window (scripts/abBacktest.ts), Pro profit factor /
+ *  Legacy profit factor:
+ *      1.0 -> 1.191 / 0.796      2.0 -> 1.131 / 0.849
+ *      1.2 -> 1.315 / 0.889      2.5 -> 1.058 / 0.843
+ *      1.5 -> 1.320 / 0.873
+ *
+ *  READ THIS BEFORE TUNING IT. The optimum is FLAT between 1.2 and 1.5 — those
+ *  two are within noise of each other on ~40 trades, and choosing between them
+ *  on this window would be curve-fitting. The robust finding is the shape: the
+ *  1.2-1.5 region beats everything outside it, and >=2.0 is clearly worse on
+ *  both engines. 1.2 is taken for the better drawdown on Pro (0.90% vs 1.03%)
+ *  and the better Legacy profit factor, not because it is a located optimum. */
+export const SL_ATR_MULTIPLIER = 1.2;
+
+/** Reward:risk of the first take-profit. Was implied by the fixed 1.8%/3.0%
+ *  pair; now applied explicitly so TP scales WITH the stop and the ratio stays
+ *  invariant across volatility regimes. */
+export const SL_TP_REWARD_RISK = 3.0 / 1.8; // 1.67
+
 // ── Cost / Edge Gate (shared by Legacy + Pro) ──────────────────────────────
 // Minimum risk-reward ratio for a trade to be worth taking. Derived from the
 // ATR multipliers (SL = ATR*1.5/1.8, TP = ATR*2.0/2.7) which produce ratios

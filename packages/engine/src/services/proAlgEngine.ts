@@ -32,7 +32,7 @@
  */
 
 import { Candle, calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
-import { computeDrawdownFactor, MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER } from './adaptiveRisk';
+import { computeDrawdownFactor, MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER, SL_ATR_MULTIPLIER, SL_TP_REWARD_RISK } from './adaptiveRisk';
 
 // ── LAYER 0 — MARKET REGIME DETECTION ──────────────────────────────────────
 
@@ -573,15 +573,16 @@ export function calculateProRisk(
   const slMin = slConfig?.minStop ?? MIN_STOP_PERCENT;
   const slMax = slConfig?.maxStop ?? MAX_STOP_PERCENT;
 
-  // Fixed SL/TP: 1.8% stop, 3% target — prevents the bot from exiting before
-  // meaningful profit or before a reasonable loss threshold.
-  const fixedSlPercent = 1.8;
-  const fixedTpPercent = 3.0;
-  const slDistance = entryPrice * fixedSlPercent / 100;
-  const tpDistance = entryPrice * fixedTpPercent / 100;
+  // ATR-normalised SL clamped to [slMin, slMax], with TP derived from it so the
+  // reward:risk ratio is invariant across volatility regimes. Identical to
+  // tradeEngine.calculateRiskParameters — see the rationale there.
+  const riskRewardRatio = SL_TP_REWARD_RISK; // 1.67, unchanged
+  const rawSlPercent = (atr * SL_ATR_MULTIPLIER / entryPrice) * 100;
+  const slPercent = Math.min(Math.max(rawSlPercent, slMin), slMax);
+  const slDistance = entryPrice * slPercent / 100;
+  const tpDistance = slDistance * riskRewardRatio;
 
   let stopLoss: number, takeProfit1: number | undefined, takeProfit2: number | undefined, takeProfit: number | undefined;
-  const riskRewardRatio = fixedTpPercent / fixedSlPercent; // 1.67
   if (tradeType === 'SPOT') {
     stopLoss = Math.max(1e-8, entryPrice - slDistance);
     takeProfit = entryPrice + tpDistance;
