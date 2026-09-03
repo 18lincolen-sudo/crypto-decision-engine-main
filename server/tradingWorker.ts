@@ -1374,8 +1374,25 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   setInterval(pruneRateBuckets, RATE_LIMIT_WINDOW_MS);
 
-  const SELF_PING_INTERVAL_MS = 12 * 60 * 1000;
-  const selfBase = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '') || `http://127.0.0.1:${port}`;
+  // Render free web services spin down after 15 minutes with NO inbound HTTP
+  // traffic (https://render.com/docs/free — "goes 15 minutes without
+  // receiving any inbound traffic"). A self-ping only resets that clock if it
+  // actually reaches Render's public edge as a real inbound request — i.e.
+  // RENDER_EXTERNAL_URL must be set. Render auto-populates that var for
+  // `type: web` services, but if it's ever missing this used to fall back to
+  // http://127.0.0.1, a purely in-process loopback call that never leaves the
+  // dyno and therefore does NOTHING to prevent spin-down while looking
+  // identical to a healthy ping in the logs. Fail loudly instead so a missing
+  // env var is visible, not a silent no-op.
+  // Interval tightened from 12 to 8 minutes: 12 left under 4 minutes of
+  // margin against the 15-minute threshold, which one slow/failed ping cycle
+  // can eat entirely.
+  const SELF_PING_INTERVAL_MS = 8 * 60 * 1000;
+  const renderExternalUrl = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+  const selfBase = renderExternalUrl || `http://127.0.0.1:${port}`;
+  if (!renderExternalUrl) {
+    console.warn('[self-ping] RENDER_EXTERNAL_URL is not set — pinging loopback only, which does NOT reach Render\'s edge and will NOT prevent free-tier spin-down. Set RENDER_EXTERNAL_URL (Render sets this automatically for web services) or the service will still sleep after 15 min of real inactivity.');
+  }
   setInterval(async () => {
     try {
       const r = await fetchWithTimeout(`${selfBase}/health`, { method: 'GET' });

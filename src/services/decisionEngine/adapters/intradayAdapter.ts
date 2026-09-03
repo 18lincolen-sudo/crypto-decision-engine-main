@@ -289,7 +289,22 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
         }
       }
 
-      return (current as unknown as { _rawResult: IntradayDecision })._rawResult;
+      // Every stage passed (RunEngineStage only reports blocked:false when the
+      // underlying engine actually produced outcome:'SIGNAL' — see its
+      // `execute()` above). Wrap in the SAME envelope shape the blocked branch
+      // returns above ({ outcome, gate, logs, summary, _rawResult }) — returning
+      // the bare IntradayDecision here instead left `_rawResult` undefined from
+      // normalize()'s point of view, so every real SIGNAL silently fell through
+      // to the "no raw result" branch there and got reported as NO_SIGNAL/HOLD
+      // with confidence 0 and an empty decision-layer breakdown.
+      const finalRaw = (current as unknown as { _rawResult: IntradayDecision })._rawResult;
+      return {
+        outcome: 'SIGNAL' as DecisionOutcome,
+        gate: finalRaw.gate,
+        logs: finalRaw.logs,
+        summary: finalRaw.summary,
+        _rawResult: finalRaw
+      };
     })();
 
     intradayResultCache.set(cacheKey, { result, h1Last, m15Last, m5Last });

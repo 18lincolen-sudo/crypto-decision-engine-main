@@ -67,11 +67,11 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     factors: buildFactorsFromDecisionResult(result),
     confidenceGap: 0,
     regime,
-    leverage: result.riskPlan?.leverage,
-    stopLoss: result.riskPlan?.stopLoss,
-    takeProfit1: result.riskPlan?.takeProfit1,
-    takeProfit2: result.riskPlan?.takeProfit2,
-    takeProfit: result.riskPlan?.takeProfit,
+    leverage: result.riskPlan ? result.riskPlan.leverage : undefined,
+    stopLoss: result.riskPlan ? result.riskPlan.stopLoss : undefined,
+    takeProfit1: result.riskPlan ? result.riskPlan.takeProfit1 : undefined,
+    takeProfit2: result.riskPlan ? result.riskPlan.takeProfit2 : undefined,
+    takeProfit: result.riskPlan ? result.riskPlan.takeProfit : undefined,
     decision: result.raw as never
   };
 }

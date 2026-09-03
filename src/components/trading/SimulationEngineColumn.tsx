@@ -98,18 +98,14 @@ export default function SimulationEngineColumn({
   // count makes that market-condition reality checkable at a glance instead
   // of having to take it on faith or page through each symbol's own
   // decision-layer breakdown one at a time.
-  // Supports both Legacy/Pro (TRENDING/RANGING/TRANSITIONAL) and Intraday (BULL_TREND/BEAR_TREND/SOFT_TREND) formats
+  // Uses type-safe comparison with MarketRegimeType (TRENDING/RANGING/TRANSITIONAL)
   const regimeCounts = evaluations.reduce(
     (acc, ev) => {
       const r = ev.regime;
       if (!r) { acc.noData++; return acc; }
-      // Legacy/Pro format: TRENDING + direction
       if (r.regime === 'TRENDING' && r.direction === 'BULL') acc.bullTrend++;
       else if (r.regime === 'TRENDING' && r.direction === 'BEAR') acc.bearTrend++;
       else if (r.regime === 'RANGING') acc.ranging++;
-      // Intraday format: BULL_TREND, BEAR_TREND, SOFT_TREND
-      else if (r.regime === 'BULL_TREND' || r.regime === 'SOFT_TREND') acc.bullTrend++;
-      else if (r.regime === 'BEAR_TREND') acc.bearTrend++;
       else acc.transitional++;
       return acc;
     },
@@ -248,7 +244,7 @@ export default function SimulationEngineColumn({
                             <div className="mb-2 p-2 border border-border/20 rounded bg-card/30">
                               <div className="text-[10px] font-semibold text-muted-foreground mb-1">שכבה 0 — משטר שוק</div>
                               <div className="flex items-center gap-2 flex-wrap text-[10px]">
-                                <Badge variant="outline" className={`text-[9px] ${rec.regime.regime === 'TRENDING' || rec.regime.regime === 'BULL_TREND' || rec.regime.regime === 'SOFT_TREND' ? 'text-green-400 border-green-400/30' : rec.regime.regime === 'BEAR_TREND' ? 'text-red-400 border-red-400/30' : 'text-muted-foreground'}`}>
+                                 <Badge variant="outline" className={`text-[9px] ${rec.regime.regime === 'TRENDING' ? 'text-green-400 border-green-400/30' : rec.regime.regime === 'RANGING' ? 'text-yellow-400 border-yellow-400/30' : 'text-muted-foreground'}`}>
                                   {rec.regime.regime}
                                 </Badge>
                                 <span className="text-muted-foreground">

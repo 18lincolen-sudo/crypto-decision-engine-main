@@ -46,12 +46,50 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T | null> {
   }
 }
 
+/** Retries ONLY on a network-level failure (fetch() throwing — no response
+ *  ever arrived), never on an HTTP error status (401/404/etc are real
+ *  answers from a live server and retrying them would just repeat the same
+ *  result). This is what a Render free-tier cold start looks like from the
+ *  browser: the very first request after 15 minutes of inactivity can fail
+ *  outright while the instance spins up (~30-60s), and — because no response
+ *  headers ever come back — Chrome reports it as a CORS error even though
+ *  the real cause is "no response at all", not a CORS misconfiguration. The
+ *  simulation-bot page already rides this out via useApiPolling's built-in
+ *  backoff; this page made a single one-shot request with no retry, so that
+ *  same transient window surfaced as a hard, user-facing error here instead.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  onAttempt?: (attempt: number, maxAttempts: number) => void,
+  maxAttempts = 4,
+  delaysMs = [2000, 5000, 10000]
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    onAttempt?.(attempt, maxAttempts);
+    try {
+      return await fetch(url, options);
+    } catch (e) {
+      lastError = e;
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt - 1] ?? 10000));
+      }
+    }
+  }
+  throw lastError;
+}
+
 export default function BacktestResults() {
   const { baseUrl: workerBaseUrl, adminToken } = useWorkerAuth();
   const [state, setState] = useState<BacktestState>({
     status: 'idle', startedAt: null, finishedAt: null, results: [], error: null, engine: null, days: null
   });
   const [loading, setLoading] = useState(true);
+  // Set only while a request is being retried after a network-level failure
+  // (see fetchWithRetry) — distinct from `state.error`, which is the FINAL
+  // outcome once retries are exhausted.
+  const [wakingAttempt, setWakingAttempt] = useState<{ attempt: number; max: number } | null>(null);
 
   const authHeaders = useMemo<Record<string, string>>(
     () => (adminToken ? { Authorization: `Bearer ${adminToken}` } : {}),
@@ -71,7 +109,11 @@ export default function BacktestResults() {
       return;
     }
     try {
-      const res = await fetch(`${workerBaseUrl}/api/backtest/results`, { headers: authHeaders });
+      const res = await fetchWithRetry(
+        `${workerBaseUrl}/api/backtest/results`,
+        { headers: authHeaders },
+        (attempt, max) => setWakingAttempt(attempt > 1 ? { attempt, max } : null)
+      );
       if (res.ok) {
         const data = await parseJsonOrThrow<BacktestState>(res);
         if (data) {
@@ -88,8 +130,13 @@ export default function BacktestResults() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('Failed to fetch backtest results:', e);
-      setState(s => ({ ...s, error: msg, status: 'error' }));
+      setState(s => ({
+        ...s,
+        error: `${msg} (השרת לא הגיב אחרי כמה ניסיונות — אם ה-Worker רץ ב-Render בתוכנית חינמית, ייתכן שהוא נרדם ועדיין מתעורר; נסה שוב בעוד דקה)`,
+        status: 'error'
+      }));
     } finally {
+      setWakingAttempt(null);
       setLoading(false);
     }
   }, [workerBaseUrl, authHeaders]);
@@ -116,10 +163,11 @@ export default function BacktestResults() {
     }
     try {
       setState(s => ({ ...s, status: 'running', error: null }));
-      const res = await fetch(`${workerBaseUrl}/api/backtest/run`, {
-        method: 'POST',
-        headers: { ...authHeaders, 'Content-Type': 'application/json' },
-      });
+      const res = await fetchWithRetry(
+        `${workerBaseUrl}/api/backtest/run`,
+        { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' } },
+        (attempt, max) => setWakingAttempt(attempt > 1 ? { attempt, max } : null)
+      );
       if (res.ok) {
         await fetchResults();
       } else {
@@ -133,8 +181,14 @@ export default function BacktestResults() {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setState(s => ({ ...s, status: 'error', error: msg }));
+      setState(s => ({
+        ...s,
+        status: 'error',
+        error: `${msg} (השרת לא הגיב אחרי כמה ניסיונות — אם ה-Worker רץ ב-Render בתוכנית חינמית, ייתכן שהוא נרדם ועדיין מתעורר; נסה שוב בעוד דקה)`
+      }));
       console.error('Failed to start backtest:', e);
+    } finally {
+      setWakingAttempt(null);
     }
   };
 
@@ -194,6 +248,19 @@ export default function BacktestResults() {
             </Button>
           </div>
         </div>
+
+        {/* Waking-server indicator — a network-level fetch failure is being
+            retried, most commonly a Render free-tier cold start (~30-60s). */}
+        {wakingAttempt && (
+          <Card className="border-yellow-500/30 bg-yellow-500/5">
+            <CardContent className="pt-4">
+              <p className="text-sm text-yellow-400 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                מעיר את שרת ה-Worker (Render בתוכנית חינמית נרדם אחרי חוסר פעילות)... ניסיון {wakingAttempt.attempt}/{wakingAttempt.max}
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Status info */}
         {state.status === 'running' && state.startedAt && (

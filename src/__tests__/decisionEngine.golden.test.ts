@@ -103,6 +103,43 @@ describe('DecisionEngine golden — intraday', () => {
     expect(result.confidence).toBe(0);
   });
 
+  // Regression for a bug where IntradayAdapter.execute() returned the bare
+  // IntradayDecision on its success path instead of the same
+  // { outcome, gate, logs, summary, _rawResult } envelope the blocked path
+  // uses. normalize() reads output._rawResult, so every real SIGNAL silently
+  // lost its raw result and was reported as NO_SIGNAL/HOLD with confidence 0
+  // and an empty metrics object (0 rows in the UI's decision-layer
+  // breakdown) — the bot never actually placed a trade even when its own
+  // engine had approved one.
+  it('reaches SIGNAL with a populated risk plan and non-empty metrics on a strong clean uptrend', () => {
+    const engine = new DecisionEngine({ verbose: false });
+    engine.registerAdapter(new IntradayAdapter());
+
+    const h1 = makeCandles(220, 100, 0.35);
+    const m15 = makeCandles(320, h1[h1.length - 1].close, 0.15);
+    const m5 = makeCandles(520, m15[m15.length - 1].close, 0.08);
+
+    const ctx = baseContext({
+      candles: { h1, m15, m5 },
+      currentPrice: m5[m5.length - 1].close,
+      marketData: {
+        spreadPercent: 0.05,
+        quoteVolume24h: 5_000_000,
+        quoteVolume24hSpot: 4_000_000,
+        livePrice: m5[m5.length - 1].close,
+        priceChange24h: 5
+      },
+      config: { minConfidenceOverride: 0, maxPositions: 7, maxFuturesPositions: 2 }
+    }) as Parameters<typeof engine.evaluate>[0];
+    const result = engine.evaluate(ctx, 'intraday');
+
+    expect(result.outcome).toBe('SIGNAL');
+    expect(result.riskPlan).not.toBeNull();
+    expect(Object.keys(result.metrics).length).toBeGreaterThan(0);
+    expect(result.metrics.setupScore).toBeGreaterThan(0);
+    expect(result.reasoning.some((line) => line.includes('SIGNAL'))).toBe(true);
+  });
+
   it('returns CIRCUIT_BREAKER when daily drawdown is exceeded', () => {
     const engine = new DecisionEngine({ verbose: false });
     engine.registerAdapter(new IntradayAdapter());

@@ -53,7 +53,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
       ? 'TRENDING' as const
       : rawRegime.regime as 'RANGING' | 'TRANSITIONAL',
     direction: rawRegime.bias === 'LONG' ? 'BULL' as const : rawRegime.bias === 'SHORT' ? 'BEAR' as const : 'NEUTRAL' as const,
-    volatility: rawRegime.volatility as 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME',
+    volatility: rawRegime.volatility === 'EXTREME' ? 'HIGH' as const : rawRegime.volatility as 'LOW' | 'NORMAL' | 'HIGH',
     adx: rawRegime.adx,
     atr: 0,
     atrPercent: rawRegime.atrPercent,
