@@ -1,22 +1,29 @@
-# ⚠️ This blueprint may not be what actually runs. Verify before trusting it.
+# ⚠️ ROOT DIRECTORY MUST STAY EMPTY (the repository root). Do not set it to
+# `server`, however tempting that looks for a worker that lives there.
 #
-# The live worker answers at crypto-decision-engine-main-hev8.onrender.com.
-# Render derives that hostname from the SERVICE name, and the name below is
-# `crypto-trading-worker` — the hostname instead matches the REPO name, which
-# is what Render fills in when a service is created by hand from a repo. So the
-# running service was most likely NOT created from this file, in which case
-# nothing here applies: not buildCommand, not startCommand, and not
-# `autoDeploy: true` — which would explain a push to `main` that never
-# redeployed.
+# Render's own docs, on the Root Directory field: "code changes outside of this
+# directory do not trigger an auto-deploy." The worker BUNDLE pulls 28 modules
+# from ../src — decisionEngine, proAlgEngine, intradayEngine, marketDataService
+# and the rest — because every trading decision is computed by shared code, not
+# by anything under server/. Render still checks out the whole repo, so those
+# imports resolve and the build SUCCEEDS either way. It simply stops
+# redeploying when the engine changes.
 #
-# ARCHITECTURE.md §5.1 documents a THIRD variant (Root Directory `server`,
-# startCommand `node dist/worker.js`). At most one of the three is real.
+# That is the worst possible failure mode: green builds, a healthy /health, and
+# a worker silently running last month's decision engine. It is exactly what
+# happened — a fix to src/services/decisionEngine/** was pushed to main and the
+# worker went on answering with the old code.
 #
-# Do NOT "tidy" the name below to match the hostname before checking the Render
-# dashboard. Render identifies a blueprint-managed service BY this name:
-# changing it on a service that IS managed here makes Render treat it as a new
-# service, orphaning the running one and killing the hostname that is baked
-# into VITE_TRADING_API_URL at build time.
+# The commands below assume the repo root. If Root Directory is ever set to
+# `server`, they must become `npm install && npm run build` and
+# `node dist/worker.js` — and auto-deploy on engine changes is lost.
+#
+# Separately: the live hostname (crypto-decision-engine-main-hev8.onrender.com)
+# is derived from the REPO name, not from `name` below, so this service was
+# created by hand rather than from this blueprint. Do NOT "tidy" the name to
+# match: Render identifies a blueprint-managed service BY that name, so
+# renaming one that IS managed here makes Render treat it as new, orphaning the
+# running service and killing the hostname baked into VITE_TRADING_API_URL.
 services:
   - type: web
     name: crypto-trading-worker

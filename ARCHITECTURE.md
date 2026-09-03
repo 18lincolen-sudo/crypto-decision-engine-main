@@ -324,17 +324,34 @@ services:
     autoDeploy: true
 ```
 
-> ⚠️ **This may not be the configuration that actually runs.** Render derives a
-> service's hostname from its *service name*; the live hostname matches the
-> **repo** name, not `crypto-trading-worker`, which is what Render fills in when
-> a service is created by hand rather than from a blueprint. If the service was
-> created manually, `render.yaml` is inert — including `autoDeploy: true`, which
-> would explain a push to `main` that never triggers a rebuild.
+> ### ⚠️ Root Directory must be EMPTY — this is not a style preference
 >
-> Check the Render dashboard for whether the service is blueprint-managed, and
-> what its Build and Start commands actually are. See the caveat at the top of
-> `render.yaml` before renaming anything: on a blueprint-managed service the
-> name is its identity, and changing it orphans the running service.
+> Render's Root Directory field says: *"code changes outside of this directory
+> do not trigger an auto-deploy."*
+>
+> The worker looks like it lives in `server/`, but its bundle pulls **28
+> modules from `src/`** — `decisionEngine`, `proAlgEngine`, `intradayEngine`,
+> `marketDataService` and the rest. Every trading decision is computed by
+> shared code. Render checks out the whole repo regardless, so `../src/...`
+> resolves and the build **succeeds** with Root Directory set to `server`; it
+> just stops redeploying whenever the engine changes.
+>
+> That failure is silent: green builds, a healthy `/health`, and a worker
+> serving a stale decision engine. It is what produced 56 × `NO_SIGNAL
+> [UNKNOWN]` on the Legacy and Pro bots after the fix had already been pushed
+> to `main`.
+>
+> | Setting | Correct | Symptom if set to `server` |
+> | --- | --- | --- |
+> | Root Directory | *(empty)* | engine fixes never deploy |
+> | Build Command | `npm install && npm --prefix server install && npm --prefix server run build` | `npm install && npm run build` |
+> | Start Command | `node server/dist/worker.js` | `node dist/worker.js` |
+>
+> The service was created by hand, not from this blueprint — the live hostname
+> derives from the *repo* name, not from `name:` above. So the **dashboard is
+> the source of truth**; `render.yaml` documents the intended shape. Do not
+> rename either to match the other before reading the caveat at the top of
+> `render.yaml`.
 
 **Two separate build outputs — do not confuse them:**
 
