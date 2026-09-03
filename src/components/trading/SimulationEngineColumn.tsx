@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -83,7 +83,7 @@ export default function SimulationEngineColumn({
   const lastTrade = trades[0];
   const openFuturesCount = positions.filter((p) => p.type === 'FUTURES').length;
 
-  const displayedEvaluations = (() => {
+  const displayedEvaluations = useMemo(() => {
     const q = evalFilter.trim().toUpperCase();
     const filtered = q ? evaluations.filter((rec) => rec.symbol.toUpperCase().includes(q)) : evaluations;
     if (evalSort === 'default') return filtered;
@@ -91,7 +91,7 @@ export default function SimulationEngineColumn({
       evalSort === 'confidence-desc' ? b.confidence - a.confidence : a.confidence - b.confidence
     );
     return sorted;
-  })();
+  }, [evaluations, evalFilter, evalSort]);
 
   // Visibility into WHY short-side setups are rare: SHORT only ever routes
   // through FUTURES, which only opens on a TRENDING+BEAR regime — this
@@ -266,10 +266,10 @@ export default function SimulationEngineColumn({
                             <div key={i} className="flex items-start justify-between gap-2 text-xs py-1 border-b border-border/20 last:border-0">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.impact === 'positive' ? 'bg-green-400' : f.impact === 'negative' ? 'bg-red-400' : 'bg-muted-foreground'}`} />
-                                <span className="font-semibold">{f.label}</span>
-                                <span className="text-muted-foreground">{f.value}</span>
+                                <span className="font-semibold">{f.label ?? 'N/A'}</span>
+                                <span className="text-muted-foreground">{f.value ?? 'N/A'}</span>
                               </div>
-                              <span className="text-muted-foreground text-left max-w-[50%]">{f.note}</span>
+                              <span className="text-muted-foreground text-left max-w-[50%]">{f.note ?? ''}</span>
                             </div>
                           ))}
                         </div>

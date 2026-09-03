@@ -100,7 +100,7 @@ const SimulationBotPage = () => {
             <Bot className="w-9 h-9" />
             בוט סימולציה — השוואת שלושה אלגוריתמים
           </h1>
-          <p className="text-sm sm:text-base text-muted-foreground font-mono">
+          <p className="text-sm sm:text-base text-muted-foreground font-mono break-words">
             מנוע חדש (רב-שכבתי Multi-Timeframe) · מנוע מקורי (ציון ביטחון משוקלל) · בוט פרו (מימוש מדויק של alg.md) — כל אחד עם הון וסטטיסטיקה נפרדים
           </p>
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
