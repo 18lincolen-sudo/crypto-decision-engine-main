@@ -81,8 +81,30 @@ export function kellyPayoffRatio(
  *  it clamps to zero on a losing book — the protection comes from the sign of
  *  the edge, which 30 trades does resolve, not its magnitude, which it doesn't.
  *
- *  The real fix is to make the sub-threshold path edge-aware rather than flat;
- *  until then this stays at 30. See PLAN_ENGINE_FIXES.md. */
+ *  MAKING THE SUB-THRESHOLD PATH EDGE-AWARE WAS TRIED AND IS WORSE. The
+ *  obvious fix — replace the step with a continuous Beta-Binomial posterior on
+ *  the win rate plus shrinkage of the payoff ratio toward the structural one —
+ *  was implemented and A/B measured across prior strengths. Pro, same window,
+ *  against this step function's +$44.10 / PF 1.315 / 0.90% drawdown:
+ *
+ *      k=5    +$12.31  PF 1.061   DD 1.29%     k=40   -$107.96  PF 0.726  DD 4.84%
+ *      k=10    +$5.61  PF 1.027   DD 1.33%     k=80   -$131.10  PF 0.729  DD 5.44%
+ *      k=20   -$61.33  PF 0.772   DD 4.30%     k=160  -$155.11  PF 0.731  DD 5.98%
+ *      lower-confidence-bound variant, k=40:   -$5.65   PF 0.949  DD 0.76%
+ *
+ *  Monotone in k, and every variant loses. The reason is that this threshold's
+ *  value was never the flat 6% below it — it is that RAW Kelly above it clamps
+ *  to zero within a few trades of a book turning negative, which halts trading
+ *  outright. Any prior floors that estimate and keeps the engine in the market:
+ *  at k=40 Pro's trade count went from 42 to 177. The prior is optimistic by
+ *  construction (52.5% against a 37.5% breakeven at R=1.67), so it cannot help
+ *  being a floor.
+ *
+ *  The premise that the first 30 trades are "taken blind" is therefore wrong in
+ *  the way that matters: they are taken at a fixed small size, which costs
+ *  little, whereas diluting Kelly's shutoff costs a great deal. Treat this as
+ *  settled unless you have a mechanism that de-risks a losing book FASTER than
+ *  raw Kelly, not merely more smoothly. See PLAN_ENGINE_FIXES.md §5. */
 export const KELLY_MIN_SAMPLE = 30;
 
 /** Fraction of full Kelly actually bet. Was 0.5 (half-Kelly).
