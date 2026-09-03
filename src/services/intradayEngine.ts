@@ -323,9 +323,14 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry), tradeType);
   }
   if (!cost.approved && confidence >= 72) {
+    // A bypassed cost gate is not an approved one. Logging "COST OK" here too
+    // put two contradictory lines in the decision log for the same trade
+    // ("COST BYPASS — R:R 0.93 ... NO TRADE" followed by "COST OK — ... NO TRADE"),
+    // which is exactly the transparency the log exists to provide.
     logs.push(`[${symbol}] COST BYPASS — ${cost.reason} (confidence ${confidence} >= 72)`);
+  } else {
+    logs.push(`[${symbol}] COST OK — ${cost.reason}`);
   }
-  logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
   // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
   // Adaptive sizing (DecisionEngine path only): the orchestrator injects
