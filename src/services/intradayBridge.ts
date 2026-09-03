@@ -431,7 +431,17 @@ const METRIC_CONFIG: Record<string, { label: string; higherIsBetter: boolean; th
 export function buildFactorsFromDecisionResult(result: DecisionResult): DecisionFactor[] {
   const factors: DecisionFactor[] = [];
 
+  // Only include metrics that are non-zero or explicitly meaningful —
+  // when a pipeline blocks early (NO_DATA, CIRCUIT_BREAKER, etc), the
+  // adapters return zeroed metrics for layers that never ran, which clutter
+  // the decision breakdown with noise like "ADX: 0" when ADX was never calculated.
+  // A zero metric is only meaningful if the gate is SIGNAL (it was computed).
+  const includeZeroMetrics = result.outcome === 'SIGNAL';
+
   for (const [key, value] of Object.entries(result.metrics)) {
+    if (typeof value !== 'number') continue;
+    if (!includeZeroMetrics && value === 0) continue;
+
     const config = METRIC_CONFIG[key];
     if (!config) continue;
 
@@ -452,6 +462,9 @@ export function buildFactorsFromDecisionResult(result: DecisionResult): Decision
     });
   }
 
+  // Always add the Gate label when a trade is blocked — it's the most important
+  // piece of decision information for a NO_SIGNAL outcome, and its absence makes
+  // the decision breakdown appear empty/broken even though the gate is the point.
   if (result.gate && result.outcome !== 'SIGNAL') {
     factors.push({
       label: 'Gate',
