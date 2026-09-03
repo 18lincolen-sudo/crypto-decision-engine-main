@@ -305,7 +305,11 @@ crypto-decision-engine-main/
 
 ### 5.1 Render (Backend)
 
-**Root Directory:** `server`
+**Live worker:** `https://crypto-decision-engine-main-hev8.onrender.com`
+(the value of `VITE_TRADING_API_URL`, baked into the frontend at build time).
+
+`render.yaml` as it stands in the repo — **note the root directory is the repo
+root, not `server`**:
 
 ```yaml
 # render.yaml
@@ -314,10 +318,34 @@ services:
     name: crypto-trading-worker
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
-    startCommand: node dist/worker.js
+    buildCommand: npm install && npm --prefix server install && npm --prefix server run build
+    startCommand: node server/dist/worker.js
     healthCheckPath: /health
+    autoDeploy: true
 ```
+
+> ⚠️ **This may not be the configuration that actually runs.** Render derives a
+> service's hostname from its *service name*; the live hostname matches the
+> **repo** name, not `crypto-trading-worker`, which is what Render fills in when
+> a service is created by hand rather than from a blueprint. If the service was
+> created manually, `render.yaml` is inert — including `autoDeploy: true`, which
+> would explain a push to `main` that never triggers a rebuild.
+>
+> Check the Render dashboard for whether the service is blueprint-managed, and
+> what its Build and Start commands actually are. See the caveat at the top of
+> `render.yaml` before renaming anything: on a blueprint-managed service the
+> name is its identity, and changing it orphans the running service.
+
+**Two separate build outputs — do not confuse them:**
+
+| Output | Built by | Deployed to | Contains |
+| --- | --- | --- | --- |
+| `dist/` | `npm run build` (Vite) | Netlify | frontend only |
+| `server/dist/worker.js` | `npm --prefix server run build` (esbuild) | Render | the worker |
+
+There is no `dist/worker.js`. Uploading `dist/` to Netlify updates the UI only;
+all bot decisions are computed by the Render worker, so an engine fix is not
+live until Render rebuilds.
 
 **משתני סביבה ב-Render:**
 | משתנה | ערך ברירת מחדל | תיאור |

@@ -1,3 +1,22 @@
+# ⚠️ This blueprint may not be what actually runs. Verify before trusting it.
+#
+# The live worker answers at crypto-decision-engine-main-hev8.onrender.com.
+# Render derives that hostname from the SERVICE name, and the name below is
+# `crypto-trading-worker` — the hostname instead matches the REPO name, which
+# is what Render fills in when a service is created by hand from a repo. So the
+# running service was most likely NOT created from this file, in which case
+# nothing here applies: not buildCommand, not startCommand, and not
+# `autoDeploy: true` — which would explain a push to `main` that never
+# redeployed.
+#
+# ARCHITECTURE.md §5.1 documents a THIRD variant (Root Directory `server`,
+# startCommand `node dist/worker.js`). At most one of the three is real.
+#
+# Do NOT "tidy" the name below to match the hostname before checking the Render
+# dashboard. Render identifies a blueprint-managed service BY this name:
+# changing it on a service that IS managed here makes Render treat it as a new
+# service, orphaning the running one and killing the hostname that is baked
+# into VITE_TRADING_API_URL at build time.
 services:
   - type: web
     name: crypto-trading-worker
