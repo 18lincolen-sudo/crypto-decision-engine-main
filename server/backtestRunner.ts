@@ -24,7 +24,7 @@ import {
   calculateProRisk,
   evaluateProExit,
   ProActivePosition,
-  computeProAdvancedAnalysis,
+  evaluateProSignals,
 } from '@cde/engine/analysis';
 import { sizingMultiplierFromHistory, MIN_STOP_PERCENT, MAX_STOP_PERCENT } from '@cde/engine/execution';
 import { getCachedHistory, saveCachedHistory } from './historicalCandleCache';
@@ -204,24 +204,10 @@ function proEvaluate(
   const slice = candles.slice(0, idx + 1);
   const currentPrice = candles[idx].close;
   const regime = detectProRegime(slice, currentPrice);
-  const adv = computeProAdvancedAnalysis({
-    candles: slice,
-    currentPrice,
-    priceChange24h: 0,
-    fearGreedIndex: 50,
-    marketCap: 0,
-    volume24h: 0,
-    symbol
-  });
-  const signalResult = {
-    action: adv.action,
-    buyScore: adv.action === 'BUY' ? adv.confidence : adv.action === 'SELL' ? 0 : 50,
-    sellScore: adv.action === 'SELL' ? adv.confidence : adv.action === 'BUY' ? 0 : 50,
-    rawConfidence: adv.confidence,
-    confidence: adv.confidence,
-    signals: [],
-    penalties: adv.penalties
-  } as unknown as Parameters<typeof routeProTradeType>[0];
+  // Mirrors proAdapter.ts's AdvancedAnalysisStage (2026-09-03: evaluateProSignals,
+  // not computeProAdvancedAnalysis — see checkpoint-pro-advanced-analysis to revert
+  // both together) so the backtest sweep scores entries the same way live does.
+  const signalResult = evaluateProSignals(slice, currentPrice, 0, regime, 50);
   const routeResult = routeProTradeType(
     signalResult, regime,
     {
@@ -276,16 +262,12 @@ function checkExitPro(pos: SimPosition, candle: Candle, candles: Candle[], idx: 
   const eq = equity(state, { [pos.symbol]: candle.close });
   const dailyDD = state.peakEquity > 0 ? Math.max(0, (state.peakEquity - eq) / state.peakEquity * 100) : 0;
   const slice = candles.slice(0, idx + 1);
-  const adv = computeProAdvancedAnalysis({
-    candles: slice,
-    currentPrice: candle.close,
-    priceChange24h: 0,
-    fearGreedIndex: 50,
-    marketCap: 0,
-    volume24h: 0,
-    symbol: pos.symbol
-  });
-  const signalScores = { buy: adv.action === 'BUY' ? adv.confidence : 0, sell: adv.action === 'SELL' ? adv.confidence : 0 };
+  // Same source swap as proEvaluate() above — keeps the reversal-exit check
+  // consistent with what live evaluations now carry (proSimExecution.ts
+  // reuses the tick's own SignalEvaluation here rather than recomputing).
+  const regimeForExit = detectProRegime(slice, candle.close);
+  const signal = evaluateProSignals(slice, candle.close, 0, regimeForExit, 50);
+  const signalScores = { buy: signal.action === 'BUY' ? signal.confidence : 0, sell: signal.action === 'SELL' ? signal.confidence : 0 };
   const exitResult = evaluateProExit(activePos, candle.close, currentAtr, signalScores, { dailyDrawdownPercent: dailyDD, weeklyDrawdownPercent: dailyDD, systemLocked: false });
   if (!exitResult.shouldExit) return { shouldExit: false, exitType: 'NONE', pnl: 0 };
   let pnl = 0;

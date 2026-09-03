@@ -118,33 +118,35 @@ class DetectRegimeStage implements PipelineStage<ProPipelineContext> {
 class AdvancedAnalysisStage implements PipelineStage<ProPipelineContext> {
   name = 'advanced-analysis';
 
+  // 2026-09-03: reverted from computeProAdvancedAnalysis (the website's
+  // Advanced Analysis engine — "per approved product decision", the comment
+  // this replaced) back to evaluateProSignals, proAlgEngine's own internal
+  // weighted-indicator engine — same PATTERN the Legacy adapter uses (it
+  // computes its own signal internally rather than delegating to a shared
+  // engine). Requested explicitly, with the tradeoff understood: this is a
+  // product-behavior change, not a bug fix, and evaluateProSignals' real
+  // weights (MACD 20, EMA20/50 18, RSI 12, Bollinger 12, Volume Surge 18,
+  // Supertrend 12, Stochastic 8 — identical to Legacy's, verified against
+  // evaluateSignals in tradeEngine.ts) are NOT the table ALG_pro.md
+  // documents (Advanced Analysis 50 / RSI 15 / MACD 18 / Stochastic 10 /
+  // Williams %R 7) — that table doesn't correspond to any code that exists.
+  // See ALG_pro.md's "נספח אימות" section for the full audit, and
+  // checkpoint-pro-advanced-analysis (tag) to revert this specific change:
+  // `git checkout checkpoint-pro-advanced-analysis -- <this file> server/backtestRunner.ts`.
   execute(context: ProPipelineContext): StageResult<ProPipelineContext> {
     if (!context.regime) {
       return { context, blocked: true, blockReason: 'Missing regime', gate: 'ERROR' };
     }
 
-    // Use Advanced Analysis as the signal source (per approved product decision)
-    const adv = computeProAdvancedAnalysis({
-      candles: context.candles.h1,
-      currentPrice: context.currentPrice,
-      priceChange24h: context.marketData.priceChange24h ?? 0,
-      fearGreedIndex: context.marketData.fearGreedIndex ?? 50,
-      marketCap: context.marketData.marketCap ?? 0,
-      volume24h: context.marketData.volume24h ?? 0,
-      symbol: context.symbol
-    });
+    const signal = evaluateProSignals(
+      context.candles.h1 as Candle[],
+      context.currentPrice,
+      context.marketData.priceChange24h ?? 0,
+      context.regime,
+      context.marketData.fearGreedIndex ?? 50
+    );
 
-    const signal: ProSignalResult = {
-      action: adv.action,
-      buyScore: adv.action === 'BUY' ? adv.confidence : adv.action === 'SELL' ? 0 : 50,
-      sellScore: adv.action === 'SELL' ? adv.confidence : adv.action === 'BUY' ? 0 : 50,
-      rawConfidence: adv.confidence,
-      confidence: adv.confidence,
-      signals: adv.signals as ProSignalResult['signals'],
-      penalties: adv.penalties
-    };
-
-    return { context: { ...context, signal, advancedAnalysis: adv }, blocked: false };
+    return { context: { ...context, signal }, blocked: false };
   }
 }
 

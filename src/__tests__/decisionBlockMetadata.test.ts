@@ -130,13 +130,32 @@ describe('a blocked decision always names the gate that blocked it', () => {
   it('the correlation gate explains itself instead of blocking silently', () => {
     const engine = new DecisionEngine({ verbose: false, maxCorrelatedPositions: 2 });
     engine.registerAdapter(new ProAdapter());
+    // ProAdapter's Layer 1 is evaluateProSignals (2026-09-03: reverted from
+    // computeProAdvancedAnalysis — see checkpoint-pro-advanced-analysis). Its
+    // weighted-indicator math needs a fresh MACD/EMA cross to clear Pro's
+    // routing threshold; 240 candles of the same smooth oscillation leaves
+    // every cross "stale" (continuation strength, not a fresh cross) and
+    // confidence never quite reaches it. A short, sharp final-candle move
+    // crosses EMA20 over EMA50 exactly at the current candle.
+    const strongSignalCandles = () => {
+      const out = candles(240, 100, 0.004, T, 3_600_000);
+      const last = out[out.length - 1];
+      const jumped = last.close * 1.035;
+      out[out.length - 1] = { ...last, close: jumped, high: jumped * 1.01, volume: last.volume * 2 };
+      return out;
+    };
     const held = Array.from({ length: 2 }, (_, i) => ({
       symbol: `H${i}`, type: 'SPOT', side: 'BUY',
-      candles: candles(240, 100, 0.004, T, 3_600_000)
+      candles: strongSignalCandles()
     }));
+    // Distinct symbol: ProAdapter memoizes by symbol+lastCandleTimestamp+
+    // portfolio+config — SYM0 with this base 240-candle shape (timestamp-
+    // identical to other tests' unmodified series) would otherwise collide
+    // with an unrelated test's cached NO_SIGNAL result.
     const r = engine.evaluate({
       ...(context(0) as object),
-      candles: { h1: candles(240, 100, 0.004, T, 3_600_000) },
+      symbol: 'PROCORR_EXPLAINS',
+      candles: { h1: strongSignalCandles() },
       openPositions: held
     } as never);
 

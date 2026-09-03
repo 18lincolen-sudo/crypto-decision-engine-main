@@ -107,17 +107,39 @@ describe('no cross-cutting gate may throw into gate:ERROR', () => {
 });
 
 describe('correlation gate actually blocks', () => {
+  // ProAdapter's Layer 1 is evaluateProSignals (2026-09-03: reverted from
+  // computeProAdvancedAnalysis, see checkpoint-pro-advanced-analysis) — its
+  // weighted-indicator math needs a genuinely fresh MACD/EMA cross to clear
+  // Pro's routing threshold, which the flat sine-wave `clone()` series (built
+  // for the other regression tests above) never produces: 240 candles of the
+  // same smooth oscillation leaves every crossover long "stale" (scored at
+  // continuation strength 0.7-0.8, not a fresh cross's 1.0) and confidence
+  // caps out around 58 — just under Pro's ~60 Spot threshold. A short, sharp
+  // ramp on the LAST candle only crosses EMA20 over EMA50 exactly now.
+  const strongProSignalCandles = () => {
+    const out = clone();
+    const last = out[out.length - 1];
+    const jumped = last.close * 1.035;
+    out[out.length - 1] = { ...last, close: jumped, high: jumped * 1.01, volume: last.volume * 2 };
+    return out;
+  };
+
   // It needs the CANDIDATE's own series in the map, not only the held ones —
   // evaluateCorrelationGate looks itself up by symbol and abstains otherwise.
   it('allows below the cap and refuses at it', () => {
     const engine = new DecisionEngine({ verbose: false, maxCorrelatedPositions: 2 });
     engine.registerAdapter(new ProAdapter());
     const held = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({ symbol: `H${i}`, type: 'SPOT', side: 'BUY', candles: clone() }));
+      Array.from({ length: n }, (_, i) => ({ symbol: `H${i}`, type: 'SPOT', side: 'BUY', candles: strongProSignalCandles() }));
 
-    const under = engine.evaluate({ ...(context(0) as object), candles: { h1: clone() }, openPositions: held(1) } as never);
-    const at = engine.evaluate({ ...(context(0) as object), candles: { h1: clone() }, openPositions: held(2) } as never);
+    // Distinct symbol: ProAdapter memoizes by symbol+lastCandleTimestamp+
+    // portfolio+config, and `context(0)`'s SYM0 with this same 240-candle
+    // shape (timestamp-identical to other tests' unmodified base series) would
+    // otherwise collide with an unrelated test's cached NO_SIGNAL result.
+    const under = engine.evaluate({ ...(context(0) as object), symbol: 'PROCORR_UNDER', candles: { h1: strongProSignalCandles() }, openPositions: held(1) } as never);
+    const at = engine.evaluate({ ...(context(0) as object), symbol: 'PROCORR_AT', candles: { h1: strongProSignalCandles() }, openPositions: held(2) } as never);
 
+    expect(under.outcome, 'fixture must actually reach a routable signal for this test to mean anything').toBe('SIGNAL');
     expect(under.gate).not.toBe('CORRELATION');
     expect(at.gate).toBe('CORRELATION');
   });
