@@ -350,6 +350,7 @@ const SimulationBotPage = () => {
         </div>
       </div>
     </div>
+    </div>
   );
 };
 
