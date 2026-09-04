@@ -66,6 +66,12 @@ export interface SignalEvaluation {
   timeframe?: 'short' | 'medium' | 'long';
   regime?: MarketRegimeResult;
   leverage?: number;
+  /** Position size the RISK LAYER asked for, in USD (RiskPlan.betSizeUsd —
+   *  Kelly, capped at half-Kelly and scaled by recent performance). This is what
+   *  the backtest runner has always sized from; the simulations discarded it and
+   *  sized from free cash instead, so a backtest result described a different
+   *  position size than the engine it was supposed to validate. */
+  betSizeUsd?: number;
   stopLoss?: number;
   takeProfit1?: number;
   takeProfit2?: number;

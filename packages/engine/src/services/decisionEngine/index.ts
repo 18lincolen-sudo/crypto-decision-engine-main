@@ -28,6 +28,8 @@ export type { DecisionEngineOptions } from './orchestrator';
 export { IntradayAdapter } from './adapters/intradayAdapter';
 export { LegacyAdapter } from './adapters/legacyAdapter';
 export { ProAdapter } from './adapters/proAdapter';
+export { PathAdapter } from './adapters/pathAdapter';
+export type { PathEngineParams } from './adapters/pathAdapter';
 
 export type {
   DecisionContext,

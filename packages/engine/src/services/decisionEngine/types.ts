@@ -27,7 +27,7 @@ import type { ClosedTradeRecord } from '../adaptiveRisk';
 export type TradeDirection = 'LONG' | 'SHORT' | 'BUY' | 'SELL' | 'NONE';
 export type TradeType = 'SPOT' | 'FUTURES' | 'HOLD';
 export type DecisionOutcome = 'SIGNAL' | 'NO_SIGNAL' | 'NO_DATA';
-export type EngineId = 'intraday' | 'legacy' | 'pro';
+export type EngineId = 'intraday' | 'legacy' | 'pro' | 'path';
 /** What a DecisionResult may report: a real engine, or 'unknown' when no
  *  adapter could handle the input at all. */
 export type ResultEngineId = EngineId | 'unknown';

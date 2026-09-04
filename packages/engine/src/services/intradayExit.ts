@@ -233,42 +233,33 @@ export function evaluateIntradayExit(pos: IntradayPositionView, ctx: IntradayExi
   const extensionEarned = extensionFactor > 1 && progressR >= params.maxHoldExtensionMinProgressR;
   const effectiveMaxHoldMs = extensionEarned ? Math.round(maxHoldMs * extensionFactor) : maxHoldMs;
 
+  // No `beyondTp || beyondSl` guard here, deliberately. It used to wrap this
+  // branch and made it unreachable: a price beyond the stop returned at the
+  // STOP_LOSS check above and a price beyond the target at TAKE_PROFIT, so the
+  // condition was only ever true for prices that had already exited. A max hold
+  // is a budget — when it runs out the position closes wherever it stands,
+  // which is the whole point of having one.
   if (heldMs >= effectiveMaxHoldMs) {
-    const tpLevel = pos.takeProfit2 ?? pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
-    const slLevel = pos.stopLoss;
-    const beyondTp = isLong ? price >= tpLevel : price <= tpLevel;
-    const beyondSl = isLong ? price <= slLevel : price >= slLevel;
-    // Only exit on max hold if the position has already moved beyond its
-    // initial SL or TP — prevents cutting a position before 3% profit or
-    // 1.8% loss.
-    if (beyondTp || beyondSl) {
-      return {
-        shouldExit: true,
-        exitType: 'FULL',
-        reasonCode: 'MAX_DURATION',
-        reason: `משך החזקה מקסימלי (${Math.round(effectiveMaxHoldMs / 60_000)} דק'${extensionEarned ? ' — כולל הרחבה' : ''}) — יציאת זמן`,
-        ...base
-      };
-    }
+    return {
+      shouldExit: true,
+      exitType: 'FULL',
+      reasonCode: 'MAX_DURATION',
+      reason: `משך החזקה מקסימלי (${Math.round(effectiveMaxHoldMs / 60_000)} דק'${extensionEarned ? ' — כולל הרחבה' : ''}) — יציאת זמן`,
+      ...base
+    };
   }
 
+  // Same removal as above. `progressR < timeStopMinProgressR` IS the test for a
+  // stagnant trade; requiring the price to also be outside the stop/target band
+  // asked for the one state in which a time stop has nothing left to decide.
   if (heldMs >= timeStopMs && progressR < params.timeStopMinProgressR) {
-    const tpLevel = pos.takeProfit2 ?? pos.takeProfit1 ?? (isLong ? pos.entryPrice * 1.03 : pos.entryPrice * 0.97);
-    const slLevel = pos.stopLoss;
-    const beyondTp = isLong ? price >= tpLevel : price <= tpLevel;
-    const beyondSl = isLong ? price <= slLevel : price >= slLevel;
-    // Only exit on time stop if the position has already moved beyond its
-    // initial SL or TP — prevents cutting a position before 3% profit or
-    // 1.8% loss.
-    if (beyondTp || beyondSl) {
-      return {
-        shouldExit: true,
-        exitType: 'FULL',
-        reasonCode: 'TIME_STOP',
-        reason: `Time Stop: אחרי ${heldMinutes} דק' התקדמות ${progressR.toFixed(2)}R < ${params.timeStopMinProgressR}R`,
-        ...base
-      };
-    }
+    return {
+      shouldExit: true,
+      exitType: 'FULL',
+      reasonCode: 'TIME_STOP',
+      reason: `Time Stop: אחרי ${heldMinutes} דק' התקדמות ${progressR.toFixed(2)}R < ${params.timeStopMinProgressR}R`,
+      ...base
+    };
   }
 
   return {

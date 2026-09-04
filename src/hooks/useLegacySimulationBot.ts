@@ -70,6 +70,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     confidenceGap: 0,
     regime,
     leverage: result.riskPlan ? result.riskPlan.leverage : undefined,
+    betSizeUsd: result.riskPlan ? result.riskPlan.betSizeUsd : undefined,
     stopLoss: result.riskPlan ? result.riskPlan.stopLoss : undefined,
     takeProfit1: result.riskPlan ? result.riskPlan.takeProfit1 : undefined,
     takeProfit2: result.riskPlan ? result.riskPlan.takeProfit2 : undefined,

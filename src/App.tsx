@@ -10,6 +10,7 @@ import { WorkerAuthProvider } from "./contexts/WorkerAuthContext";
 import { SimulationBotProvider } from "./contexts/SimulationBotContext";
 import { LegacySimulationBotProvider } from "./contexts/LegacySimulationBotContext";
 import { ProSimulationBotProvider } from "./contexts/ProSimulationBotContext";
+import { PathSimulationBotProvider } from "./contexts/PathSimulationBotContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Index from "./pages/Index";
 import Portfolio from "./pages/Portfolio";
@@ -52,6 +53,7 @@ const App = () => {
               <SimulationBotProvider>
               <LegacySimulationBotProvider>
               <ProSimulationBotProvider>
+              <PathSimulationBotProvider>
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/portfolio" element={<Portfolio />} />
@@ -62,6 +64,7 @@ const App = () => {
                 <Route path="/backtest-results" element={<BacktestResults />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
+              </PathSimulationBotProvider>
               </ProSimulationBotProvider>
               </LegacySimulationBotProvider>
               </SimulationBotProvider>

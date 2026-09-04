@@ -22,7 +22,7 @@ import {
   MIN_ENTRY_RELATIVE_VOLUME
 } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
-import { computeEntryBudget, isInEntryCooldown, riskLevelSizingMultiplier } from './simExecution';
+import { isInEntryCooldown, resolveEntryBudget } from './simExecution';
 import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
@@ -247,8 +247,13 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
       : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
     const leverage = ev.leverage || 1;
-    const budget = computeEntryBudget(workingCash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT', ctx.positionPercent)
-      * riskLevelSizingMultiplier(ctx.riskLevel);
+    const budget = resolveEntryBudget({
+      kellyBetSizeUsd: ev.betSizeUsd,
+      cash: workingCash,
+      tradeType: ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT',
+      positionPercent: ctx.positionPercent,
+      riskLevel: ctx.riskLevel
+    });
     if (budget < 5) continue;
 
     // Within-batch correlation check: every evaluation in this tick was

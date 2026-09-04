@@ -169,3 +169,38 @@ describe('slippagePercent sets the fill band', () => {
     expect(simulateSlippage(100, 'SELL', 0.1).fillPrice).toBeLessThan(100);
   });
 });
+
+describe('Kelly decides the size, the operator caps it', () => {
+  it('uses the risk plan size when the engine produced one', () => {
+    const withKelly = { ...evaluation('LA'), betSizeUsd: 40 } as SignalEvaluation;
+    const orders = generateLegacyOrders({ ...baseCtx, cash: 1000, evaluations: [withKelly] });
+    expect(orders.find((o) => o.side === 'buy')?.budgetUsd).toBeCloseTo(40, 6);
+  });
+
+  it('never exceeds positionPercent of free cash, however large Kelly gets', () => {
+    const hugeKelly = { ...evaluation('LA'), betSizeUsd: 900 } as SignalEvaluation;
+    const orders = generateLegacyOrders({
+      ...baseCtx, cash: 1000, positionPercent: 10, evaluations: [hugeKelly]
+    });
+    expect(orders.find((o) => o.side === 'buy')?.budgetUsd).toBeCloseTo(100, 6);
+  });
+
+  it('riskLevel scales the ceiling, not the Kelly bet', () => {
+    const kelly = { ...evaluation('LA'), betSizeUsd: 120 } as SignalEvaluation;
+    const medium = generateLegacyOrders({
+      ...baseCtx, cash: 1000, positionPercent: 10, riskLevel: 'medium', evaluations: [kelly]
+    });
+    const high = generateLegacyOrders({
+      ...baseCtx, cash: 1000, positionPercent: 10, riskLevel: 'high', evaluations: [kelly]
+    });
+    // medium: ceiling 100 binds. high: ceiling 150, so Kelly's own 120 stands —
+    // appetite widened the cap, it did not inflate the bet.
+    expect(medium.find((o) => o.side === 'buy')?.budgetUsd).toBeCloseTo(100, 6);
+    expect(high.find((o) => o.side === 'buy')?.budgetUsd).toBeCloseTo(120, 6);
+  });
+
+  it('falls back to the cash budget when no risk plan reached the order', () => {
+    const orders = generateLegacyOrders({ ...baseCtx, cash: 1000, evaluations: [evaluation('LA')] });
+    expect(orders.find((o) => o.side === 'buy')?.budgetUsd).toBeCloseTo(150, 6);
+  });
+});

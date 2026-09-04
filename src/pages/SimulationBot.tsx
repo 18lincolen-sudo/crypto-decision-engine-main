@@ -9,6 +9,7 @@ import SimulationEngineColumn from '../components/trading/SimulationEngineColumn
 import { useSimulationBotContext } from '../contexts/SimulationBotContext';
 import { useLegacySimulationBotContext } from '../contexts/LegacySimulationBotContext';
 import { useProSimulationBotContext } from '../contexts/ProSimulationBotContext';
+import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContext';
 import { useWorkerAuth } from '../contexts/WorkerAuthContext';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { SIM_BOT_STORAGE_KEY } from '../hooks/useSimulationBot';
@@ -30,6 +31,7 @@ const SimulationBotPage = () => {
   const intraday = useSimulationBotContext();
   const legacy = useLegacySimulationBotContext();
   const pro = useProSimulationBotContext();
+  const path = usePathSimulationBotContext();
   const { cryptoData, isLoading } = useCryptoData();
   const { baseUrl, setBaseUrl, persistBaseUrl, baseUrlSource, setBaseUrlSource } = useWorkerAuth();
   const [groupBusy, setGroupBusy] = useState(false);
@@ -256,8 +258,9 @@ const SimulationBotPage = () => {
           weeklyDrawdownPercent={Math.max(intraday.weeklyDrawdownPercent, legacy.weeklyDrawdownPercent, pro.weeklyDrawdownPercent)}
         />
 
-        {/* Three engines — 1 column on mobile, 2 on medium/large, 3 on extra-large screens */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+        {/* Four engines — 1 column on mobile, 2 from large up. Three-across left the
+            fourth alone on its own row; two-across keeps the grid even. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <SimulationEngineColumn
             title="מנוע חדש · Multi-Timeframe"
             subtitle="Setup + Entry מבניים על 1H/15M/5M"
@@ -343,6 +346,39 @@ const SimulationBotPage = () => {
             start={pro.start}
             pause={pro.pause}
             resetAll={pro.resetAll}
+          />
+
+          <SimulationEngineColumn
+            title="מנוע נתיב 4H · Empirical Path"
+            subtitle={
+              path.table
+                ? `פירוק נר 4H ל-16 נתחי 15 דק׳ · ${path.table.buckets} דליים מ-${path.table.sourceBars} נרים`
+                : 'פירוק נר 4H ל-16 נתחי 15 דק׳ · טבלת הסתברויות נטענת'
+            }
+            accentClass="text-violet-400"
+            cryptoData={cryptoData}
+            cash={path.cash}
+            positions={path.positions}
+            positionsValue={path.positionsValue}
+            equity={path.equity}
+            trades={path.trades}
+            history={path.history}
+            pending={path.pending}
+            totalFees={path.totalFees}
+            totalSlippageCost={path.totalSlippageCost}
+            winRate={path.winRate}
+            totalTrades={path.totalTrades}
+            closedTrades={path.closedTrades}
+            evaluations={path.evaluations}
+            hasSavedSession={path.hasSavedSession}
+            nextTickAt={path.nextTickAt}
+            config={path.config}
+            setConfig={path.setConfig}
+            status={path.status}
+            isRunning={path.isRunning}
+            start={path.start}
+            pause={path.pause}
+            resetAll={path.resetAll}
           />
         </div>
       </div>

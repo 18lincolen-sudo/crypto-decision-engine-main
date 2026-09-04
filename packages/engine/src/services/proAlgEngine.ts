@@ -34,6 +34,7 @@
 import { Candle, calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
 import { computeDrawdownFactor, MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER, SL_ATR_MULTIPLIER, SL_TP_REWARD_RISK } from './adaptiveRisk';
 import { WEEKLY_DRAWDOWN_LOCK_PERCENT } from './intradayParams';
+import { evaluateTimeStop, progressInR, TIME_STOP_EXTENDED_HOURS, TIME_STOP_MIN_PROGRESS_R } from './adaptiveRisk';
 
 // ── LAYER 0 — MARKET REGIME DETECTION ──────────────────────────────────────
 
@@ -692,11 +693,11 @@ export interface ProExitDecision {
 
 /** alg.md §Layer4.4 checkpoints the Futures time stop at 24h. A position
  *  already working in our favour gets one extension to this hour instead. */
-export const PRO_FUTURES_TIME_STOP_EXTENDED_HOURS = 36;
+export const PRO_FUTURES_TIME_STOP_EXTENDED_HOURS = TIME_STOP_EXTENDED_HOURS;
 
 /** Favourable progress (in R) required at the 24h checkpoint to earn the
  *  extension. Matches the intraday engine's own time-stop progress bar. */
-export const PRO_FUTURES_TIME_STOP_MIN_PROGRESS_R = 0.3;
+export const PRO_FUTURES_TIME_STOP_MIN_PROGRESS_R = TIME_STOP_MIN_PROGRESS_R;
 
 export function evaluateProExit(
   pos: ProActivePosition,
@@ -781,60 +782,30 @@ export function evaluateProExit(
     }
   }
 
-  // §Layer4.4 — time-based
+  // §Layer4.4 — time-based. The rule now lives in adaptiveRisk.ts so Legacy and
+  // Pro cut stagnant positions by the same measure; the progress reprieve this
+  // engine already had is part of it. What changed here is that the exit is
+  // reachable at all: it used to sit behind `beyondTp1 || beyondSl`, a condition
+  // the stop-loss and take-profit checks above had already claimed.
   const heldMs = Date.now() - (pos.openTimestamp || Date.now());
-  const hoursHeld = heldMs / (1000 * 60 * 60);
-  if (!isFutures && hoursHeld >= 48) {
-    const distanceToSL = Math.abs(pos.entryPrice - pos.stopLoss);
-    const currentLoss = pos.entryPrice - currentPrice;
-    const tpLevel = pos.takeProfit1 ?? pos.entryPrice * 1.03;
-    const beyondTp = currentPrice >= tpLevel;
-    const beyondSl = currentLoss >= distanceToSL;
-    // Only exit on time stop if the position has already moved beyond its
-    // initial SL or TP — prevents cutting a position before 3% profit or
-    // 1.8% loss.
-    if ((beyondTp || beyondSl) && currentLoss > distanceToSL * 0.5) {
-      return { shouldExit: true, exitType: 'FULL', reason: 'יציאת זמן (48 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL' };
-    }
+  const timeStop = evaluateTimeStop({
+    heldMs,
+    isFutures,
+    progressR: progressInR(pos.entryPrice, currentPrice, pos.stopLoss, isLong),
+    tp1Hit: pos.tp1Hit
+  });
+  if (timeStop.action !== 'NONE') {
+    return {
+      shouldExit: true,
+      exitType: timeStop.action === 'PARTIAL_50' ? 'PARTIAL_50' : 'FULL',
+      reason: timeStop.reason
+    };
   }
-  if (isFutures && hoursHeld >= 24 && !pos.tp1Hit) {
-    // §Layer4.4 documents this literally as a 50% reduction — implemented
-    // here as a genuine PARTIAL_50 (unlike tradeEngine.ts's equivalent,
-    // which always fully closes due to an unrelated pre-existing bug).
-    //
-    // Progress-aware extension: the 24h checkpoint asks "is this trade going
-    // anywhere?", and a position that has covered a third of its stop
-    // distance in the right direction has answered yes — cutting it at a
-    // fixed clock reading discards precisely the slow trends the ATR targets
-    // were sized for. It is a REPRIEVE, not a reset: the trade still faces
-    // the same test at 36h, and by then it must be at least breakeven-plus
-    // to survive, so a stalling position cannot roll the extension forward.
-    const stopDistance = Math.abs(pos.entryPrice - pos.stopLoss);
-    const progressR = stopDistance > 0
-      ? ((currentPrice - pos.entryPrice) * (isLong ? 1 : -1)) / stopDistance
-      : 0;
-
-    if (hoursHeld < PRO_FUTURES_TIME_STOP_EXTENDED_HOURS && progressR > PRO_FUTURES_TIME_STOP_MIN_PROGRESS_R) {
-      return {
-        shouldExit: false,
-        exitType: 'NONE',
-        reason: `הרחבת יציאת זמן: ${progressR.toFixed(2)}R לטובתנו אחרי ${hoursHeld.toFixed(1)} שעות — ממשיכים עד ${PRO_FUTURES_TIME_STOP_EXTENDED_HOURS} שעות`
-      };
-    }
-
-    // Only exit on time stop if the position has already moved beyond its
-    // initial TP1 (3%) or SL (1.8%) — prevents cutting a position before
-    // meaningful profit or before a reasonable loss threshold.
-    const tp1Level = pos.takeProfit1 ?? pos.entryPrice * 1.03;
-    const beyondTp1 = isLong ? currentPrice >= tp1Level : currentPrice <= tp1Level;
-    const beyondSl = isLong ? currentPrice <= pos.stopLoss : currentPrice >= pos.stopLoss;
-    if (beyondTp1 || beyondSl) {
-      return {
-        shouldExit: true,
-        exitType: 'PARTIAL_50',
-        reason: `יציאת זמן (${Math.floor(hoursHeld)} שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
-      };
-    }
+  // A reprieve carries its own explanation: the position stays open BECAUSE it
+  // passed the checkpoint, which is worth saying in the decision log rather than
+  // letting it fall through to the generic "still running".
+  if (timeStop.reason) {
+    return { shouldExit: false, exitType: 'NONE', reason: timeStop.reason };
   }
 
   return { shouldExit: false, exitType: 'NONE', reason: 'הפוזיציה ממשיכה לפעול' };

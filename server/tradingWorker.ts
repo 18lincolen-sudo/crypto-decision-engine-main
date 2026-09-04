@@ -24,6 +24,9 @@ import { createLegacySimEngine, LegacySimSnapshot } from './legacySimEngine.ts';
 // ASSETS/alg.md, independent from the (drifted) legacy engine above. Same
 // server, same infra, only the decision logic differs (see proSimEngine.ts).
 import { createProSimEngine, ProSimSnapshot } from './proSimEngine.ts';
+// Fourth bot: trades a measured 15-minute slot inside the current 4H bar
+// rather than a chart score (see pathSimEngine.ts).
+import { createPathSimEngine, PathSimSnapshot, getPathTableStatus } from './pathSimEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, IntradayTradeType as TradeType } from '@cde/engine/analysis';
 import { buildPortfolioRiskStats } from '@cde/engine';
@@ -98,6 +101,7 @@ export const ENGINE_VERSIONS = {
   intraday: '1.0.0',
   legacy: '1.0.0',
   pro: '1.0.0',
+  path: '1.0.0',
   backtest: '1.0.0',
 } as const;
 
@@ -443,6 +447,7 @@ const store = createKVStore('bot-state', join(DATA_DIR, 'bot-state.json'));
 const simStore = createKVStore('sim-state', join(DATA_DIR, 'sim-state.json'));
 const legacySimStore = createKVStore('legacy-sim-state', join(DATA_DIR, 'legacy-sim-state.json'));
 const proSimStore = createKVStore('pro-sim-state', join(DATA_DIR, 'pro-sim-state.json'));
+const pathSimStore = createKVStore('path-sim-state', join(DATA_DIR, 'path-sim-state.json'));
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 const backtestStore = createKVStore('backtest-results', join(DATA_DIR, 'backtest-results.json'));
 
@@ -601,6 +606,40 @@ async function persistProSim() {
     running: proSimState.running, config: proSimState.config,
     snapshot: proSimState.snapshot, updatedAt: proSimState.updatedAt,
     engineVersion: proSimState.engineVersion
+  }));
+}
+
+// ── 4H Path sim (bot 4) ─────────────────────────────────────────────────────
+// Same config shape and the same shared defaults as the other three: the point
+// of the fourth bot is to isolate its DECISION layer, so every other variable
+// (capital, position cap, costs, sizing ceiling) is deliberately identical.
+const DEFAULT_PATH_SIM_CONFIG = {
+  riskLevel, initialAmount: 10000,
+  maxPositions: maxOpenPositions, maxFuturesPositions: 0, feePercent: 0.1, slippagePercent: 0.05,
+  // The confidence a path signal reports is the bucket's lower-bound hit rate,
+  // so this floor is a probability: a 2R target clears breakeven around 36%.
+  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 33, positionPercent
+};
+const pathSimState = { running: false, config: { ...DEFAULT_PATH_SIM_CONFIG } as typeof DEFAULT_PATH_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.path as string };
+
+const pathSimEngine = createPathSimEngine(() => symbols);
+
+async function hydratePathSim() {
+  const saved = await pathSimStore.get('state');
+  if (!saved) return;
+  const s = JSON.parse(saved) as Record<string, unknown>;
+  pathSimState.running = typeof s.running === 'boolean' ? s.running : false;
+  pathSimState.config = { ...DEFAULT_PATH_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
+  pathSimState.snapshot = s.snapshot ?? null;
+  pathSimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
+  pathSimState.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.path;
+}
+
+async function persistPathSim() {
+  await pathSimStore.set('state', JSON.stringify({
+    running: pathSimState.running, config: pathSimState.config,
+    snapshot: pathSimState.snapshot, updatedAt: pathSimState.updatedAt,
+    engineVersion: pathSimState.engineVersion
   }));
 }
 
@@ -1386,6 +1425,49 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, proSimState);
   }
 
+  // ── 4H Path sim endpoints ─────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/path-sim/state') {
+    return json(res, 200, pathSimState);
+  }
+
+  // Table telemetry: an empty table and a quiet market both produce no trades,
+  // and they are not the same situation.
+  if (req.method === 'GET' && url.pathname === '/api/path-sim/table') {
+    return json(res, 200, getPathTableStatus());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/path-sim/start') {
+    pathSimState.running = true;
+    await persistPathSim();
+    return json(res, 200, pathSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/path-sim/stop') {
+    pathSimState.running = false;
+    await persistPathSim();
+    return json(res, 200, pathSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/path-sim/reset') {
+    pathSimState.running = false;
+    pathSimEngine.reset(pathSimState.config);
+    pathSimState.snapshot = pathSimEngine.getSnapshot();
+    pathSimState.updatedAt = Date.now();
+    await persistPathSim();
+    return json(res, 200, pathSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/path-sim/config') {
+    const body = await readJsonBody(req);
+    if (body && typeof body.config === 'object' && body.config !== null) {
+      if (applySimConfigPatch(pathSimState, DEFAULT_PATH_SIM_CONFIG, body.config as Record<string, unknown>, pathSimEngine)) {
+        pathSimState.updatedAt = Date.now();
+      }
+    }
+    await persistPathSim();
+    return json(res, 200, pathSimState);
+  }
+
   // ── Backtest endpoints ───────────────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/backtest/results') {
     return json(res, 200, backtestState);
@@ -1425,6 +1507,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (legacySimState.snapshot) legacySimEngine.hydrate(legacySimState.snapshot as LegacySimSnapshot);
   await hydrateProSim();
   if (proSimState.snapshot) proSimEngine.hydrate(proSimState.snapshot as ProSimSnapshot);
+  await hydratePathSim();
+  if (pathSimState.snapshot) pathSimEngine.hydrate(pathSimState.snapshot as PathSimSnapshot);
   await hydrateBacktest();
   console.log('[cors] allowed origins: [' + allowedOrigins.join(', ') + ']' + (allowedOrigins.length === 0 ? ' (wildcard)' : ''));
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
@@ -1569,11 +1653,37 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       proSimTickInProgress = false;
     }
   }, 4000);
+
+  let pathSimTickInProgress = false;
+  let lastPathSimPersistAt = 0;
+  setInterval(async () => {
+    if (!pathSimState.running || pathSimTickInProgress) return;
+    pathSimTickInProgress = true;
+    try {
+      const now = Date.now();
+      if (now - lastFgFetchAt > 15 * 60 * 1000) {
+        cachedSimFearGreed = await fetchFearGreed();
+        lastFgFetchAt = now;
+      }
+      const snap = await pathSimEngine.tick(pathSimState.config, cachedSimFearGreed);
+      pathSimState.snapshot = snap;
+      pathSimState.updatedAt = Date.now();
+      if (now - lastPathSimPersistAt >= SIM_PERSIST_INTERVAL_MS) {
+        await persistPathSim();
+        lastPathSimPersistAt = now;
+      }
+    } catch (e: unknown) {
+      console.warn('[path-sim-engine] tick failed:', e instanceof Error ? e.message : String(e));
+    } finally {
+      pathSimTickInProgress = false;
+    }
+  }, 4000);
 });
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] ${signal} — flushing state and warm cache`);
   try { await store.set('state', serializeState()); } catch { /* ignore */ }
+  try { await persistPathSim(); } catch { /* ignore */ }
   lastCachePersistAt = 0;
   try { await persistMarketCache(); } catch { /* ignore */ }
   // Force-flush the throttled sim snapshots too — otherwise up to

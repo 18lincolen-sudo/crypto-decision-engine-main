@@ -437,3 +437,111 @@ export function streakCooldownReason(until: number, symbol?: string): string {
   const symbolText = symbol ? ` על ${symbol}` : '';
   return `הפוגה אחרי רצף הפסדים${symbolText} — כניסות חדשות חסומות עוד ${minutesLeft} דק'`;
 }
+
+// ── Time stops for the H1 engines (Legacy + Pro) ─────────────────────────────
+//
+// A stop answers "was I wrong about direction". A time stop answers a different
+// question: "was I wrong about the trade happening at all". A position sitting
+// between its stop and its target after two days is not a thesis any more, it is
+// capital and a position slot spent on nothing, and it carries the same gap and
+// funding risk as a working trade while earning none of the payoff.
+//
+// Both H1 engines already had the clock and the branches. What they did not have
+// was a reachable exit: each branch was wrapped in
+//
+//     if (beyondTp || beyondSl) { ...close... }
+//
+// and by the time the code reached it, a price beyond the stop had already
+// returned at the STOP_LOSS check and a price beyond the target at the TAKE_PROFIT
+// check. The guard was therefore true only for prices that had already exited,
+// which is to say never — documented behaviour, dead in practice, and exactly
+// backwards: the trades a time stop exists to cut are the ones sitting BETWEEN
+// the two levels.
+//
+// What replaces it is the question the checkpoint is actually asking, measured in
+// R (favourable move / original stop distance) so it means the same thing on a
+// 1.5% stop and a 6% one.
+
+/** Hours after which a position is asked to justify itself. */
+export const TIME_STOP_HOURS = { spot: 48, futures: 24 };
+
+/** A futures position that is working at its checkpoint earns a reprieve to this
+ *  hour — once, and it faces the same test again on arrival. */
+export const TIME_STOP_EXTENDED_HOURS = 36;
+
+/** Favourable progress, in R, that counts as "this trade is going somewhere". */
+export const TIME_STOP_MIN_PROGRESS_R = 0.3;
+
+/** Hard ceiling on holding time. Reached regardless of progress: past this the
+ *  position is no longer the trade that was entered. */
+export const MAX_HOLD_HOURS = { spot: 72, futures: 48 };
+
+/** Favourable move as a multiple of the original stop distance. Negative when
+ *  the position is under water. Returns 0 when the stop distance is unusable. */
+export function progressInR(entryPrice: number, currentPrice: number, stopLoss: number, isLong: boolean): number {
+  const stopDistance = Math.abs(entryPrice - stopLoss);
+  if (!(stopDistance > 0)) return 0;
+  return ((currentPrice - entryPrice) * (isLong ? 1 : -1)) / stopDistance;
+}
+
+export interface TimeStopInput {
+  heldMs: number;
+  isFutures: boolean;
+  /** Favourable progress in R at the moment of the check. */
+  progressR: number;
+  /** Futures only: TP1 already taken. A position that has banked half is
+   *  running on house money and is not what this check is for. */
+  tp1Hit?: boolean;
+}
+
+export interface TimeStopVerdict {
+  action: 'NONE' | 'PARTIAL_50' | 'FULL';
+  reason: string;
+}
+
+/**
+ * The time-stop rule shared by both H1 engines.
+ *
+ * Futures cut HALF at the checkpoint (alg.md §Layer4.4 asks for a reduction, not
+ * a close) and the whole position at the hard ceiling. Spot has no partial, so
+ * its checkpoint closes outright.
+ */
+export function evaluateTimeStop(input: TimeStopInput): TimeStopVerdict {
+  const hoursHeld = input.heldMs / 3_600_000;
+  const maxHold = input.isFutures ? MAX_HOLD_HOURS.futures : MAX_HOLD_HOURS.spot;
+
+  if (hoursHeld >= maxHold) {
+    return {
+      action: 'FULL',
+      reason: `תקרת החזקה (${maxHold} שעות) — סגירה מלאה ללא תלות בהתקדמות (${input.progressR.toFixed(2)}R)`
+    };
+  }
+
+  const checkpoint = input.isFutures ? TIME_STOP_HOURS.futures : TIME_STOP_HOURS.spot;
+  if (hoursHeld < checkpoint) return { action: 'NONE', reason: '' };
+
+  if (input.isFutures && input.tp1Hit) {
+    return { action: 'NONE', reason: '' };
+  }
+
+  // Working at the checkpoint: one reprieve, re-tested on arrival.
+  if (input.progressR > TIME_STOP_MIN_PROGRESS_R) {
+    const extendedTo = input.isFutures ? TIME_STOP_EXTENDED_HOURS : maxHold;
+    if (hoursHeld < extendedTo) {
+      return {
+        action: 'NONE',
+        reason: `הרחבת יציאת זמן: ${input.progressR.toFixed(2)}R לטובתנו אחרי ${hoursHeld.toFixed(1)} שעות — ממשיכים עד ${extendedTo} שעות`
+      };
+    }
+  }
+
+  return input.isFutures
+    ? {
+        action: 'PARTIAL_50',
+        reason: `יציאת זמן (${Math.floor(hoursHeld)} שעות): התקדמות ${input.progressR.toFixed(2)}R < ${TIME_STOP_MIN_PROGRESS_R}R — צמצום הפוזיציה ב-50%`
+      }
+    : {
+        action: 'FULL',
+        reason: `יציאת זמן (${Math.floor(hoursHeld)} שעות): התקדמות ${input.progressR.toFixed(2)}R < ${TIME_STOP_MIN_PROGRESS_R}R — סגירת פוזיציית Spot`
+      };
+}

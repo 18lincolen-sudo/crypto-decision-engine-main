@@ -22,6 +22,7 @@ import {
 } from '../types/crypto';
 import { MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER, SL_ATR_MULTIPLIER, SL_TP_REWARD_RISK } from './adaptiveRisk';
 import { WEEKLY_DRAWDOWN_LOCK_PERCENT } from './intradayParams';
+import { evaluateTimeStop, progressInR } from './adaptiveRisk';
 
 export interface Candle {
   timestamp: number;
@@ -1577,46 +1578,26 @@ export function evaluateExit(
     }
   }
 
-  // 5. Time-Based Exit
+  // 5. Time-Based Exit — shared rule, see evaluateTimeStop in adaptiveRisk.ts
+  // for why the old `beyondTp || beyondSl` guard made both branches unreachable
+  // and what replaces it.
   const heldMs = Date.now() - (pos.openTimestamp || Date.now());
-  const hoursHeld = heldMs / (1000 * 60 * 60);
-
-  if (!isFutures && hoursHeld >= 48) {
-    // Spot: if after 48h position is in loss > 50% of distance to SL
-    // Only exit if the position has already moved beyond its initial SL or TP
-    // — prevents cutting a position before 3% profit or 1.8% loss.
-    const distanceToSL = Math.abs(pos.entryPrice - pos.stopLoss);
-    const currentLoss = pos.entryPrice - currentPrice;
-    const tpLevel = pos.takeProfit1 ?? pos.entryPrice * 1.03;
-    const beyondTp = currentPrice >= tpLevel;
-    const beyondSl = currentLoss >= distanceToSL;
-    if ((beyondTp || beyondSl) && currentLoss > distanceToSL * 0.5) {
-      return {
-        shouldExit: true,
-        exitType: 'TIME_BASED',
-        reason: `יציאת זמן (48 שעות): פוזיציית Spot בהפסד מעל 50% ממרחק ה-SL`
-      };
-    }
+  const timeStop = evaluateTimeStop({
+    heldMs,
+    isFutures,
+    progressR: progressInR(pos.entryPrice, currentPrice, pos.stopLoss, isLong),
+    tp1Hit: pos.tp1Hit
+  });
+  if (timeStop.action !== 'NONE') {
+    return {
+      shouldExit: true,
+      exitType: timeStop.action === 'PARTIAL_50' ? 'PARTIAL_50' : 'TIME_BASED',
+      reason: timeStop.reason
+    };
   }
-
-  if (isFutures && hoursHeld >= 24 && !pos.tp1Hit) {
-    // Futures: TP1 wasn't hit after 24h — 50% partial reduction per alg.md §Layer4.4.
-    // The previous code always fully closed (exitType 'TIME_BASED' was never
-    // treated as a partial exit downstream) — fixed to return PARTIAL_50 so
-    // the order generator closes exactly half the position.
-    // Only exit if the position has already moved beyond its initial TP1 (3%)
-    // or SL (1.8%) — prevents cutting a position before meaningful profit
-    // or before a reasonable loss threshold.
-    const tp1Level = pos.takeProfit1 ?? pos.entryPrice * 1.03;
-    const beyondTp1 = isLong ? currentPrice >= tp1Level : currentPrice <= tp1Level;
-    const beyondSl = isLong ? currentPrice <= pos.stopLoss : currentPrice >= pos.stopLoss;
-    if (beyondTp1 || beyondSl) {
-      return {
-        shouldExit: true,
-        exitType: 'PARTIAL_50',
-        reason: `יציאת זמן (24 שעות): TP1 לא הושג — צמצום הפוזיציה ב-50%`
-      };
-    }
+  // See the identical note in proAlgEngine: a reprieve explains itself.
+  if (timeStop.reason) {
+    return { shouldExit: false, exitType: 'NONE', reason: timeStop.reason };
   }
 
   return {

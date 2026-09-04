@@ -100,3 +100,35 @@ export {
 } from './utils/advancedTechnicalAnalysis';
 
 export { generateSmartRecommendation } from './utils/smartRecommendationEngine';
+
+// ── 4H Path engine (bot 4) ───────────────────────────────────────────────────
+export {
+  aggregateToH4,
+  evaluatePathDecision,
+  pathKellyFraction,
+  pathRiskUnit,
+  PATH_MAX_HOLD_MS,
+  PATH_TIME_STOP_MS
+} from './services/pathEngine';
+export type { PathDecision, PathDecisionInput, PathGate } from './services/pathEngine';
+export {
+  buildPathTable,
+  measureBarPaths,
+  labelBarState,
+  riskUnitFor,
+  selectBucket,
+  wilsonLowerBound,
+  recencyWeight,
+  fearGreedBucket,
+  barOpenFor,
+  slotIndexAt,
+  stateKey,
+  bucketKey,
+  SLOTS_PER_BAR,
+  BAR_MS,
+  SLOT_MS,
+  TP_GRID_R,
+  MIN_BUCKET_SAMPLES,
+  DEFAULT_COST_R
+} from './services/pathStudy';
+export type { PathBucket, PathOutcome, BarState, PathDirection, PathRegime, FearGreedBucket } from './services/pathStudy';

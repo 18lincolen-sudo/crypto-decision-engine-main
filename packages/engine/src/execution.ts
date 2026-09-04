@@ -93,6 +93,12 @@ export {
   summarizeRecentPerformance,
   computeStreakFactor,
   computeDrawdownFactor,
+  evaluateTimeStop,
+  progressInR,
+  TIME_STOP_HOURS,
+  TIME_STOP_EXTENDED_HOURS,
+  TIME_STOP_MIN_PROGRESS_R,
+  MAX_HOLD_HOURS,
   computeWinRateFactor,
   computeAdaptiveRiskPercent,
   adaptiveRiskPercentFromHistory,
@@ -106,3 +112,7 @@ export {
   streakCooldownFromHistory,
   streakCooldownReason
 } from './services/adaptiveRisk';
+
+// ── 4H Path bot order generation ─────────────────────────────────────────────
+export { generatePathOrders, pathEntryBudget, MIN_PATH_CANDLES } from './services/pathSimExecution';
+export type { PathOrderGenContext } from './services/pathSimExecution';

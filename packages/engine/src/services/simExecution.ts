@@ -244,6 +244,54 @@ export function computeEntryBudget(
     : Math.min(cash * percent / 100, 1000);
 }
 
+export interface EntryBudgetInput {
+  /** RiskPlan.betSizeUsd for this signal, when the engine produced one. */
+  kellyBetSizeUsd?: number;
+  /** Free cash at this point in the batch. */
+  cash: number;
+  tradeType: 'SPOT' | 'FUTURES';
+  /** SimBotConfig.positionPercent — read as a CEILING here, not as the size. */
+  positionPercent?: number;
+  riskLevel?: 'low' | 'medium' | 'high';
+  /** Performance-adaptive multiplier from the decision (clamped to [0,1]). */
+  sizingMultiplier?: number;
+}
+
+/**
+ * The size an entry order is actually sent with.
+ *
+ * Kelly decides, the operator caps. `betSizeUsd` comes from the risk layer,
+ * which sizes from the payoff ratio measured in R across recent closed trades
+ * (half-Kelly ceiling — see kellyPayoffRatio in adaptiveRisk.ts); positionPercent
+ * is then the most of free cash the operator will commit to any one trade, and
+ * computeEntryBudget's absolute $ caps still apply on top.
+ *
+ * Falling back to computeEntryBudget when no risk plan reached the order keeps
+ * evaluations built outside the DecisionEngine (tests, older persisted state)
+ * working exactly as before.
+ */
+export function resolveEntryBudget(input: EntryBudgetInput): number {
+  // riskLevel is appetite, so it scales the OPERATOR'S ceiling rather than
+  // Kelly's number: Kelly is already the growth-optimal bet for the measured
+  // payoff ratio, and multiplying it by a preference is how a half-Kelly
+  // ceiling quietly becomes a full-Kelly one.
+  const ceiling = computeEntryBudget(input.cash, input.tradeType, input.positionPercent)
+    * riskLevelSizingMultiplier(input.riskLevel);
+
+  // The adaptive multiplier from recent performance only ever de-risks, and it
+  // belongs on the bet itself.
+  const perfMult = typeof input.sizingMultiplier === 'number' && Number.isFinite(input.sizingMultiplier)
+    ? Math.max(0, Math.min(1, input.sizingMultiplier))
+    : 1;
+
+  const kelly = input.kellyBetSizeUsd;
+  const sized = typeof kelly === 'number' && Number.isFinite(kelly) && kelly > 0
+    ? kelly * perfMult
+    : ceiling;
+
+  return Math.min(sized, ceiling);
+}
+
 /** Multiplier applied to the entry budget for SimBotConfig.riskLevel.
  *  The selector had never been read by any engine, so this is the behaviour it
  *  is being given rather than one being restored: it scales conviction size,
@@ -478,8 +526,14 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     const riskMult = typeof rawRisk?.sizingMultiplier === 'number' && Number.isFinite(rawRisk.sizingMultiplier)
       ? Math.max(0, Math.min(1, rawRisk.sizingMultiplier))
       : 1;
-    const budget = computeEntryBudget(workingCash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT', ctx.positionPercent)
-      * riskMult * riskLevelSizingMultiplier(ctx.riskLevel);
+    const budget = resolveEntryBudget({
+      kellyBetSizeUsd: ev.betSizeUsd,
+      cash: workingCash,
+      tradeType: ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT',
+      positionPercent: ctx.positionPercent,
+      riskLevel: ctx.riskLevel,
+      sizingMultiplier: riskMult
+    });
     if (budget < 5) continue;
 
     const evDirection = toPositionDirection(ev.tradeSide as string);

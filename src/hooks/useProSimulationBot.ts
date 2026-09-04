@@ -81,6 +81,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     confidenceGap: 0,
     regime,
     leverage: result.riskPlan?.leverage,
+    betSizeUsd: result.riskPlan?.betSizeUsd,
     stopLoss: result.riskPlan?.stopLoss,
     takeProfit1: result.riskPlan?.takeProfit1,
     takeProfit2: result.riskPlan?.takeProfit2,

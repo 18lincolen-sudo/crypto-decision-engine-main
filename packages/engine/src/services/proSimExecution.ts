@@ -23,7 +23,7 @@ import {
 } from './proAlgEngine';
 import { Candle, formatDynamicPrice } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
-import { computeEntryBudget, isInEntryCooldown, riskLevelSizingMultiplier } from './simExecution';
+import { isInEntryCooldown, resolveEntryBudget } from './simExecution';
 import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
@@ -218,8 +218,13 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
       : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-    const budget = computeEntryBudget(workingCash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT', ctx.positionPercent)
-      * riskLevelSizingMultiplier(ctx.riskLevel);
+    const budget = resolveEntryBudget({
+      kellyBetSizeUsd: ev.betSizeUsd,
+      cash: workingCash,
+      tradeType: ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT',
+      positionPercent: ctx.positionPercent,
+      riskLevel: ctx.riskLevel
+    });
     if (budget < 5) continue;
 
     // Within-batch correlation check — see the identical comment in

@@ -301,6 +301,90 @@ export async function setProSimConfig(config: SimBotConfig, configuredBaseUrl?: 
   return (await res.json()) as ProSimBotStateResponse;
 }
 
+// ── 4H Path simulation bot ───────────────────────────────────────────
+// The fourth bot (server/pathSimEngine.ts). Server-driven like the Legacy and
+// Pro sims — no leader election, so no claim/push counterpart.
+
+export interface PathSimBotStateResponse {
+  running: boolean;
+  config: SimBotConfig;
+  snapshot: SimBotSnapshot | null;
+  updatedAt: number;
+}
+
+/** Telemetry for the lookup table the bot trades from. Worth surfacing on its
+ *  own: a bot holding because its table is empty and a bot holding because the
+ *  market offered nothing look identical from the trade list. */
+export interface PathTableStatus {
+  buckets: number;
+  builtAt: number;
+  sourceBars: number;
+  minSamples: number;
+  minExpectedR: number;
+  top: {
+    regime: string;
+    fng: string;
+    slot: number;
+    direction: string;
+    n: number;
+    tpR: number;
+    pLow: number;
+    expectedR: number;
+  }[];
+}
+
+export async function getPathSimState(configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/path-sim/state`);
+  if (!res.ok) throw new Error(`Failed to fetch path sim state: ${res.status} ${res.statusText}`);
+  return (await res.json()) as PathSimBotStateResponse;
+}
+
+export async function getPathTable(configuredBaseUrl?: string): Promise<PathTableStatus> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/path-sim/table`);
+  if (!res.ok) throw new Error(`Failed to fetch path table: ${res.status} ${res.statusText}`);
+  return (await res.json()) as PathTableStatus;
+}
+
+export async function startPathSim(configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/path-sim/start`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to start path sim: ${res.status} ${res.statusText}`);
+  return (await res.json()) as PathSimBotStateResponse;
+}
+
+export async function stopPathSim(configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/path-sim/stop`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to stop path sim: ${res.status} ${res.statusText}`);
+  return (await res.json()) as PathSimBotStateResponse;
+}
+
+export async function resetPathSim(configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/path-sim/reset`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to reset path sim: ${res.status} ${res.statusText}`);
+  return (await res.json()) as PathSimBotStateResponse;
+}
+
+export async function setPathSimConfig(config: SimBotConfig, configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/path-sim/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config })
+  });
+  if (!res.ok) throw new Error(`Failed to set path sim config: ${res.status} ${res.statusText}`);
+  return (await res.json()) as PathSimBotStateResponse;
+}
+
 export function createTradingApiClient(configuredBaseUrl: string, adminToken: string): TradingApiClient {
   const baseUrl = resolveBaseUrl(configuredBaseUrl);
 
