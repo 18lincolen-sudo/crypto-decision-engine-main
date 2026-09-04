@@ -23,7 +23,7 @@ import {
 } from './proAlgEngine';
 import { Candle, formatDynamicPrice } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
-import { computeEntryBudget, isInEntryCooldown } from './simExecution';
+import { computeEntryBudget, isInEntryCooldown, riskLevelSizingMultiplier } from './simExecution';
 import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
@@ -101,6 +101,13 @@ export interface ProOrderGenContext {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   cash: number;
+  /** Portfolio equity — the denominator for the losing-streak cooldown's
+   *  big-loss escape hatch. */
+  equity: number;
+  /** SimBotConfig.positionPercent / .riskLevel — see the identical fields on
+   *  simExecution.ts's OrderGenContext. */
+  positionPercent?: number;
+  riskLevel?: 'low' | 'medium' | 'high';
   exitCooldown: Record<string, number>;
   priceFor: (symbol: string) => number | undefined;
   /** Single-timeframe (H1) candles keyed by BASE asset. */
@@ -132,8 +139,10 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
+  // Per POSITION, not per symbol — see the identical loop in simExecution.ts.
   for (const pos of positions) {
-    if (pending.some((o) => o.symbol === pos.symbol) || newOrders.some((o) => o.symbol === pos.symbol)) continue;
+    const claimed = (o: PendingOrder) => (o.positionId ? o.positionId === pos.id : o.symbol === pos.symbol);
+    if (pending.some(claimed) || newOrders.some(claimed)) continue;
 
     const livePrice = priceFor(pos.symbol) ?? pos.currentPrice;
     const candles = candlesBySymbol[pos.symbol];
@@ -158,13 +167,13 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
 
     if (exitCheck.exitType === 'PARTIAL_50') {
       newOrders.push({
-        id: uid(`${pos.symbol}-tp1-50`), symbol: pos.symbol, type: pos.type, side: 'partial_tp1',
+        id: uid(`${pos.symbol}-tp1-50`), symbol: pos.symbol, positionId: pos.id, type: pos.type, side: 'partial_tp1',
         signalPrice: livePrice, quantity: pos.quantity * 0.5, reason: exitCheck.reason,
         confidence: pos.confidence, executeAt: Date.now() + delayMs, createdAt: Date.now()
       });
     } else {
       newOrders.push({
-        id: uid(`${pos.symbol}-exit`), symbol: pos.symbol, type: pos.type,
+        id: uid(`${pos.symbol}-exit`), symbol: pos.symbol, positionId: pos.id, type: pos.type,
         side: pos.side === 'LONG' || pos.side === 'BUY' ? 'close_long' : 'close_short',
         signalPrice: livePrice, quantity: pos.quantity, reason: exitCheck.reason,
         confidence: pos.confidence, executeAt: Date.now() + delayMs, createdAt: Date.now()
@@ -187,10 +196,17 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
   let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
     pending.filter((o) => o.type === 'FUTURES' && PRO_ENTRY_ORDER_SIDES.has(o.side)).length;
 
+  // Cash consumed by this batch — see the identical note in simExecution.ts.
+  let workingCash = ctx.cash;
+
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
+    // One position per symbol — see the identical guard in simExecution.ts.
+    if (positions.some((p) => p.symbol === ev.symbol)) continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
     if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
+    // Post-losing-streak pause. These helpers were imported here but never called.
+    if (isInStreakCooldown(streakCooldownFromHistory(closedTradeMetrics, ctx.equity, ev.symbol))) continue;
     if (totalPositionCount >= maxPositions) continue;
     if (ev.tradeType === 'FUTURES' && futuresPositionCount >= maxFuturesPositions) continue;
 
@@ -202,7 +218,8 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
       : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-    const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
+    const budget = computeEntryBudget(workingCash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT', ctx.positionPercent)
+      * riskLevelSizingMultiplier(ctx.riskLevel);
     if (budget < 5) continue;
 
     // Within-batch correlation check — see the identical comment in
@@ -220,6 +237,7 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     if (!gate.allowed) continue;
 
     totalPositionCount++;
+    workingCash -= budget;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
     correlationBook.push({ symbol: ev.symbol, direction: evDirection });
 

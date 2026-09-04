@@ -297,6 +297,18 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     }
   }, []);
 
+  // A run's P&L, drawdown and sizing are all measured against the capital it
+  // opened with, so a new starting capital starts a NEW run — the alternative
+  // (which this used to do) is to keep trading the old balance while reporting
+  // profit against the new number. The server engine does the same on its
+  // /config endpoint.
+  const startingCapitalRef = useRef(config.initialAmount);
+  useEffect(() => {
+    if (config.initialAmount === startingCapitalRef.current) return;
+    startingCapitalRef.current = config.initialAmount;
+    reset();
+  }, [config.initialAmount, reset]);
+
   // Normalize symbol to base asset for lookups — positions store suffixed symbols
   // (e.g. "LITUSDT") but cryptoData/mtfData are keyed by base asset (e.g. "LIT").
   // Without this normalization, priceFor() returns undefined for every open position
@@ -519,6 +531,9 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
       cash: cashRef.current,
+      equity,
+      positionPercent: config.positionPercent,
+      riskLevel: config.riskLevel,
       exitCooldown: exitCooldownRef.current,
       priceFor: priceForRef.current,
       buildCandlesForSymbol,
@@ -535,7 +550,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     }
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec, config.maxPositions, config.maxFuturesPositions, closedTradeRecords, correlationCandles]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, buildCandlesForSymbol, mtfData, config.executionDelaySec, config.maxPositions, config.maxFuturesPositions, config.positionPercent, config.riskLevel, closedTradeRecords, correlationCandles, equity]);
 
   // Heartbeat — reset countdown timer when bot starts/stops.
   // Equity recording is handled exclusively by the background worker below to avoid duplicates.
@@ -599,7 +614,14 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       }
       if (!due.length) return;
 
-      const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice);
+      const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice, {
+        // configRef, not config: this effect owns a 1s interval keyed on
+        // isRunning alone, so reading config directly would either restart the
+        // timer on every edit or silently fill at the costs that were set when
+        // the bot started.
+        feePercent: configRef.current.feePercent,
+        slippagePercent: configRef.current.slippagePercent
+      });
 
       const dueIds = new Set(due.map((o) => o.id));
       setPending((prev) => prev.filter((o) => !dueIds.has(o.id)));

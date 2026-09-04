@@ -166,6 +166,15 @@ export interface PendingOrder {
   confidence: number;
   executeAt: number;
   createdAt: number;
+  /** EXIT orders only: the id of the SimPosition this order closes.
+   *  Exit orders used to be matched back to a position by SYMBOL alone, which
+   *  is only unambiguous while one position per symbol exists — and nothing
+   *  enforced that. With two lots of the same asset open, the close filled
+   *  against whichever lot sat first in the array rather than the one whose
+   *  stop actually triggered, so P&L, riskUsd and the R-multiple were booked
+   *  against the wrong entry price. Optional: orders persisted before this
+   *  field existed fall back to the symbol match. */
+  positionId?: string;
   /** Carried from the entry-time RiskPlan through to the resulting SimPosition — see SimPosition.maxHoldMs. */
   maxHoldMs?: number;
   timeStopMs?: number;
@@ -175,8 +184,14 @@ export interface PendingOrder {
 export interface SimBotConfig {
   riskLevel: 'low' | 'medium' | 'high';
   initialAmount: number;
-  stopLoss: number;
-  takeProfit: number;
+  // No stopLoss/takeProfit here, deliberately. Both existed as configured
+  // percentages (4.2 and 3) that survived the move to ATR-sized stops without
+  // being deleted, so six config objects and a settings panel carried numbers
+  // no engine has read since. Stops come from calculateRiskParameters /
+  // intradayRisk (ATR-normalised, clamped to [1.5%, 6%]) and the target is
+  // derived from the stop at a fixed 1.67 reward:risk, so a flat percentage
+  // here has nothing to attach to — reinstating one would mean choosing to
+  // override the volatility-scaled stop with a constant.
   maxPositions: number;
   maxFuturesPositions?: number;
   feePercent: number;
@@ -201,11 +216,43 @@ export function reanchorLevel(fillPrice: number, signalPrice: number, level: num
   return level === undefined ? undefined : fillPrice + (level - signalPrice);
 }
 
-/** Entry position sizing: FUTURES risk is capped in absolute $ terms (not just %) since leverage already amplifies exposure; SPOT is capped higher since there's no leverage multiplier. */
-export function computeEntryBudget(cash: number, tradeType: 'SPOT' | 'FUTURES'): number {
+/** Percentage of free cash committed to one SPOT entry when the caller supplies
+ *  no positionPercent. */
+export const DEFAULT_POSITION_PERCENT = 15;
+
+/** FUTURES commits a third of what SPOT does, because leverage multiplies
+ *  whatever margin is posted. Kept as a ratio so a configured positionPercent
+ *  moves both markets together instead of only one. */
+export const FUTURES_POSITION_RATIO = 1 / 3;
+
+/** Entry position sizing: FUTURES risk is capped in absolute $ terms (not just %) since leverage already amplifies exposure; SPOT is capped higher since there's no leverage multiplier.
+ *
+ *  `positionPercent` is SimBotConfig.positionPercent — the control that appears
+ *  in the bot panel and in BOT_POSITION_PERCENT. It used to reach
+ *  calculateRiskParameters as `_configuredPositionPercent` and stop there,
+ *  which is to say the setting did nothing to any simulated trade. */
+export function computeEntryBudget(
+  cash: number,
+  tradeType: 'SPOT' | 'FUTURES',
+  positionPercent: number = DEFAULT_POSITION_PERCENT
+): number {
+  const percent = Number.isFinite(positionPercent) && positionPercent > 0
+    ? positionPercent
+    : DEFAULT_POSITION_PERCENT;
   return tradeType === 'FUTURES'
-    ? Math.min(cash * 0.05, 500)
-    : Math.min(cash * 0.15, 1000);
+    ? Math.min(cash * (percent * FUTURES_POSITION_RATIO) / 100, 500)
+    : Math.min(cash * percent / 100, 1000);
+}
+
+/** Multiplier applied to the entry budget for SimBotConfig.riskLevel.
+ *  The selector had never been read by any engine, so this is the behaviour it
+ *  is being given rather than one being restored: it scales conviction size,
+ *  and deliberately leaves trade FREQUENCY (the confidence threshold) alone —
+ *  one knob, one effect. */
+export function riskLevelSizingMultiplier(riskLevel?: 'low' | 'medium' | 'high'): number {
+  if (riskLevel === 'low') return 0.6;
+  if (riskLevel === 'high') return 1.5;
+  return 1;
 }
 
 /** Safety net against rapid re-entry churn: after a LOSING full exit, skip new
@@ -232,6 +279,14 @@ export interface OrderGenContext {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   cash: number;
+  /** Portfolio equity — the denominator for the losing-streak cooldown's
+   *  "was this loss big enough to be a different regime" test. */
+  equity: number;
+  /** SimBotConfig.positionPercent / .riskLevel, the two sizing controls the bot
+   *  panel exposes. Omitted — by tests and by any caller with no user config
+   *  — they fall back to the engine defaults. */
+  positionPercent?: number;
+  riskLevel?: 'low' | 'medium' | 'high';
   /** Symbol (as stored on the position/order) → last-loss timestamp. Read-only here. */
   exitCooldown: Record<string, number>;
   priceFor: (symbol: string) => number | undefined;
@@ -274,9 +329,16 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
-  // Exits for open positions
+  // Exits for open positions.
+  // The skip is per POSITION, not per symbol: keying it on the symbol meant
+  // that while one lot's close sat pending, every other lot of the same asset
+  // went unchecked for its own stop — so a book holding the same asset N times
+  // released its stops one per tick and the rest kept bleeding in between.
+  // Orders with no positionId (persisted before that field existed, and every
+  // entry order) still match by symbol, so their old behaviour is unchanged.
   for (const pos of positions) {
-    if (pending.some((o) => o.symbol === pos.symbol) || newOrders.some((o) => o.symbol === pos.symbol)) continue;
+    const claimed = (o: PendingOrder) => (o.positionId ? o.positionId === pos.id : o.symbol === pos.symbol);
+    if (pending.some(claimed) || newOrders.some(claimed)) continue;
 
     const livePrice = priceFor(pos.symbol) ?? pos.currentPrice;
     const candles5 = buildCandlesForSymbol(pos.symbol);
@@ -327,6 +389,7 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       newOrders.push({
         id: uid(`${pos.symbol}-tp1-50`),
         symbol: pos.symbol,
+        positionId: pos.id,
         type: pos.type,
         side: 'partial_tp1',
         signalPrice: livePrice,
@@ -340,6 +403,7 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       newOrders.push({
         id: uid(`${pos.symbol}-exit`),
         symbol: pos.symbol,
+        positionId: pos.id,
         type: pos.type,
         side: pos.side === 'LONG' || pos.side === 'BUY' ? 'close_long' : 'close_short',
         signalPrice: livePrice,
@@ -359,9 +423,14 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
   // the START of this tick, so a batch cap here is the only thing standing
   // between "N symbols qualified simultaneously" and "N new positions
   // regardless of maxPositions".
-  // Note: Per-symbol streak cooldown is handled in the evaluation loop above,
-  // not here. This is intentional — a losing streak on one symbol should not
-  // block entries on other symbols.
+  // The per-symbol losing-streak cooldown is applied in the entry loop below.
+  // It is deliberately per-symbol — a losing streak on one asset should not
+  // block entries on unrelated ones.
+
+  // Cash consumed by this batch. computeEntryBudget is a percentage of the
+  // free balance, so reading ctx.cash for every order in the same tick sized
+  // N simultaneous entries as if each one were the only entry of the tick.
+  let workingCash = ctx.cash;
 
   let totalPositionCount = positions.length + pending.filter((o) => ENTRY_ORDER_SIDES.has(o.side)).length;
   let futuresPositionCount = positions.filter((p) => p.type === 'FUTURES').length +
@@ -380,8 +449,20 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
 
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
+    // One position per symbol. Without this, the queue check below is not a
+    // dedup at all: once an entry fills, its symbol leaves `pending`, and the
+    // very same signal — unchanged, because it is read off a candle that moves
+    // far slower than this loop runs — queues the asset again, and again,
+    // stacking lots of one asset until the position cap is spent. Nothing
+    // downstream merges them: fillDueOrders always pushes a NEW position, each
+    // with its own stop, and they then all stop out together. Scaling into a
+    // winner is not a feature this engine has.
+    if (positions.some((p) => p.symbol === ev.symbol)) continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
     if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
+    // Post-losing-streak pause. The helpers were imported here but never
+    // called, so the streak brake was documented and inert.
+    if (isInStreakCooldown(streakCooldownFromHistory(closedTrades ?? [], ctx.equity, ev.symbol))) continue;
     if (totalPositionCount >= maxPositions) continue;
     if (ev.tradeType === 'FUTURES' && futuresPositionCount >= maxFuturesPositions) continue;
 
@@ -397,7 +478,8 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     const riskMult = typeof rawRisk?.sizingMultiplier === 'number' && Number.isFinite(rawRisk.sizingMultiplier)
       ? Math.max(0, Math.min(1, rawRisk.sizingMultiplier))
       : 1;
-    const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT') * riskMult;
+    const budget = computeEntryBudget(workingCash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT', ctx.positionPercent)
+      * riskMult * riskLevelSizingMultiplier(ctx.riskLevel);
     if (budget < 5) continue;
 
     const evDirection = toPositionDirection(ev.tradeSide as string);
@@ -415,6 +497,7 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     }
 
     totalPositionCount++;
+    workingCash -= budget;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
     if (correlationCandles) correlationBook.push({ symbol: toBase(ev.symbol), direction: evDirection });
 
@@ -455,9 +538,11 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
 
 const EXIT_ORDER_SIDES = new Set(['close_long', 'close_short', 'partial_tp1']);
 
-/** Matches tradingWorker.ts's own LIMIT_ORDER_TTL_MS for the real bot.
- *  Kept at 2h in the simulation (vs 4h live): a shorter TTL makes the sim's
- *  entries stale-signal-resistant. */
+/** Deliberately SHORTER than the real bot's own LIMIT_ORDER_TTL_MS (4h in
+ *  tradingWorker.ts): a 2h TTL makes the simulation's entries more
+ *  stale-signal-resistant than the live bot's. Note the consequence when
+ *  reading sim results as a forecast — an entry the simulation cancelled at
+ *  2h is one the live bot may still fill at 3h. */
 export const LIMIT_ORDER_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 export interface FillableOrdersResult {
@@ -534,7 +619,14 @@ export interface FillResult {
   events: FillEvent[];
 }
 
-export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimPosition[], priceFor: (symbol: string) => number | undefined, formatPrice: (n: number) => string): FillResult {
+/** Simulation cost model overrides, from SimBotConfig. Omit either field to use
+ *  the exchange's real fee schedule / the default slippage band. */
+export interface SimCostOverrides {
+  feePercent?: number;
+  slippagePercent?: number;
+}
+
+export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimPosition[], priceFor: (symbol: string) => number | undefined, formatPrice: (n: number) => string, costs: SimCostOverrides = {}): FillResult {
   // Explicit timeZone: this runs both in the browser (whatever local TZ) and
   // on the server (Render defaults to UTC) — without it, a trade's displayed
   // "last: HH:MM:SS" silently used the server's UTC clock instead of Israel
@@ -562,7 +654,7 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
     const isLongSide = order.side === 'buy' || order.side === 'long';
     const { fillPrice, slippagePercent } = isEntryOrder
       ? { fillPrice: isLongSide ? Math.min(market, order.signalPrice) : Math.max(market, order.signalPrice), slippagePercent: 0 }
-      : simulateSlippage(market, sideForSlippage);
+      : simulateSlippage(market, sideForSlippage, costs.slippagePercent);
     const delayMs = Date.now() - order.createdAt;
 
     if (isEntryOrder) {
@@ -576,7 +668,7 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       // than its own limit price — see selectFillableOrders): charging Taker
       // here inflated entry costs 2.75-5x and contradicted evaluateCostEdge,
       // which already models Maker entry cost (§25).
-      const fee = calculateTradingFee(notional, order.type, false);
+      const fee = calculateTradingFee(notional, order.type, false, costs.feePercent);
       const totalCost = budget + fee;
       if (totalCost > workingCash) continue;
       const quantity = notional / fillPrice;
@@ -642,12 +734,12 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
           `זמן: ${now}`
       });
     } else if (order.side === 'partial_tp1') {
-      const posIdx = workingPositions.findIndex((p) => p.symbol === order.symbol && p.type === 'FUTURES');
+      const posIdx = workingPositions.findIndex((p) => (order.positionId ? p.id === order.positionId : p.symbol === order.symbol) && p.type === 'FUTURES');
       if (posIdx >= 0) {
         const pos = workingPositions[posIdx];
         const closeQty = pos.quantity * 0.5;
         const notional = closeQty * fillPrice;
-        const fee = calculateTradingFee(notional, 'FUTURES', true);
+        const fee = calculateTradingFee(notional, 'FUTURES', true, costs.feePercent);
         const pnl = pos.side === 'LONG'
           ? (fillPrice - pos.entryPrice) * closeQty
           : (pos.entryPrice - fillPrice) * closeQty;
@@ -694,10 +786,10 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
         });
       }
     } else {
-      const pos = workingPositions.find((p) => p.symbol === order.symbol);
+      const pos = workingPositions.find((p) => (order.positionId ? p.id === order.positionId : p.symbol === order.symbol));
       if (pos) {
         const notional = pos.quantity * fillPrice;
-        const fee = calculateTradingFee(notional, pos.type, true);
+        const fee = calculateTradingFee(notional, pos.type, true, costs.feePercent);
         let pnl = 0;
         if (pos.type === 'SPOT') {
           const netProceeds = notional - fee;

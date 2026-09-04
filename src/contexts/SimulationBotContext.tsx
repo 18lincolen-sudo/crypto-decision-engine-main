@@ -21,9 +21,10 @@ import { useApiPolling } from '../hooks/useApiPolling';
 const DEFAULT_CONFIG: SimBotConfig = {
   riskLevel: 'medium',
   initialAmount: 10000,
-  stopLoss: 4.2,
-  takeProfit: 3,
-  maxPositions: 7,
+  // 5, the same cap the live bot runs (BOT_MAX_OPEN_POSITIONS) and the same
+  // one the server sims now take from it. At 7 the simulations were allowed
+  // 40% more concurrent risk than the bot they exist to predict.
+  maxPositions: 5,
   maxFuturesPositions: 2,
   feePercent: 0.1,
   slippagePercent: 0.05,

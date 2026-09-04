@@ -50,15 +50,35 @@ const testnet = process.env.BYBIT_TESTNET === 'true'; // default false (mainnet)
 const dryRun = process.env.BOT_DRY_RUN !== 'false'; // default true (safe)
 const adminToken = process.env.BOT_ADMIN_TOKEN || '';
 const autostart = process.env.BOT_AUTOSTART === 'true';
-const riskLevel = process.env.BOT_RISK_LEVEL || 'medium';
+// BOT_RISK_LEVEL sizes every simulated entry (riskLevelSizingMultiplier in
+// simExecution.ts): low 0.6x, medium 1x, high 1.5x. It used to be read here,
+// echoed in /api/status, and consumed by nothing.
+const RISK_LEVELS = new Set(['low', 'medium', 'high']);
+const envRiskLevel = String(process.env.BOT_RISK_LEVEL || '').toLowerCase();
+const riskLevel = (RISK_LEVELS.has(envRiskLevel) ? envRiskLevel : 'medium') as 'low' | 'medium' | 'high';
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 function boundedNumber(name: string, fallback: number, min: number, max: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
 }
-const minConfidence = boundedNumber('BOT_MIN_CONFIDENCE', 60, 0, 100);
+/** Like boundedNumber, but returns undefined when the variable is not set — so a
+ *  caller can tell "operator chose this" from "nobody chose anything" and leave
+ *  its own default in place. The three sim bots deliberately run different
+ *  confidence floors; a plain fallback would flatten all three to one number. */
+function optionalBoundedNumber(name: string, min: number, max: number): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= min && value <= max ? value : undefined;
+}
+// Optional floor across all three sims. Unset (the normal case) leaves each bot
+// on its own calibrated threshold — Intraday 52, Legacy 58, Pro 58.
+const minConfidenceOverrideEnv = optionalBoundedNumber('BOT_MIN_CONFIDENCE', 1, 100);
 const positionPercent = boundedNumber('BOT_POSITION_PERCENT', 10, 0.1, 100);
+// ONE position cap for the live bot and for all three simulations. They used to
+// disagree (live 5, sims 7), which meant the sims were measuring a strategy the
+// live bot is not allowed to run.
 const maxOpenPositions = Math.floor(boundedNumber('BOT_MAX_OPEN_POSITIONS', 5, 1, 100));
 const scanConcurrency = Math.floor(boundedNumber('BOT_SCAN_CONCURRENCY', 5, 1, 20));
 const intervalMs = boundedNumber('BOT_SCAN_INTERVAL_SECONDS', 300, 60, 3600) * 1000;
@@ -179,7 +199,7 @@ async function sendTelegramAlert(message: string): Promise<void> {
 const PUBLIC_BASE = 'https://api.bybit.com';
 const EXEC_BASE = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
 
-const klineInterval = process.env.BOT_KLINE_INTERVAL || '240';
+
 
 const botSymbolsRaw = process.env.BOT_SYMBOLS?.trim();
 const isExplicitSymbolOverride = Boolean(botSymbolsRaw && botSymbolsRaw !== '100');
@@ -311,28 +331,6 @@ async function bybitExec(path: string, method = 'GET', params: Record<string, st
   return data.result;
 }
 
-async function fetchPublicCandles(symbol: string, attempt = 0): Promise<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }[]> {
-  const MAX_ATTEMPTS = 3;
-  const url = `${PUBLIC_BASE}/v5/market/kline?category=spot&symbol=${symbol}&interval=${klineInterval}&limit=100`;
-  try {
-    const res = await fetchWithTimeout(url);
-    health.publicRequests++;
-    if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
-    const data = await res.json() as { retCode: number; result?: { list?: [string, string, string, string, string, string][] } };
-    if (data.retCode !== 0 || !data.result?.list?.length) throw new Error('no kline data');
-    return [...data.result.list].reverse().map(a => ({
-      timestamp: Number(a[0]),
-      open: Number(a[1]), high: Number(a[2]), low: Number(a[3]), close: Number(a[4]), volume: Number(a[5])
-    }));
-  } catch (e) {
-    health.publicFailures++;
-    if (attempt < MAX_ATTEMPTS - 1) {
-      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
-      return fetchPublicCandles(symbol, attempt + 1);
-    }
-    throw e;
-  }
-}
 
 async function getAccountContext(): Promise<{ available: number; total: number; openFutures: { symbol: string; size: string; leverage: string; entryPrice: string; side?: string }[]; openFuturesCount: number; spotBalances: Record<string, number> } | null> {
   if (!apiKey || !secretKey) return null;
@@ -456,20 +454,67 @@ function calcMaxPositions(_initialAmount: number): number {
   return 7;
 }
 
-/** Sanitize a sim config loaded from an external source.
- *  minConfidenceOverride: 0 is treated as "not set" because the ?? operator
- *  would otherwise pass 0 through and fully disable the confidence floor. */
+/** Validates a sim config arriving from the API or from persisted state.
+ *
+ *  Every numeric field is range-checked and anything out of range is dropped
+ *  (so the DEFAULT_*_SIM_CONFIG spread underneath supplies the value) rather
+ *  than passed through. The previous version checked exactly one field of the
+ *  nine and let the rest reach the engines unread — a negative feePercent or a
+ *  positionPercent of 5000 was accepted and persisted.
+ *
+ *  minConfidenceOverride keeps its special case: 0 means "not set", because the
+ *  ?? operator downstream would otherwise pass it through and disable the
+ *  confidence floor entirely. */
+const SIM_CONFIG_BOUNDS: Record<string, { min: number; max: number; int?: boolean }> = {
+  initialAmount: { min: 1, max: 100_000_000 },
+  maxPositions: { min: 1, max: 50, int: true },
+  maxFuturesPositions: { min: 0, max: 50, int: true },
+  feePercent: { min: 0, max: 5 },
+  slippagePercent: { min: 0, max: 5 },
+  executionDelaySec: { min: 0, max: 300 },
+  minConfidenceOverride: { min: 1, max: 100 },
+  positionPercent: { min: 0.1, max: 100 }
+};
+
+const SIM_RISK_LEVELS = new Set(['low', 'medium', 'high']);
+
 function sanitizeSimConfig(cfg: Record<string, unknown>): Record<string, unknown> {
-  if (cfg.minConfidenceOverride !== undefined && (cfg.minConfidenceOverride as number) < 1) {
-    cfg.minConfidenceOverride = undefined;
+  for (const [field, bound] of Object.entries(SIM_CONFIG_BOUNDS)) {
+    if (cfg[field] === undefined) continue;
+    const value = Number(cfg[field]);
+    const ok = Number.isFinite(value) && value >= bound.min && value <= bound.max;
+    cfg[field] = ok ? (bound.int ? Math.floor(value) : value) : undefined;
+  }
+  if (cfg.riskLevel !== undefined && !SIM_RISK_LEVELS.has(String(cfg.riskLevel))) {
+    cfg.riskLevel = undefined;
   }
   return cfg;
 }
 
+/** Applies a config patch to a sim, resetting the run when the starting capital
+ *  changed. A run's P&L, drawdown and sizing are all measured against the
+ *  capital it opened with, so retro-fitting a new number onto a run already in
+ *  progress produces figures that describe no actual account — which is what
+ *  editing that field used to do. Returns true when the run was reset. */
+function applySimConfigPatch<T extends { config: Record<string, unknown>; snapshot: unknown | null; running: boolean }>(
+  state: T,
+  defaults: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  engine: { reset: (c: never) => void; getSnapshot: () => unknown; getInitialAmount: () => number }
+): boolean {
+  const before = engine.getInitialAmount();
+  state.config = { ...defaults, ...state.config, ...sanitizeSimConfig({ ...patch }) };
+  const after = Number(state.config.initialAmount);
+  if (!Number.isFinite(after) || after === before) return false;
+  engine.reset(state.config as never);
+  state.snapshot = engine.getSnapshot();
+  return true;
+}
+
 const DEFAULT_SIM_CONFIG = {
-  riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
-  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 52, positionPercent: 10
+  riskLevel, initialAmount: 10000,
+  maxPositions: maxOpenPositions, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 52, positionPercent
 };
 const simState = {
   running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
@@ -504,9 +549,9 @@ async function persistSim() {
 }
 
 const DEFAULT_LEGACY_SIM_CONFIG = {
-  riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
-  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
+  riskLevel, initialAmount: 10000,
+  maxPositions: maxOpenPositions, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 58, positionPercent
 };
 const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.legacy as string };
 
@@ -532,9 +577,9 @@ async function persistLegacySim() {
 }
 
 const DEFAULT_PRO_SIM_CONFIG = {
-  riskLevel: 'medium' as const, initialAmount: 10000, stopLoss: 4.2, takeProfit: 3,
-  maxPositions: 7, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: 58, positionPercent: 10
+  riskLevel, initialAmount: 10000,
+  maxPositions: maxOpenPositions, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
+  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 58, positionPercent
 };
 const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.pro as string };
 
@@ -1154,7 +1199,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'GET' && url.pathname === '/api/bot/state') {
     return json(res, 200, {
       testnet, dryRun, mode: testnet ? 'testnet' : 'live',
-      riskLevel, symbols, minConfidence, positionPercent, maxOpenPositions, scanConcurrency,
+      riskLevel, symbols, minConfidence: minConfidenceOverrideEnv ?? null, positionPercent, maxOpenPositions, scanConcurrency,
       ...state, openedSymbols: Object.fromEntries(state.openedSymbols), health
     });
   }
@@ -1257,8 +1302,13 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      simState.config = { ...DEFAULT_SIM_CONFIG, ...simState.config, ...sanitizeSimConfig({ ...(body.config as Record<string, unknown>) }) };
-      // maxPositions is fixed at 7 — no recalculation needed
+      const wasReset = applySimConfigPatch(simState, DEFAULT_SIM_CONFIG, body.config as Record<string, unknown>, simEngine);
+      if (wasReset) {
+        simState.leaderId = null;
+        simState.leaderHeartbeat = 0;
+        simState.updatedAt = Date.now();
+        simState.epoch = (simState.epoch || 0) + 1;
+      }
     }
     await persistSim();
     return json(res, 200, simState);
@@ -1292,8 +1342,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/legacy-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      legacySimState.config = { ...DEFAULT_LEGACY_SIM_CONFIG, ...legacySimState.config, ...sanitizeSimConfig({ ...(body.config as Record<string, unknown>) }) };
-      // maxPositions is fixed at 7 — no recalculation needed
+      if (applySimConfigPatch(legacySimState, DEFAULT_LEGACY_SIM_CONFIG, body.config as Record<string, unknown>, legacySimEngine)) {
+        legacySimState.updatedAt = Date.now();
+      }
     }
     await persistLegacySim();
     return json(res, 200, legacySimState);
@@ -1327,8 +1378,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/pro-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      proSimState.config = { ...DEFAULT_PRO_SIM_CONFIG, ...proSimState.config, ...sanitizeSimConfig({ ...(body.config as Record<string, unknown>) }) };
-      // maxPositions is fixed at 7 — no recalculation needed
+      if (applySimConfigPatch(proSimState, DEFAULT_PRO_SIM_CONFIG, body.config as Record<string, unknown>, proSimEngine)) {
+        proSimState.updatedAt = Date.now();
+      }
     }
     await persistProSim();
     return json(res, 200, proSimState);

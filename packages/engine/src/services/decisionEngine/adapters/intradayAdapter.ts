@@ -159,7 +159,11 @@ class ExposureStage implements PipelineStage<DecisionContext> {
   execute(context: DecisionContext): StageResult<DecisionContext> {
     const p = context.portfolio;
     const params = context.params as Partial<IntradayParams> ?? {};
-    const maxPositions = params.maxOpenPositions ?? 7;
+    // config first: maxPositions is the number the operator sets and the order
+    // layer already enforces. Reading only params.maxOpenPositions meant that
+    // lowering the cap in the panel changed which orders were queued while the
+    // decision log still reported every candidate as approved.
+    const maxPositions = context.config?.maxPositions ?? params.maxOpenPositions ?? 7;
 
     if (p.openPositionsCount >= maxPositions) {
       return {
@@ -204,7 +208,16 @@ class RunEngineStage implements PipelineStage<DecisionContext> {
       // orchestrator's own bookkeeping keys, so `?? DEFAULT_INTRADAY_PARAMS`
       // never fired and the engine ran with every threshold undefined.
       // (evaluateIntradayDecision now merges defensively too — belt and braces.)
-      params: { ...DEFAULT_INTRADAY_PARAMS, ...SIM_INTRADAY_PARAMS_OVERRIDE, ...(context.params as Partial<IntradayParams>) },
+      params: {
+        ...DEFAULT_INTRADAY_PARAMS,
+        ...SIM_INTRADAY_PARAMS_OVERRIDE,
+        ...(context.params as Partial<IntradayParams>),
+        // The operator's caps win over the engine defaults, so the risk layer
+        // (intradayRisk.ts, which reads params.maxOpenPositions/maxOpenFutures)
+        // sizes against the same limits the order layer enforces.
+        ...(context.config?.maxPositions !== undefined ? { maxOpenPositions: context.config.maxPositions } : {}),
+        ...(context.config?.maxFuturesPositions !== undefined ? { maxOpenFutures: context.config.maxFuturesPositions } : {})
+      },
       now: context.now,
       existingExposureByAsset: context.portfolio.existingExposureByAsset
     };
@@ -255,9 +268,20 @@ export class IntradayAdapter implements EngineAdapter<DecisionContext> {
     const m5Last = context.candles.m5?.length ? context.candles.m5[context.candles.m5.length - 1].timestamp : 0;
     const p = context.portfolio;
     const portfolioKey = `${p.dailyDrawdownPercent.toFixed(2)}|${p.weeklyDrawdownPercent.toFixed(2)}|${p.openPositionsCount}|${p.openFuturesPositionsCount}|${p.totalLeveragedExposureUsd.toFixed(2)}|${Object.entries(p.existingExposureByAsset || {}).sort().map(([k,v]) => `${k}=${v.toFixed(2)}`).join(',')}`;
+    // Which assets are held is a DECISION INPUT, not just a counter: the
+    // routing stage refuses an entry whose asset is already open
+    // (SAME_ASSET_EXPOSURE_BLOCK) and the correlation stage scores the
+    // candidate against the held book. Keying only on openPositionsCount let a
+    // result computed while an asset was flat be replayed for a tick where it
+    // was held, reviving the very SIGNAL those stages exist to suppress. It
+    // happened to be masked for the sim engines, which pass
+    // existingExposureByAsset (that map names the held assets), and not masked
+    // at all for callers that pass none: the backtest runner, the scripts and
+    // the tests.
+    const heldKey = (context.openPositions ?? []).map((o) => `${o.symbol}:${o.type}:${o.side}`).sort().join(',');
     const closedTradesKey = (context.closedTrades || []).map(t => `${t.pnl.toFixed(2)}:${t.at}:${t.symbol}`).join(',');
     const configKey = `${context.config?.minConfidenceOverride ?? 'default'}|${context.config?.maxPositions ?? 'default'}|${context.config?.maxFuturesPositions ?? 'default'}`;
-    const cacheKey = `${context.symbol}|${h1Last}|${m15Last}|${m5Last}|${portfolioKey}|${closedTradesKey}|${configKey}`;
+    const cacheKey = `${context.symbol}|${h1Last}|${m15Last}|${m5Last}|${portfolioKey}|${heldKey}|${closedTradesKey}|${configKey}`;
     const cached = intradayResultCache.get(cacheKey);
     if (cached) return cached.result;
 

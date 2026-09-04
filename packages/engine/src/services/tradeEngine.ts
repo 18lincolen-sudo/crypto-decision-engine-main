@@ -21,6 +21,7 @@ import {
   ActivePosition
 } from '../types/crypto';
 import { MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER, SL_ATR_MULTIPLIER, SL_TP_REWARD_RISK } from './adaptiveRisk';
+import { WEEKLY_DRAWDOWN_LOCK_PERCENT } from './intradayParams';
 
 export interface Candle {
   timestamp: number;
@@ -1434,7 +1435,7 @@ export function evaluateExit(
 
   // 1. Drawdown Circuit Breakers (Weekly lock / Daily block)
   // Legacy thresholds: 15% weekly (aligned with entry gate), 8% daily
-  if (portfolioStats.weeklyDrawdownPercent >= 15 || portfolioStats.systemLocked) {
+  if (portfolioStats.weeklyDrawdownPercent >= WEEKLY_DRAWDOWN_LOCK_PERCENT || portfolioStats.systemLocked) {
     return {
       shouldExit: true,
       exitType: 'FULL',
@@ -1647,18 +1648,50 @@ export const BYBIT_FEES = {
 /**
  * Calculates trading fee for order
  */
-export function calculateTradingFee(usdValue: number, tradeType: 'SPOT' | 'FUTURES', isTaker: boolean = true): number {
+/** The fee percentage BYBIT_FEES already represents (spot, 0.1%). A configured
+ *  feePercent is read RELATIVE to this: it scales every rate in the table by
+ *  the same factor rather than flattening them to one number, so the
+ *  maker/taker split and the spot/futures ratio the cost model depends on
+ *  survive the override. At the default 0.1 the factor is exactly 1 and no
+ *  rate moves. */
+export const FEE_REFERENCE_PERCENT = BYBIT_FEES.spot.taker * 100;
+
+export function calculateTradingFee(
+  usdValue: number,
+  tradeType: 'SPOT' | 'FUTURES',
+  isTaker: boolean = true,
+  /** Simulation cost override, as a percentage (SimBotConfig.feePercent).
+   *  Omit for the exchange's real schedule. */
+  feePercent?: number
+): number {
   const rate = tradeType === 'SPOT'
     ? (isTaker ? BYBIT_FEES.spot.taker : BYBIT_FEES.spot.maker)
     : (isTaker ? BYBIT_FEES.futures.taker : BYBIT_FEES.futures.maker);
-  return usdValue * rate;
+  const scale = typeof feePercent === 'number' && Number.isFinite(feePercent) && feePercent >= 0
+    ? feePercent / FEE_REFERENCE_PERCENT
+    : 1;
+  return usdValue * rate * scale;
 }
 
+/** Floor of the simulated slippage band, in percent. The band runs from this
+ *  value to three times it, which at the default 0.05 reproduces the 0.05%-
+ *  0.15% range this function has always drawn from. */
+export const DEFAULT_SLIPPAGE_PERCENT = 0.05;
+
 /**
- * Generates realistic simulation slippage between 0.05% and 0.15%
+ * Draws simulation slippage from a band running from `basePercent` to 3x it
+ * — 0.05%-0.15% at the default, which is where this number has always come
+ * from. `basePercent` is SimBotConfig.slippagePercent: raising it widens and
+ * shifts the whole band rather than adding a constant, so a market modelled as
+ * twice as thin costs twice as much on both the good and the bad fills.
  */
-export function simulateSlippage(marketPrice: number, side: 'BUY' | 'SELL' | 'LONG' | 'SHORT'): { fillPrice: number; slippagePercent: number } {
-  const slipPercent = 0.05 + Math.random() * 0.10;
+export function simulateSlippage(
+  marketPrice: number,
+  side: 'BUY' | 'SELL' | 'LONG' | 'SHORT',
+  basePercent: number = DEFAULT_SLIPPAGE_PERCENT
+): { fillPrice: number; slippagePercent: number } {
+  const base = Number.isFinite(basePercent) && basePercent >= 0 ? basePercent : DEFAULT_SLIPPAGE_PERCENT;
+  const slipPercent = base + Math.random() * base * 2;
   const multiplier = (side === 'BUY' || side === 'LONG') ? (1 + slipPercent / 100) : (1 - slipPercent / 100);
   const fillPrice = marketPrice * multiplier;
   return { fillPrice, slippagePercent: slipPercent };

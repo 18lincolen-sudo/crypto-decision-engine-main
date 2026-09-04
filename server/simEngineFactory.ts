@@ -40,6 +40,10 @@ export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig };
 
 export interface SimSnapshot {
   cash: number;
+  /** Capital the CURRENT run started with. Carried in the snapshot because it
+   *  is the denominator of every P&L figure the UI shows, and it cannot be
+   *  recovered from anything else once the run has traded. */
+  initialAmount: number;
   positions: SimPosition[];
   trades: SimTrade[];
   history: SimPoint[];
@@ -319,10 +323,24 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
   // remaining ~16s — which reads as a frozen page. Measure the real thing.
   let lastTickDurationMs = 0;
 
+  // Confidence floor this engine is gating on right now — config override when
+  // one is set, the strategy's own default otherwise.
+  let activeMinConfidence = strategy.minConfidence;
+
   async function tick(config: SimBotConfig, fearGreed = 50) {
     const tickStartedAt = Date.now();
-    initialAmount = config.initialAmount || 10000;
+    activeMinConfidence = typeof config.minConfidenceOverride === 'number' && config.minConfidenceOverride > 0
+      ? config.minConfidenceOverride
+      : strategy.minConfidence;
+    // initialAmount is the capital THIS RUN opened with, so it moves only on
+    // reset — never from the live config. Reassigning it every tick meant that
+    // editing the capital field mid-run repointed the P&L denominator while
+    // `cash` kept the old balance: a bot holding $10,000 against a freshly
+    // typed $1,000 reported +$9,000 (+900%) and went on trading the old
+    // balance. Changing the capital of a run in progress is not a thing that
+    // can be done retroactively, so the config endpoints reset the run instead.
     if ((cash === 0 || !Number.isFinite(cash)) && positions.length === 0 && trades.length === 0) {
+      initialAmount = config.initialAmount || 10000;
       cash = initialAmount;
     }
     await refreshMarketData();
@@ -407,7 +425,10 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       for (const o of expired) console.log(`${strategy.logPrefix} limit order expired unfilled: ${o.symbol} @ ${o.signalPrice}`);
     }
     if (due.length) {
-      const result = fillDueOrders(due, cash, positions, priceFor, formatDynamicPrice);
+      const result = fillDueOrders(due, cash, positions, priceFor, formatDynamicPrice, {
+        feePercent: config.feePercent,
+        slippagePercent: config.slippagePercent
+      });
       const dueIds = new Set(due.map((o) => o.id));
       pending = pending.filter((o) => !dueIds.has(o.id));
       if (result.newTrades.length) {
@@ -465,6 +486,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     const winRate = closedTrades.length ? (wins / closedTrades.length) * 100 : 0;
     return {
       cash,
+      initialAmount,
       positions,
       positionsValue: positionsValue(),
       equity: eq,
@@ -497,7 +519,11 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
         takeProfit2: e.takeProfit2,
         takeProfit: e.takeProfit
       })),
-      minConfidence: strategy.minConfidence,
+      // The threshold ACTUALLY in force, not the strategy's compiled-in default.
+      // These are two different numbers whenever an operator sets
+      // minConfidenceOverride (or BOT_MIN_CONFIDENCE), and the panel was
+      // showing the one the engine does not gate on.
+      minConfidence: activeMinConfidence,
       hasSavedSession: trades.length > 0 || positions.length > 0,
       // The next snapshot lands at most one poll interval from now, plus however
       // long the tick itself takes — measured, not assumed. See lastTickDurationMs.
@@ -520,7 +546,10 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     totalFees = snapshot.totalFees ?? 0;
     totalSlippageCost = snapshot.totalSlippageCost ?? 0;
     lastEvaluation = snapshot.lastEvaluation ?? '';
-    initialAmount = snapshot.cash || 10000;
+    // Restore the run's OWN starting capital. Reading snapshot.cash here reset
+    // the P&L baseline to whatever the balance happened to be at restart, so
+    // every deploy silently zeroed the bot's reported profit.
+    initialAmount = snapshot.initialAmount || snapshot.cash || 10000;
   }
 
   function reset(config: SimBotConfig) {
@@ -537,6 +566,12 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     lastEvaluations = [];
   }
 
-  return { tick, getSnapshot, hydrate, reset };
+  /** The capital the current run opened with — lets a caller detect that a
+   *  config edit changed it and reset the run rather than corrupt its P&L. */
+  function getInitialAmount() {
+    return initialAmount;
+  }
+
+  return { tick, getSnapshot, hydrate, reset, getInitialAmount };
 }
 

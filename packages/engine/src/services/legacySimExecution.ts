@@ -22,7 +22,7 @@ import {
   MIN_ENTRY_RELATIVE_VOLUME
 } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
-import { computeEntryBudget, isInEntryCooldown } from './simExecution';
+import { computeEntryBudget, isInEntryCooldown, riskLevelSizingMultiplier } from './simExecution';
 import {
   summarizeRecentPerformance,
   computeSizingMultiplier,
@@ -52,6 +52,17 @@ export const MIN_LEGACY_CANDLES = 60;
 // being rejected. This prevents high-confidence signals from being lost to
 // portfolio-cap or sizing edge-cases.
 export const HIGH_CONFIDENCE_BYPASS = 72;
+
+// No per-asset exposure ceiling is enforced here, deliberately. Legacy holds at
+// most one position per symbol (see the entry gate below) and that position's
+// notional is already bounded by computeEntryBudget, so a per-asset cap in this
+// function has nothing left to bind against: every path that could exceed it is
+// a path the symbol gate rejects first. An earlier revision of this fix added
+// one anyway — it shrank ordinary single positions from 15% of cash to 8% of
+// equity, which is a sizing change, and once scoped narrowly enough to stop
+// doing that it became unreachable. legacySimEngine.ts still computes
+// existingExposureByAsset for the shared PortfolioRiskStats shape; on this path
+// it is informational.
 
 // ── 2. Order generation — exit checks (evaluateExit) + new entries ─────────────
 
@@ -101,6 +112,10 @@ export interface LegacyOrderGenContext {
   cash: number;
   /** Portfolio equity value — used for streak cooldown threshold calculation. */
   equity: number;
+  /** SimBotConfig.positionPercent / .riskLevel — see the identical fields on
+   *  simExecution.ts's OrderGenContext. */
+  positionPercent?: number;
+  riskLevel?: 'low' | 'medium' | 'high';
   /** Symbol (as stored on the position/order) → last-loss timestamp. Read-only here. */
   exitCooldown: Record<string, number>;
   priceFor: (symbol: string) => number | undefined;
@@ -133,8 +148,12 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
+  // Per POSITION, not per symbol — see the identical loop in simExecution.ts.
+  // Keyed on the symbol, one lot's pending close silenced the stop check on
+  // every other lot of the same asset, so stops were released one per tick.
   for (const pos of positions) {
-    if (pending.some((o) => o.symbol === pos.symbol) || newOrders.some((o) => o.symbol === pos.symbol)) continue;
+    const claimed = (o: PendingOrder) => (o.positionId ? o.positionId === pos.id : o.symbol === pos.symbol);
+    if (pending.some(claimed) || newOrders.some(claimed)) continue;
 
     const livePrice = priceFor(pos.symbol) ?? pos.currentPrice;
     const candles = candlesBySymbol[pos.symbol];
@@ -168,13 +187,13 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
 
     if (exitCheck.exitType === 'PARTIAL_50') {
       newOrders.push({
-        id: uid(`${pos.symbol}-tp1-50`), symbol: pos.symbol, type: pos.type, side: 'partial_tp1',
+        id: uid(`${pos.symbol}-tp1-50`), symbol: pos.symbol, positionId: pos.id, type: pos.type, side: 'partial_tp1',
         signalPrice: livePrice, quantity: pos.quantity * 0.5, reason: exitCheck.reason,
         confidence: pos.confidence, executeAt: Date.now() + delayMs, createdAt: Date.now()
       });
     } else {
       newOrders.push({
-        id: uid(`${pos.symbol}-exit`), symbol: pos.symbol, type: pos.type,
+        id: uid(`${pos.symbol}-exit`), symbol: pos.symbol, positionId: pos.id, type: pos.type,
         side: pos.side === 'LONG' || pos.side === 'BUY' ? 'close_long' : 'close_short',
         signalPrice: livePrice, quantity: pos.quantity, reason: exitCheck.reason,
         confidence: pos.confidence, executeAt: Date.now() + delayMs, createdAt: Date.now()
@@ -182,9 +201,15 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     }
   }
 
-  // Per-symbol streak cooldown is handled in the evaluation loop above,
-  // not here. This is intentional — a losing streak on one symbol should not
-  // block entries on other symbols.
+  // The per-symbol losing-streak cooldown is applied in the entry loop below.
+  // It is deliberately per-symbol — a losing streak on one asset should not
+  // block entries on unrelated ones.
+
+  // Cash consumed by this batch: computeEntryBudget is a percentage of the
+  // free balance, so reading ctx.cash for every order of the same tick sized
+  // N simultaneous entries as if each one were the only entry of the tick.
+  let workingCash = ctx.cash;
+
 
   const correlationBook: CorrelatedHolding[] = [
     ...positions.map((p) => ({ symbol: p.symbol, direction: toPositionDirection(p.side) })),
@@ -199,8 +224,17 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
 
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price || ev.tradeType === 'HOLD') continue;
+    // One position per symbol — see the identical guard in simExecution.ts.
+    // This is the fix for the incident where four lots of one thin alt were
+    // opened within seconds off a single unchanged H1 signal and stopped out
+    // together: `pending` empties the moment an entry fills, so without this
+    // the same signal re-queues the same asset on the very next tick.
+    if (positions.some((p) => p.symbol === ev.symbol)) continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
     if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
+    // Post-losing-streak pause. These helpers were imported here but never
+    // called, so the streak brake was documented and inert.
+    if (isInStreakCooldown(streakCooldownFromHistory(closedTradeMetrics, ctx.equity, ev.symbol))) continue;
     if (totalPositionCount >= maxPositions) continue;
     if (ev.tradeType === 'FUTURES' && futuresPositionCount >= maxFuturesPositions) continue;
 
@@ -212,7 +246,9 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
       ? (ev.tradeSide === 'LONG' ? 'long' : 'short')
       : (ev.tradeSide === 'BUY' ? 'buy' : 'sell');
 
-    const budget = computeEntryBudget(ctx.cash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT');
+    const leverage = ev.leverage || 1;
+    const budget = computeEntryBudget(workingCash, ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT', ctx.positionPercent)
+      * riskLevelSizingMultiplier(ctx.riskLevel);
     if (budget < 5) continue;
 
     // Within-batch correlation check: every evaluation in this tick was
@@ -231,13 +267,14 @@ export function generateLegacyOrders(ctx: LegacyOrderGenContext): PendingOrder[]
     if (!gate.allowed) continue;
 
     totalPositionCount++;
+    workingCash -= budget;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
     correlationBook.push({ symbol: ev.symbol, direction: evDirection });
 
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`), symbol: ev.symbol, type: ev.tradeType as 'SPOT' | 'FUTURES',
-      side: orderSide as PendingOrder['side'], signalPrice: ev.price, quantity: (budget * (ev.leverage || 1)) / ev.price,
-      budgetUsd: budget, leverage: ev.leverage || 1, stopLoss: ev.stopLoss, takeProfit1: ev.takeProfit1,
+      side: orderSide as PendingOrder['side'], signalPrice: ev.price, quantity: (budget * leverage) / ev.price,
+      budgetUsd: budget, leverage, stopLoss: ev.stopLoss, takeProfit1: ev.takeProfit1,
       takeProfit2: ev.takeProfit2, takeProfit: ev.takeProfit, reason: ev.reasoning, confidence: ev.confidence,
       executeAt: Date.now() + delayMs, createdAt: Date.now()
     });

@@ -241,6 +241,18 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
     } catch { /* ignore */ }
   }, []);
 
+  // A run's P&L, drawdown and sizing are all measured against the capital it
+  // opened with, so a new starting capital starts a NEW run — the alternative
+  // (which this used to do) is to keep trading the old balance while reporting
+  // profit against the new number. The server engine does the same on its
+  // /config endpoint.
+  const startingCapitalRef = useRef(config.initialAmount);
+  useEffect(() => {
+    if (config.initialAmount === startingCapitalRef.current) return;
+    startingCapitalRef.current = config.initialAmount;
+    reset();
+  }, [config.initialAmount, reset]);
+
   const priceFor = useCallback(
     (symbol: string) => cryptoData?.find((c) => c.symbol.toUpperCase() === symbol.toUpperCase())?.current_price,
     [cryptoData]
@@ -431,6 +443,9 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       dailyDrawdownPercent,
       weeklyDrawdownPercent,
       cash: cashRef.current,
+      equity,
+      positionPercent: config.positionPercent,
+      riskLevel: config.riskLevel,
       exitCooldown: exitCooldownRef.current,
       priceFor: priceForRef.current,
       candlesBySymbol: candlesRef.current,
@@ -442,7 +457,7 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
     if (newOrders.length) setPending((prev) => [...prev, ...newOrders]);
     setLastEvaluation(new Date().toLocaleTimeString('he-IL'));
     setNextTickAt(Date.now() + 5000);
-  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, config, closedTradeMetrics]);
+  }, [isRunning, evaluations, heartbeat, dailyDrawdownPercent, weeklyDrawdownPercent, config, closedTradeMetrics, equity]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -501,7 +516,14 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       }
       if (!due.length) return;
 
-      const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice);
+      const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice, {
+        // configRef, not config: this effect owns a 1s interval keyed on
+        // isRunning alone, so reading config directly would either restart the
+        // timer on every edit or silently fill at the costs that were set when
+        // the bot started.
+        feePercent: configRef.current.feePercent,
+        slippagePercent: configRef.current.slippagePercent
+      });
 
       const dueIds = new Set(due.map((o) => o.id));
       setPending((prev) => prev.filter((o) => !dueIds.has(o.id)));

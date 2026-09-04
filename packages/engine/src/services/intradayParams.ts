@@ -175,6 +175,16 @@ export interface IntradayParams {
   weeklyDrawdownFlattenPercent: number;
 }
 
+/** Portfolio circuit-breaker thresholds, in percent of equity.
+ *
+ *  Single definition on purpose: these two numbers were written out by hand in
+ *  the Legacy adapter, the Pro adapter, tradeEngine's exit check and the
+ *  intraday defaults. Four copies that happened to agree is not the same thing
+ *  as one threshold — the next edit only has to miss one of them.
+ */
+export const DAILY_DRAWDOWN_BLOCK_PERCENT = 8;
+export const WEEKLY_DRAWDOWN_LOCK_PERCENT = 15;
+
 export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   adxTrendMin: 25,
   adxRangeMax: 20,
@@ -259,9 +269,9 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   touchFillProbability: 0.5,
   partialFillRatio: 0.5,
 
-  dailyDrawdownBlockPercent: 8,
-  weeklyDrawdownLockPercent: 15,
-  weeklyDrawdownFlattenPercent: 15
+  dailyDrawdownBlockPercent: DAILY_DRAWDOWN_BLOCK_PERCENT,
+  weeklyDrawdownLockPercent: WEEKLY_DRAWDOWN_LOCK_PERCENT,
+  weeklyDrawdownFlattenPercent: WEEKLY_DRAWDOWN_LOCK_PERCENT
 };
 
 /** Risk-per-trade variants compared during backtest (§33) */

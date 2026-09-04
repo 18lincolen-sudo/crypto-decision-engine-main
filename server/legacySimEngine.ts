@@ -122,6 +122,8 @@ const legacyStrategy: SimEngineStrategy = {
       dailyDrawdownPercent: input.dailyDrawdownPercent,
       weeklyDrawdownPercent: input.weeklyDrawdownPercent,
       cash: input.cash,
+      positionPercent: input.config.positionPercent,
+      riskLevel: input.config.riskLevel,
       exitCooldown: input.exitCooldown,
       priceFor: input.priceFor,
       candlesBySymbol: input.candlesBySymbol,

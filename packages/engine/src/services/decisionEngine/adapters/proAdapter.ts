@@ -42,6 +42,7 @@ import type { Candle } from '../../tradeEngine';
 import { computeProAdvancedAnalysis } from '../../proAdvancedAnalysis';
 import { evaluateFundingGate, type FundingVerdict } from '../../fundingRate';
 import { computeDrawdownFactor, computeSizingMultiplier, summarizeRecentPerformance, MIN_STOP_PERCENT, MAX_STOP_PERCENT, MIN_RISK_REWARD_RATIO } from '../../adaptiveRisk';
+import { DAILY_DRAWDOWN_BLOCK_PERCENT, WEEKLY_DRAWDOWN_LOCK_PERCENT } from '../../intradayParams';
 import { evaluateCorrelationGate, toPositionDirection, CorrelatedHolding, DEFAULT_CORRELATION_LOOKBACK, DEFAULT_CORRELATION_THRESHOLD, DEFAULT_MAX_CORRELATED } from '../../correlation';
 
 // ── Type Mappings ─────────────────────────────────────────────────────────────
@@ -167,8 +168,8 @@ class RouteTradeTypeStage implements PipelineStage<ProPipelineContext> {
 
     const router = routeProTradeType(context.signal, context.regime, {
       hasExistingFutures,
-      isDailyBlocked: context.portfolio.dailyDrawdownPercent >= 8,
-      isWeeklyLocked: context.portfolio.weeklyDrawdownPercent >= 15
+      isDailyBlocked: context.portfolio.dailyDrawdownPercent >= DAILY_DRAWDOWN_BLOCK_PERCENT,
+      isWeeklyLocked: context.portfolio.weeklyDrawdownPercent >= WEEKLY_DRAWDOWN_LOCK_PERCENT
     });
 
     if (router.type === 'HOLD' || router.hardGateBlocked) {
@@ -389,9 +390,20 @@ export class ProAdapter implements EngineAdapter<ProPipelineContext> {
     const h1Last = context.candles.h1?.length ? context.candles.h1[context.candles.h1.length - 1].timestamp : 0;
     const p = context.portfolio;
     const portfolioKey = `${p.dailyDrawdownPercent.toFixed(2)}|${p.weeklyDrawdownPercent.toFixed(2)}|${p.openPositionsCount}|${p.openFuturesPositionsCount}|${p.totalLeveragedExposureUsd.toFixed(2)}|${Object.entries(p.existingExposureByAsset || {}).sort().map(([k,v]) => `${k}=${v.toFixed(2)}`).join(',')}`;
+    // Which assets are held is a DECISION INPUT, not just a counter: the
+    // routing stage refuses an entry whose asset is already open
+    // (SAME_ASSET_EXPOSURE_BLOCK) and the correlation stage scores the
+    // candidate against the held book. Keying only on openPositionsCount let a
+    // result computed while an asset was flat be replayed for a tick where it
+    // was held, reviving the very SIGNAL those stages exist to suppress. It
+    // happened to be masked for the sim engines, which pass
+    // existingExposureByAsset (that map names the held assets), and not masked
+    // at all for callers that pass none: the backtest runner, the scripts and
+    // the tests.
+    const heldKey = (context.openPositions ?? []).map((o) => `${o.symbol}:${o.type}:${o.side}`).sort().join(',');
     const closedTradesKey = (context.closedTrades || []).map(t => `${t.pnl.toFixed(2)}:${t.at}:${t.symbol}`).join(',');
     const configKey = `${context.config?.minConfidenceOverride ?? 'default'}|${context.config?.maxPositions ?? 'default'}|${context.config?.maxFuturesPositions ?? 'default'}`;
-    const cacheKey = `${context.symbol}|${h1Last}|${portfolioKey}|${closedTradesKey}|${configKey}`;
+    const cacheKey = `${context.symbol}|${h1Last}|${portfolioKey}|${heldKey}|${closedTradesKey}|${configKey}`;
     const cached = proResultCache.get(cacheKey);
     if (cached) return cached.result;
 

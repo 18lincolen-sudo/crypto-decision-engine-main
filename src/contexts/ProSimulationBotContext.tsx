@@ -29,14 +29,23 @@ import { useApiPolling } from '../hooks/useApiPolling';
 const DEFAULT_PRO_CONFIG: SimBotConfig = {
   riskLevel: 'medium',
   initialAmount: 10000,
-  stopLoss: 4.2,
-  takeProfit: 3,
-  maxPositions: 7,
+  // 5, the same cap the live bot runs (BOT_MAX_OPEN_POSITIONS) and the same
+  // one the server sims now take from it. At 7 the simulations were allowed
+  // 40% more concurrent risk than the bot they exist to predict.
+  maxPositions: 5,
   maxFuturesPositions: 2,
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
-  minConfidenceOverride: 60,
+  // 58, matching tradingWorker.ts DEFAULT_PRO_SIM_CONFIG. At 60 this browser
+  // fallback gated two points tighter than the 24/7 engine running the same
+  // bot, so the two runtimes disagreed about which signals Pro takes.
+  minConfidenceOverride: 58,
+  // Matches the server config (tradingWorker.ts DEFAULT_SIM_CONFIG) and the
+  // real bot's BOT_POSITION_PERCENT. Absent, this browser fallback would size
+  // entries at the engine default of 15% while the 24/7 engine running the
+  // same bot sized them at 10%.
+  positionPercent: 10,
 };
 
 export interface ProSimulationBotContextValue {

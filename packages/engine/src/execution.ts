@@ -24,7 +24,9 @@ export {
   evaluateExit,
   BYBIT_FEES,
   calculateTradingFee,
+  FEE_REFERENCE_PERCENT,
   simulateSlippage,
+  DEFAULT_SLIPPAGE_PERCENT,
   calculateBreakEvenPrice
 } from './services/tradeEngine';
 
@@ -63,6 +65,9 @@ export {
   SIM_INTRADAY_PARAMS_OVERRIDE,
   reanchorLevel,
   computeEntryBudget,
+  DEFAULT_POSITION_PERCENT,
+  FUTURES_POSITION_RATIO,
+  riskLevelSizingMultiplier,
   ENTRY_COOLDOWN_MS,
   isInEntryCooldown,
   generateNewOrders,

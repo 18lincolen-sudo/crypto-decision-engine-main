@@ -33,6 +33,7 @@
 
 import { Candle, calculateEMA, calculateATR, calculateADX, calculateSupertrend, formatDynamicPrice, computeRelativeVolume, MIN_ENTRY_RELATIVE_VOLUME } from './tradeEngine';
 import { computeDrawdownFactor, MIN_STOP_PERCENT, MAX_STOP_PERCENT, kellyPayoffRatio, KELLY_MIN_SAMPLE, KELLY_MULTIPLIER, SL_ATR_MULTIPLIER, SL_TP_REWARD_RISK } from './adaptiveRisk';
+import { WEEKLY_DRAWDOWN_LOCK_PERCENT } from './intradayParams';
 
 // ── LAYER 0 — MARKET REGIME DETECTION ──────────────────────────────────────
 
@@ -709,7 +710,7 @@ export function evaluateProExit(
   const isShort = pos.side === 'SHORT' || pos.side === 'SELL';
 
   // §Layer4.5 — weekly emergency flatten
-  if (portfolioStats.weeklyDrawdownPercent >= 15 || portfolioStats.systemLocked) {
+  if (portfolioStats.weeklyDrawdownPercent >= WEEKLY_DRAWDOWN_LOCK_PERCENT || portfolioStats.systemLocked) {
     return { shouldExit: true, exitType: 'FULL', reason: `הגנת תיק שבועית (Drawdown ${portfolioStats.weeklyDrawdownPercent.toFixed(1)}% >= 15%) — כיבוי מלא` };
   }
 
