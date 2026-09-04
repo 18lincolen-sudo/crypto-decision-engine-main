@@ -35,6 +35,11 @@ export interface CostInput {
   spreadPercent: number;
   atrPercentile: number;
   entryIsLimit?: boolean;
+  /** Relative volume (current / rolling average) for the same candle series and
+   *  timeframe already used for entry-volume gating. Optional and backward
+   *  compatible: omitting it reproduces today's slippage exactly (liquidity
+   *  term = 0). */
+  relativeVolume?: number;
   params?: IntradayParams;
 }
 
@@ -45,10 +50,24 @@ export function evaluateCostEdge(input: CostInput): CostAnalysis {
   const exitFeePercent = fees.taker * 100; // SL/TP exits cross the book
   const spreadPercent = Math.max(0, input.spreadPercent);
 
+  // Liquidity-aware slippage: below-average volume means a thinner book, so a
+  // market order (the exit leg, always taker) moves price more per unit size
+  // than the spread alone implies. Derived from the SAME relative-volume signal
+  // already computed for entry gating — not an assumed hour-of-day calendar —
+  // so a thin altcoin's dead hours and a major's dead hours are both caught by
+  // one mechanism, and no new assumption is introduced. Zero when relativeVolume
+  // is omitted or at/above average, so existing callers see no change until they
+  // opt in by passing it.
+  const liquidityTerm = (input.relativeVolume !== undefined && input.relativeVolume > 0)
+    ? clamp((1 / input.relativeVolume) - 1, 0, params.liquidityTermCap) * params.liquidityTermWeight
+    : 0;
+
   // Volatility-aware slippage: entry is a resting limit (low slip), exit is market.
   const volatilityTerm = (clamp(input.atrPercentile, 0, 100) / 100) * 0.03;
-  const entrySlippage = input.entryIsLimit === false ? spreadPercent / 2 + params.baseSlippagePercent : 0.005;
-  const exitSlippage = params.baseSlippagePercent + spreadPercent / 2 + volatilityTerm;
+  const entrySlippage = input.entryIsLimit === false
+    ? spreadPercent / 2 + params.baseSlippagePercent + liquidityTerm
+    : 0.005; // resting limit fill/no-fill is not modelled here
+  const exitSlippage = params.baseSlippagePercent + spreadPercent / 2 + volatilityTerm + liquidityTerm;
   const slippagePercent = Number((entrySlippage + exitSlippage).toFixed(5));
 
   const totalCostPercent = Number((entryFeePercent + exitFeePercent + slippagePercent).toFixed(5));
@@ -146,9 +165,15 @@ export interface RiskPlanInput {
   existingExposureByAsset?: Record<string, number>;
   riskPercent?: number;
   params?: IntradayParams;
-  /** Signal confidence (0-100). When >= 72, risk-plan rejections are bypassed
-   *  with a minimal fallback so high-confidence signals are not lost to
-   *  portfolio-cap or structural-stop edge-cases. */
+  /** Signal confidence (0-100). Telemetry only — nothing in buildRiskPlan reads
+   *  it. It used to waive the exposure caps, the per-asset cap, the exchange
+   *  minimum and the stop-direction invariant at >= 72; every one of those is now
+   *  unconditional. The threshold was never calibrated: no measurement in this
+   *  repo shows that a 72+ score corresponds to a higher win rate than a 60,
+   *  which is the standard every other tuned constant here is held to (see
+   *  KELLY_MIN_SAMPLE / SL_ATR_MULTIPLIER in adaptiveRisk.ts). Establishing that
+   *  would take the same method pathStudy.ts already uses: bucket closed trades
+   *  by score and compare Wilson lower-bound win rates per bucket. */
   confidence?: number;
   /** Adaptive sizing multiplier (clamped to [0,1]) injected by the
    *  DecisionEngine orchestrator from recent closed-trade performance — it
@@ -206,7 +231,6 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
   const s = input.direction === 'LONG' ? 1 : -1;
   const entry = input.entryPrice;
   const atr5 = input.atr5 > 0 ? input.atr5 : entry * 0.001;
-  const highConfidence = (input.confidence ?? 0) >= 72;
 
   if (!(entry > 0) || !(input.equity > 0)) return rejected('נתוני מחיר/הון לא תקינים');
   if (input.openPositions >= params.maxOpenPositions) return rejected(`מקסימום ${params.maxOpenPositions} פוזיציות פתוחות`);
@@ -243,14 +267,22 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     takeProfit2 = Math.max(0.00000001, entry - tpDistance * 1.5);
   }
 
-  // Direction check
+  // Direction check. Under the current fixed-percentage SL model (1.8% of
+  // entry, always positive, applied with a direction-correct sign) this can only
+  // trip if entry or stopDistance is corrupted upstream — entry is validated
+  // > 0 at the top of this function — so it should never legitimately fire today.
+  // It is kept as a hard invariant rather than deleted: if a future change
+  // reintroduces structural (stopReference-based) stops, this is what catches a
+  // stop computed on the wrong side of entry. Which side of entry a stop sits on
+  // is a correctness question, not a risk-appetite one, so it never has a
+  // confidence-based exception — and the old fallback was worse than the
+  // rejection it replaced: a 0.1% stop on a signal the engine had just called
+  // strong is a position sized for a 1.8% stop wearing a stop 18x tighter.
   if (input.direction === 'LONG' && stopLoss >= entry) {
-    if (!highConfidence) return rejected('SL חייב להיות מתחת למחיר הכניסה ב-LONG');
-    stopLoss = entry * 0.999; // minimal fallback
+    return rejected('SL חייב להיות מתחת למחיר הכניסה ב-LONG');
   }
   if (input.direction === 'SHORT' && stopLoss <= entry) {
-    if (!highConfidence) return rejected('SL חייב להיות מעל מחיר הכניסה ב-SHORT');
-    stopLoss = entry * 1.001; // minimal fallback
+    return rejected('SL חייב להיות מעל מחיר הכניסה ב-SHORT');
   }
 
   const rewardRisk1 = Math.abs(takeProfit1 - entry) / stopDistance;
@@ -283,9 +315,13 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     }
 
     // ── Per-asset exposure cap (§35b) ──────────────────────────────────────────
-    // High-confidence signals bypass the per-asset cap to avoid blocking
-    // strong trades on portfolio concentration edge-cases.
-    if (input.symbol && input.existingExposureByAsset && !highConfidence) {
+    // Unconditional. A concentration cap exists precisely for the trade that
+    // looks strong enough to justify doubling down on one asset, so exempting
+    // high scores removed it exactly when it was doing work. Note the exemption
+    // also skipped the CLAMP branch below, not just the rejection: a
+    // high-confidence signal did not merely bypass the limit, it never had its
+    // size trimmed to fit under it either.
+    if (input.symbol && input.existingExposureByAsset) {
       const maxPerAssetExposure = input.equity * 0.08;
       const currentAssetExposure = input.existingExposureByAsset[input.symbol] ?? 0;
       const perAssetCap = maxPerAssetExposure - currentAssetExposure;
@@ -304,16 +340,34 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     leverage = clamp(Math.ceil(notionalUsd / marginBudget), 1, params.maxLeverage);
 
     const exposureCap = (input.equity * params.maxLeveragedExposurePercent) / 100;
-    if (input.currentLeveragedExposureUsd + notionalUsd > exposureCap && !highConfidence) {
+    // Unconditional — see the per-asset cap above.
+    if (input.currentLeveragedExposureUsd + notionalUsd > exposureCap) {
       return rejected(
         `חשיפה ממונפת ${(input.currentLeveragedExposureUsd + notionalUsd).toFixed(0)}$ מעל התקרה ${exposureCap.toFixed(0)}$ (${params.maxLeveragedExposurePercent}% מהתיק)`
       );
     }
   }
 
-  const marginUsd = input.tradeType === 'FUTURES' ? notionalUsd / leverage : notionalUsd;
-  if (marginUsd < params.minOrderUsd && !highConfidence) {
-    return rejected(`גודל פוזיציה ${marginUsd.toFixed(2)}$ מתחת למינימום ${params.minOrderUsd}$`);
+  let marginUsd = input.tradeType === 'FUTURES' ? notionalUsd / leverage : notionalUsd;
+  if (marginUsd < params.minOrderUsd) {
+    // Round up to the exchange minimum instead of exempting high-confidence
+    // signals from it — a sub-minimum order is not a smaller trade, it is an
+    // order the exchange rejects. Only reject if flooring would itself breach a
+    // cap already enforced above, which keeps the "don't drop a trade over a
+    // rounding-sized gap" complaint fixed without ever waiving a limit.
+    const scale = params.minOrderUsd / Math.max(marginUsd, 1e-9);
+    const bumpedNotional = notionalUsd * scale;
+    const bumpedMargin = marginUsd * scale;
+    const capUsd = input.tradeType === 'SPOT'
+      ? (input.equity * params.maxSpotNotionalPercent) / 100
+      : (input.equity * params.maxMarginPerTradePercent) / 100;
+    const bumpedFits = input.tradeType === 'SPOT' ? bumpedNotional <= capUsd : bumpedMargin <= capUsd;
+    if (!bumpedFits) {
+      return rejected(`גודל פוזיציה ${marginUsd.toFixed(2)}$ מתחת למינימום ${params.minOrderUsd}$ ואי אפשר להעלות בלי לחרוג ממגבלת התיק`);
+    }
+    notionalUsd = bumpedNotional;
+    quantity = notionalUsd / entry;
+    marginUsd = bumpedMargin;
   }
 
   const maxHoldMs = params.maxHoldMinutes[input.setupType] * 60_000;

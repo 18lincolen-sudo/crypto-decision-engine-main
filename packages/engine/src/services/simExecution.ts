@@ -538,6 +538,13 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
 
     const evDirection = toPositionDirection(ev.tradeSide as string);
     if (correlationCandles) {
+      // The intraday regime module is the only one of the four engines that
+      // computes a true ATR PERCENTILE (a 0-100 rank against its own recent
+      // history). Legacy and Pro carry atrPercent — ATR as a share of price —
+      // which is a different quantity on a different scale, so they leave this
+      // undefined rather than feed a 3%-of-price reading in as "the 3rd
+      // percentile". See resolveCorrelationLookback.
+      const evAtrPercentile = (ev.decision as unknown as { regime?: { atrPercentile?: number } } | undefined)?.regime?.atrPercentile;
       const gate = evaluateCorrelationGate({
         symbol: toBase(ev.symbol),
         direction: evDirection,
@@ -545,7 +552,8 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
         candlesBySymbol: correlationCandles,
         threshold: correlationThreshold,
         maxCorrelated: maxCorrelatedPositions,
-        lookback: correlationLookback
+        lookback: correlationLookback,
+        atrPercentile: evAtrPercentile
       });
       if (!gate.allowed) continue;
     }

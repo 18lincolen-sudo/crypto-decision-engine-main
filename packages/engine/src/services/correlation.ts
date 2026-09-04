@@ -43,6 +43,52 @@ export const DEFAULT_MAX_CORRELATED = 3;
  *  abstains (allows the entry) rather than blocking on a bad number. */
 export const MIN_CORRELATION_SAMPLES = 20;
 
+/** Below this, the shrink stops. MIN_CORRELATION_SAMPLES (20) plus a 16-bar
+ *  buffer, so ordinary gaps in a thin altcoin's candle history don't push the
+ *  estimate into "abstain" exactly when a fast-reacting read matters most — an
+ *  abstain ALLOWS the entry, which would defeat the point of shrinking the
+ *  window in the first place. Suggested starting value, not a measured one:
+ *  validate with scripts/abBacktest.ts before relying on it. */
+export const CORRELATION_LOOKBACK_FLOOR = 36;
+
+/** Local, not imported from intradayIndicators: correlation.ts is shared
+ *  infrastructure for all engines, and depending on an intraday-specific module
+ *  would point the dependency backwards. */
+function clampNum(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+/**
+ * Linear shrink from `baseLookback` at atrPercentile = 0 to
+ * CORRELATION_LOOKBACK_FLOOR at atrPercentile = 100.
+ *
+ * Why shrink at all: pairwise correlation among risk assets is not stationary,
+ * and the failure mode this gate exists to catch is correlation spiking toward
+ * 1 during a market-wide deleveraging. A fixed 72-bar (3-day H1) window is
+ * structurally slow to see that — for most of the event it is still averaging in
+ * the old, lower-correlation regime, which is exactly when the gate should be
+ * most willing to refuse another position in the cluster and currently is least.
+ *
+ * Returns `baseLookback` unchanged when atrPercentile is omitted, so every
+ * existing caller that does not pass it sees byte-identical behaviour.
+ *
+ * v1 scope, one variable at a time: the input is the CANDIDATE asset's own
+ * atrPercentile. Only the intraday regime module actually computes one — Legacy
+ * and Pro expose atrPercent (ATR as a share of price), a different quantity on a
+ * different scale — so those two call sites pass nothing and keep the fixed
+ * window until they grow a real percentile. A
+ * market-wide proxy (BTC's ATR percentile, since a correlation-regime shift is
+ * market-wide rather than asset-specific) is the natural v2, deferred until v1
+ * is validated against history — the same discipline pathStudy.ts applies to its
+ * own bucket splits.
+ */
+export function resolveCorrelationLookback(baseLookback: number, atrPercentile?: number): number {
+  if (atrPercentile === undefined) return baseLookback;
+  const p = clampNum(atrPercentile, 0, 100) / 100;
+  const shrunk = baseLookback - (baseLookback - CORRELATION_LOOKBACK_FLOOR) * p;
+  return Math.max(CORRELATION_LOOKBACK_FLOOR, Math.round(shrunk));
+}
+
 export function toPositionDirection(side: string): PositionDirection {
   const s = side.toUpperCase();
   return s === 'BUY' || s === 'LONG' ? 'LONG' : 'SHORT';
@@ -149,6 +195,11 @@ export interface CorrelationGateInput {
   threshold?: number;
   maxCorrelated?: number;
   lookback?: number;
+  /** Candidate asset's current ATR percentile (0-100), if available. When
+   *  supplied, shrinks the correlation lookback toward
+   *  CORRELATION_LOOKBACK_FLOOR as volatility rises. Omit for unchanged
+   *  (fixed-lookback) behaviour. */
+  atrPercentile?: number;
 }
 
 export interface CorrelationGateResult {
@@ -174,8 +225,11 @@ export function evaluateCorrelationGate(input: CorrelationGateInput): Correlatio
     candlesBySymbol,
     threshold = DEFAULT_CORRELATION_THRESHOLD,
     maxCorrelated = DEFAULT_MAX_CORRELATED,
-    lookback = DEFAULT_CORRELATION_LOOKBACK
+    lookback = DEFAULT_CORRELATION_LOOKBACK,
+    atrPercentile
   } = input;
+
+  const effectiveLookback = resolveCorrelationLookback(lookback, atrPercentile);
 
   const candidate = candlesBySymbol[symbol];
   if (!candidate?.length || held.length === 0) {
@@ -187,7 +241,7 @@ export function evaluateCorrelationGate(input: CorrelationGateInput): Correlatio
 
   for (const h of held) {
     if (h.symbol === symbol) continue;
-    const rho = correlationBetween(candidate, candlesBySymbol[h.symbol], lookback);
+    const rho = correlationBetween(candidate, candlesBySymbol[h.symbol], effectiveLookback);
     if (rho === undefined) continue;
     compared++;
     const effective = h.direction === direction ? rho : -rho;

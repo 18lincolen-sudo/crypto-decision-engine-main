@@ -634,26 +634,30 @@ export function calculateProRisk(
     ? Math.max(0, sizingMultiplier)
     : computeDrawdownFactor(dailyDrawdownPercent);
   betFraction = Math.min(Math.max(0, betFraction * adaptiveFactor), 0.10);
-  const betSizeUsd = portfolioValue * betFraction;
+  let betSizeUsd = portfolioValue * betFraction;
+
+  // Exchange minimum ($5), floored before the caps — see the identical
+  // treatment in tradeEngine.calculateRiskParameters. A zero-size bet still
+  // returns null: Kelly clamps betFraction to 0 when the measured edge is
+  // negative, and those used to pass through as quantity-0 positions that
+  // closed at pnl exactly 0, neither win nor loss, yet still counted in
+  // closedTrades.length — inflating the Kelly denominator that produced them.
+  if (betSizeUsd <= 0) return null;
+  if (betSizeUsd < 5) betSizeUsd = 5;
 
   // §Layer3.4 — total leveraged exposure cap (Futures only; betSizeUsd is the
   // capital COMMITTED — margin for Futures, full notional for Spot — so
-  // leveraged/notional exposure = betSizeUsd × leverage)
-  if (tradeType === 'FUTURES' && confidence < 72) {
+  // leveraged/notional exposure = betSizeUsd × leverage).
+  // Unconditional: the confidence >= 72 exemption was removed for the reason
+  // given at the same cap in tradeEngine.ts.
+  if (tradeType === 'FUTURES') {
     const notionalUsd = betSizeUsd * leverage;
     const maxAllowedLeveragedExposure = portfolioValue * 0.20;
     if (currentLeveragedExposureUsd + notionalUsd > maxAllowedLeveragedExposure) return null;
   }
 
-  // A zero-size bet is not a trade, and the high-confidence bypass below must
-  // not manufacture one. Kelly clamps betFraction to 0 whenever the measured
-  // edge is negative; with confidence >= 72 that used to pass straight through
-  // as a position of quantity 0, which then closed at pnl exactly 0 — neither a
-  // win nor a loss, but still counted in closedTrades.length. That inflated the
-  // Kelly win-rate DENOMINATOR, depressing the very edge estimate that produced
-  // it. Surfaced by the R-multiple work: these trades have riskUsd 0.
-  if (betSizeUsd <= 0) return null;
-  if (betSizeUsd < 5 && confidence < 72) return null; // exchange-minimum execution floor, not part of the algorithm itself
+  // Both checks now happen above, before the exposure cap, so a floored order
+  // cannot slip past the cap unexamined.
 
   return {
     stopLoss: Number(stopLoss.toFixed(8)),

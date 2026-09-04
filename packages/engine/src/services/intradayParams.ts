@@ -170,6 +170,16 @@ export interface IntradayParams {
   partialFillRatio: number;
 
   // ── Circuit breakers (§38) ────────────────────────────────────────────────
+  /** Caps the liquidity slippage term at this many percentage points, so a
+   *  near-zero relativeVolume reading cannot blow up the cost model.
+   *  SUGGESTED STARTING VALUE, not a measured one — validate via
+   *  scripts/abBacktest.ts before relying on it live, the same standard every
+   *  other tuned constant in this repo is held to. */
+  liquidityTermCap: number;
+  /** Scales how much a volume shortfall (1/relativeVolume - 1) turns into extra
+   *  slippage. SUGGESTED STARTING VALUE — same validation requirement as
+   *  liquidityTermCap. */
+  liquidityTermWeight: number;
   dailyDrawdownBlockPercent: number;
   weeklyDrawdownLockPercent: number;
   weeklyDrawdownFlattenPercent: number;
@@ -269,6 +279,8 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   touchFillProbability: 0.5,
   partialFillRatio: 0.5,
 
+  liquidityTermCap: 0.05,
+  liquidityTermWeight: 0.4,
   dailyDrawdownBlockPercent: DAILY_DRAWDOWN_BLOCK_PERCENT,
   weeklyDrawdownLockPercent: WEEKLY_DRAWDOWN_LOCK_PERCENT,
   weeklyDrawdownFlattenPercent: WEEKLY_DRAWDOWN_LOCK_PERCENT

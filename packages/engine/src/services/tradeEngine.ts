@@ -1109,7 +1109,11 @@ export function calculateOptimalEntry(
   pullbackFactor: number = 0.35,
   atrPercent: number = 0,
   minRelativeVolume: number = MIN_ENTRY_RELATIVE_VOLUME,
-  confidence: number = 50
+  /** Retained for signature stability and telemetry only. It used to waive the
+   *  relative-volume gate above at >= 72; nothing in this function reads it now.
+   *  Kept rather than removed because legacyAdapter passes it positionally and
+   *  a future calibrated confidence model would land here. */
+  _confidence: number = 50
 ): EntryTimingResult {
   const isBuy = side === 'BUY' || side === 'LONG';
 
@@ -1136,8 +1140,14 @@ export function calculateOptimalEntry(
   // dead tape invalidates the entry regardless of where price sits: the
   // limit order this function returns rests into a pullback, and a pullback
   // on no volume is drift, not a level anyone is defending.
+  // No confidence exemption here, deliberately. A "confident" pattern printing
+  // on a dead tape is the textbook false breakout, so a high score makes this
+  // check MORE relevant, not less — and the score doing the exempting is an
+  // unweighted sum of seven indicator votes with no measured relationship to
+  // win probability. proAlgEngine's own copy of this gate never had the
+  // exemption; this brings Legacy in line with it.
   const relativeVolume = computeRelativeVolume(candles);
-  if (relativeVolume !== undefined && relativeVolume < minRelativeVolume && confidence < 72) {
+  if (relativeVolume !== undefined && relativeVolume < minRelativeVolume) {
     return {
       shouldEnterNow: false,
       entryPrice: currentPrice,
@@ -1363,7 +1373,18 @@ export function calculateRiskParameters(
   // one path where a losing streak or an open drawdown changed nothing at
   // all, which is exactly the phase (first trades) where it matters most.
   betFraction = Math.min(Math.max(0, betFraction * Math.max(0, sizingMultiplier)), 0.10);
-  const betSizeUsd = portfolioValue * betFraction;
+  let betSizeUsd = portfolioValue * betFraction;
+
+  // Exchange minimum ($5), applied BEFORE the caps below rather than as a
+  // post-hoc rejection. A sub-minimum order is not a smaller trade — it is an
+  // order the exchange refuses — so the fix for "a legitimate trade got dropped
+  // over a rounding-sized gap" is to round it UP and then re-verify it still
+  // fits, never to let a score of 72 wave it through. Kelly clamps betFraction
+  // to 0 when the measured edge is negative; that case still returns null,
+  // because flooring a bet the maths says not to place would manufacture the
+  // zero-size trades that used to inflate the Kelly denominator.
+  if (betSizeUsd <= 0) return null;
+  if (betSizeUsd < 5) betSizeUsd = 5;
 
   // Sizing Caps:
   // Spot: Notional cap (e.g. 15% of portfolio)
@@ -1372,27 +1393,25 @@ export function calculateRiskParameters(
   if (tradeType === 'SPOT') {
     notionalUsd = Math.min(betSizeUsd, portfolioValue * 0.15);
   } else {
-    // Futures leveraged exposure check:
-    // Total leveraged exposure must NOT exceed 20% of portfolio value
-    // High-confidence signals (score >= 72) bypass this cap to avoid blocking
-    // strong trades on portfolio-cap edge-cases.
+    // Futures leveraged exposure cap: total leveraged exposure must NOT exceed
+    // 20% of portfolio value. Unconditional. It used to exempt signalScore >= 72,
+    // which inverts what a portfolio concentration cap is for: the cap exists to
+    // survive the case where a signal LOOKS strong and is not, and an
+    // uncalibrated per-trade score is not evidence that concentrating capital is
+    // safe this time.
     const maxAllowedLeveragedExposure = portfolioValue * 0.20;
     const remainingExposureRoom = maxAllowedLeveragedExposure - currentLeveragedExposureUsd;
 
-    // Hard block if new trade causes leveraged exposure to exceed 20%
-    // (bypassed for high-confidence signals)
     notionalUsd = betSizeUsd * leverage;
-    if (notionalUsd > remainingExposureRoom && signalScore < 72) {
-      return null; // Exposure Hard Block
+    if (notionalUsd > remainingExposureRoom) {
+      return null; // Exposure Hard Block — no exception
     }
   }
 
-  // Minimal order size constraint ($5) — bypassed for high-confidence signals
-  // A zero-size bet is not a trade — see the identical guard in
-  // proAlgEngine.calculateProRisk for why the high-confidence bypass must not
-  // let one through.
-  if (betSizeUsd <= 0) return null;
-  if (betSizeUsd < 5 && signalScore < 72) return null;
+  // A floored bet that the notional cap then clamps back under the minimum is
+  // not a tradeable order either. Reject rather than emit one the exchange
+  // would refuse.
+  if (notionalUsd < 5) return null;
 
   const stopDistance = Math.abs(entryPrice - stopLoss);
 

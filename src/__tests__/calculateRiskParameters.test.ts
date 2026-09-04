@@ -123,16 +123,35 @@ describe('calculateRiskParameters', () => {
     expect(result!.leverage).toBe(1); // SPOT always 1x
   });
 
-  it('returns null when bet size is below $5', () => {
-    const result = calculateRiskParameters(0.001, 'SPOT', 'BUY', 0.0001, 'NORMAL', 50, 10);
-    expect(result).toBeNull();
+  it('floors a sub-minimum bet to $5 instead of dropping the trade', () => {
+    // 6% of a $50 portfolio is $3 — under the exchange minimum, but the 15%
+    // notional cap ($7.50) has room for the $5 floor. The old behaviour dropped
+    // the trade; a sub-minimum order is not a smaller trade, so it is rounded up
+    // and then re-checked against the caps.
+    const result = calculateRiskParameters(0.001, 'SPOT', 'BUY', 0.0001, 'NORMAL', 50, 50);
+    expect(result).not.toBeNull();
+    expect(result!.betSizeUsd).toBeCloseTo(5, 6);
   });
 
-  it('returns null when leveraged exposure exceeds 20% limit for weak signals', () => {
-    // signalScore < 72 should still be blocked by exposure cap
+  it('rejects when the floored bet cannot fit under the notional cap', () => {
+    // 15% of a $20 portfolio is $3 — the $5 floor cannot fit under it, so the
+    // order is refused rather than emitted below the exchange minimum. This is
+    // the case that keeps "floor instead of bypass" from becoming "always pass".
+    expect(calculateRiskParameters(0.001, 'SPOT', 'BUY', 0.0001, 'NORMAL', 50, 20)).toBeNull();
+  });
+
+  it('enforces the 20% leveraged exposure cap at EVERY confidence level', () => {
+    // The cap used to exempt signalScore >= 72. A portfolio concentration cap
+    // exists precisely for the trade that looks strong, and the score doing the
+    // exempting is an uncalibrated seven-indicator sum — no measurement in this
+    // repo shows 72+ wins more often than 60+.
     expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 50, 20000, [], 0, 0, 3990)).toBeNull();
-    // signalScore >= 72 bypasses the exposure cap
-    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 72, 20000, [], 0, 0, 3990)).not.toBeNull();
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 72, 20000, [], 0, 0, 3990)).toBeNull();
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 95, 20000, [], 0, 0, 3990)).toBeNull();
+  });
+
+  it('still allows the same trade when there is exposure room', () => {
+    expect(calculateRiskParameters(100, 'FUTURES', 'LONG', 4, 'NORMAL', 50, 20000, [], 0, 0, 0)).not.toBeNull();
   });
 
   it('uses Kelly criterion when >= 30 closed trades without exceeding 10% bet fraction', () => {

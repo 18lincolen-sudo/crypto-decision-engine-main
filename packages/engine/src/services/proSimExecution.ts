@@ -50,40 +50,22 @@ export const uid = (p: string) => `pro-${p}-${Date.now()}-${Math.random().toStri
 // an indicator-warm-up floor, not part of the algorithm itself.
 export const MIN_PRO_CANDLES = 60;
 
-// When confidence is at or above this threshold, Layer 3 risk blocks are
-// bypassed: the trade proceeds with minimal fallback parameters instead of
-// being rejected. This prevents high-confidence signals from being lost to
-// portfolio-cap or sizing edge-cases.
-export const HIGH_CONFIDENCE_BYPASS = 72;
+// No confidence-based bypass of the risk layer exists here.
+//
+// There used to be a HIGH_CONFIDENCE_BYPASS = 72 constant and a fallback
+// risk-plan builder that fabricated a fixed 1.8%/3% plan whenever the real risk
+// layer refused a trade, and both have been removed. Two reasons, and the second
+// is the one that matters:
+//
+//   1. Nothing ever called them. They were exported, documented, re-exported
+//      through execution.ts, and dead — the order generator below has always
+//      taken ev.stopLoss / ev.takeProfit straight from the engine's own plan.
+//   2. Had they been wired up they would have been the defect they describe:
+//      manufacturing a plan precisely when the risk layer said no, on the
+//      authority of an uncalibrated seven-indicator score. The portfolio caps in
+//      tradeEngine / proAlgEngine no longer have that exemption either.
 
 // ── 2. Order generation — exit checks (evaluateProExit) + new entries ──────
-
-/** Builds a minimal fallback risk plan when calculateProRisk returns null but
- *  the signal confidence is high enough (>= HIGH_CONFIDENCE_BYPASS). Uses
- *  fixed 1.8% SL / 3% TP so the trade has a defined risk profile even when
- *  portfolio caps or ATR edge-cases would otherwise block it. */
-export function buildFallbackProRisk(entryPrice: number, side: ProTradeSide, confidence: number): ProRiskResult {
-  const slPercent = 1.8;
-  const tpPercent = 3.0;
-  const isLong = side === 'LONG';
-  const stopLoss = isLong ? entryPrice * (1 - slPercent / 100) : entryPrice * (1 + slPercent / 100);
-  const takeProfit = isLong ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
-  const takeProfit1 = takeProfit;
-  const takeProfit2 = isLong ? entryPrice * (1 + tpPercent * 1.5 / 100) : entryPrice * (1 - tpPercent * 1.5 / 100);
-  const stopDist = Math.abs(entryPrice - stopLoss);
-  const riskRewardRatio = stopDist > 0 ? Math.abs(takeProfit - entryPrice) / stopDist : 1.67;
-  return {
-    stopLoss: Number(stopLoss.toFixed(8)),
-    takeProfit1: Number(takeProfit1.toFixed(8)),
-    takeProfit2: Number(takeProfit2.toFixed(8)),
-    takeProfit: Number(takeProfit.toFixed(8)),
-    leverage: 1,
-    betSizeUsd: 5,
-    positionPercentOfPortfolio: 0,
-    riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
-    kellyFraction: 0
-  };
-}
 
 export function activeMarketRegimesFrom(evaluations: SignalEvaluation[]): Record<string, MarketRegimeResult> {
   const regimes: Record<string, MarketRegimeResult> = {};

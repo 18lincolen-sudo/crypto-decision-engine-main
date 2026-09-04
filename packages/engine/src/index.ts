@@ -103,5 +103,7 @@ export {
   alignCloses,
   pearsonCorrelation,
   correlationBetween,
-  evaluateCorrelationGate
+  evaluateCorrelationGate,
+  resolveCorrelationLookback,
+  CORRELATION_LOOKBACK_FLOOR
 } from './services/correlation';

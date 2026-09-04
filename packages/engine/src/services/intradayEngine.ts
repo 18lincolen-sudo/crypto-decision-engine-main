@@ -316,21 +316,24 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     spreadPercent,
     atrPercentile: regime.atrPercentile,
     entryIsLimit: true,
+    // Already computed by confirmEntry5M for the volume trigger — reused rather
+    // than recomputed.
+    relativeVolume: entry.indicators.relativeVolume,
     params
   });
-  if (!cost.approved && confidence < 72) {
+  // No confidence bypass on the cost gate. This one was not in the original
+  // list — it turned up while tracing the call site — but it is the same defect:
+  // evaluateCostEdge asks whether the expected move covers fees plus spread plus
+  // slippage, which is arithmetic about whether the trade can pay for itself. A
+  // score of 72 does not make a negative-expectancy trade positive, and letting
+  // it through was strictly worse than a normal loss: the trade was known to be
+  // unprofitable before it was opened. Every other capital-preservation gate in
+  // this repo lost its 72-exemption in the same pass.
+  if (!cost.approved) {
     logs.push(`[${symbol}] COST — ${cost.reason}`);
     return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry), tradeType);
   }
-  if (!cost.approved && confidence >= 72) {
-    // A bypassed cost gate is not an approved one. Logging "COST OK" here too
-    // put two contradictory lines in the decision log for the same trade
-    // ("COST BYPASS — R:R 0.93 ... NO TRADE" followed by "COST OK — ... NO TRADE"),
-    // which is exactly the transparency the log exists to provide.
-    logs.push(`[${symbol}] COST BYPASS — ${cost.reason} (confidence ${confidence} >= 72)`);
-  } else {
-    logs.push(`[${symbol}] COST OK — ${cost.reason}`);
-  }
+  logs.push(`[${symbol}] COST OK — ${cost.reason}`);
 
   // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
   // Adaptive sizing (DecisionEngine path only): the orchestrator injects

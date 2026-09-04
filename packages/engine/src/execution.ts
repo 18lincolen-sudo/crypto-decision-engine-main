@@ -34,8 +34,6 @@ export {
 export type { LegacyOrderGenContext } from './services/legacySimExecution';
 export {
   MIN_LEGACY_CANDLES,
-  HIGH_CONFIDENCE_BYPASS as LEGACY_HIGH_CONFIDENCE_BYPASS,
-  buildFallbackLegacyRisk,
   activeMarketRegimesFrom as activeLegacyMarketRegimesFrom,
   generateLegacyOrders
 } from './services/legacySimExecution';
@@ -43,8 +41,6 @@ export {
 export type { ProOrderGenContext } from './services/proSimExecution';
 export {
   MIN_PRO_CANDLES,
-  HIGH_CONFIDENCE_BYPASS as PRO_HIGH_CONFIDENCE_BYPASS,
-  buildFallbackProRisk,
   activeMarketRegimesFrom as activeProMarketRegimesFrom,
   generateProOrders
 } from './services/proSimExecution';

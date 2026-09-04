@@ -47,11 +47,20 @@ export const uid = (p: string) => `legacy-${p}-${Date.now()}-${Math.random().toS
 // Minimum candles needed for the legacy indicators (EMA50 warm-up + RSI14 + BB20 + ADX14).
 export const MIN_LEGACY_CANDLES = 60;
 
-// When confidence is at or above this threshold, Layer 3 risk blocks are
-// bypassed: the trade proceeds with minimal fallback parameters instead of
-// being rejected. This prevents high-confidence signals from being lost to
-// portfolio-cap or sizing edge-cases.
-export const HIGH_CONFIDENCE_BYPASS = 72;
+// No confidence-based bypass of the risk layer exists here.
+//
+// There used to be a HIGH_CONFIDENCE_BYPASS = 72 constant and a fallback
+// risk-plan builder that fabricated a fixed 1.8%/3% plan whenever the real risk
+// layer refused a trade, and both have been removed. Two reasons, and the second
+// is the one that matters:
+//
+//   1. Nothing ever called them. They were exported, documented, re-exported
+//      through execution.ts, and dead — the order generator below has always
+//      taken ev.stopLoss / ev.takeProfit straight from the engine's own plan.
+//   2. Had they been wired up they would have been the defect they describe:
+//      manufacturing a plan precisely when the risk layer said no, on the
+//      authority of an uncalibrated seven-indicator score. The portfolio caps in
+//      tradeEngine / proAlgEngine no longer have that exemption either.
 
 // No per-asset exposure ceiling is enforced here, deliberately. Legacy holds at
 // most one position per symbol (see the entry gate below) and that position's
@@ -65,34 +74,6 @@ export const HIGH_CONFIDENCE_BYPASS = 72;
 // it is informational.
 
 // ── 2. Order generation — exit checks (evaluateExit) + new entries ─────────────
-
-/** Builds a minimal fallback risk plan when calculateRiskParameters returns null
- *  but the signal confidence is high enough (>= HIGH_CONFIDENCE_BYPASS). Uses
- *  fixed 1.8% SL / 3% TP so the trade has a defined risk profile. */
-export function buildFallbackLegacyRisk(entryPrice: number, side: TradeSide, confidence: number): RiskParametersResult {
-  const slPercent = 1.8;
-  const tpPercent = 3.0;
-  const isLong = side === 'LONG' || side === 'BUY';
-  const stopLoss = isLong ? entryPrice * (1 - slPercent / 100) : entryPrice * (1 + slPercent / 100);
-  const takeProfit = isLong ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
-  const takeProfit1 = takeProfit;
-  const takeProfit2 = isLong ? entryPrice * (1 + tpPercent * 1.5 / 100) : entryPrice * (1 - tpPercent * 1.5 / 100);
-  const stopDist = Math.abs(entryPrice - stopLoss);
-  const riskRewardRatio = stopDist > 0 ? Math.abs(takeProfit - entryPrice) / stopDist : 1.67;
-  return {
-    stopLoss: Number(stopLoss.toFixed(8)),
-    takeProfit1: Number(takeProfit1.toFixed(8)),
-    takeProfit2: Number(takeProfit2.toFixed(8)),
-    takeProfit: Number(takeProfit.toFixed(8)),
-    leverage: 1,
-    betSizeUsd: 5,
-    positionPercentOfPortfolio: 0,
-    riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
-    kellyFraction: 0,
-    maxRiskAmountUsd: 5,
-    stopDistanceUsd: Number(stopDist.toFixed(8))
-  };
-}
 
 export function activeMarketRegimesFrom(evaluations: SignalEvaluation[]): Record<string, MarketRegimeResult> {
   const regimes: Record<string, MarketRegimeResult> = {};

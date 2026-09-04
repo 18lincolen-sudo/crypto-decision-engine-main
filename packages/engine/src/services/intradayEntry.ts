@@ -98,7 +98,10 @@ export function confirmEntry5M(
   m5: Candle[],
   setup: Setup15M,
   params: IntradayParams = DEFAULT_INTRADAY_PARAMS,
-  confidence: number = 0
+  /** Retained for signature stability and telemetry only — nothing in this
+   *  function reads it now. It used to waive the chase penalty and both volume
+   *  blockers at >= 72, and to short-circuit `confirmed` outright. */
+  _confidence: number = 0
 ): Entry5M {
   const closes = m5.map((c) => c.close);
   const price = last(closes) ?? 0;
@@ -286,17 +289,23 @@ export function confirmEntry5M(
   // penalty (designed for trend/breakout "don't enter after the move") would block
   // every valid reversion, so it is disabled for MEAN_REVERSION. The `oversold`
   // re-check above already prevents entering once the reversion is complete.
-  const highConfidence = confidence >= 72;
-
+  // No confidence exemption anywhere in this function. There used to be a
+  // `highConfidence = confidence >= 72` flag that suppressed the chase blocker,
+  // zeroed the chase penalty out of the score, suppressed both volume blockers,
+  // and short-circuited `confirmed` itself — five waivers on one flag, the last
+  // of which produced a CONFIRMED entry with no trigger, no gates, no volume and
+  // at any chase distance. That is the same defect the portfolio caps carried in
+  // tradeEngine / intradayRisk, and the volume checks below are exactly the
+  // "market participation" category: a 5M trigger printing on a dead tape is not
+  // more trustworthy because seven indicators agreed on the hourly chart.
   const chasePenalty = !isMeanReversion && beyondLevelAtr > params.maxChaseAtr
     ? clamp((beyondLevelAtr - params.maxChaseAtr) * 25, 0, 30)
     : 0;
-  if (!highConfidence && chasePenalty > 0) blockers.push(`המחיר ${beyondLevelAtr.toFixed(2)} ATR מעל אזור הכניסה — רדיפה, ציון כניסה מופחת`);
+  if (chasePenalty > 0) blockers.push(`המחיר ${beyondLevelAtr.toFixed(2)} ATR מעל אזור הכניסה — רדיפה, ציון כניסה מופחת`);
 
   const rawScore =
     triggerQuality * 0.3 + momentumScore * 0.2 + volumeScore * 0.2 + vwapScore * 0.15 + candleScore * 0.15;
-  const effectiveChasePenalty = highConfidence ? 0 : chasePenalty;
-  const entryScore = Number(clamp(rawScore - effectiveChasePenalty, 0, 100).toFixed(1));
+  const entryScore = Number(clamp(rawScore - chasePenalty, 0, 100).toFixed(1));
 
   // Volume is not the confirmation factor for reversals (a reversal can print on
   // average/low volume); the volumeScore component already penalises thin tape, so
@@ -304,10 +313,10 @@ export function confirmEntry5M(
   // However, we still enforce a minimum floor to avoid trading on near-zero volume.
   const meanRevVolumeTooLow = isMeanReversion && triggerVolumeRelative < params.minMeanReversionRelativeVolume;
   const volumeTooLow = !isMeanReversion && (triggerVolumeRelative < params.minEntryRelativeVolume || vol.drying);
-  if (!highConfidence && meanRevVolumeTooLow) blockers.push(`נפח MEAN_REVERSION נמוך מדי (${triggerVolumeRelative.toFixed(2)}x < ${params.minMeanReversionRelativeVolume}x) — NO TRADE`);
-  if (!highConfidence && volumeTooLow) blockers.push(`נפח 5M נמוך מדי (${triggerVolumeRelative.toFixed(2)}x) — NO TRADE (§27)`);
+  if (meanRevVolumeTooLow) blockers.push(`נפח MEAN_REVERSION נמוך מדי (${triggerVolumeRelative.toFixed(2)}x < ${params.minMeanReversionRelativeVolume}x) — NO TRADE`);
+  if (volumeTooLow) blockers.push(`נפח 5M נמוך מדי (${triggerVolumeRelative.toFixed(2)}x) — NO TRADE (§27)`);
 
-  const confirmed = highConfidence || (gatesPassed && entryScore >= params.entryScoreMin && !volumeTooLow && !meanRevVolumeTooLow && chasePenalty === 0);
+  const confirmed = gatesPassed && entryScore >= params.entryScoreMin && !volumeTooLow && !meanRevVolumeTooLow && chasePenalty === 0;
 
   if (!confirmed && entryScore < params.entryScoreMin) {
     blockers.push(`EntryScore ${entryScore} מתחת לסף ${params.entryScoreMin}`);

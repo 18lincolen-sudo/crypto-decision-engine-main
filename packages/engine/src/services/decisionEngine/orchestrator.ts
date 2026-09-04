@@ -217,7 +217,12 @@ export class DecisionEngine {
       candlesBySymbol,
       threshold: this.options.correlationThreshold ?? DEFAULT_CORRELATION_THRESHOLD,
       maxCorrelated: this.options.maxCorrelatedPositions ?? DEFAULT_MAX_CORRELATED,
-      lookback: this.options.correlationLookback ?? DEFAULT_CORRELATION_LOOKBACK
+      lookback: this.options.correlationLookback ?? DEFAULT_CORRELATION_LOOKBACK,
+      // Only the intraday engine reports a true ATR percentile; the others
+      // report atrPercent (a share of price) and are deliberately left
+      // undefined here rather than mixing the two scales. Undefined reproduces
+      // the previous fixed-lookback behaviour exactly.
+      atrPercentile: typeof result.metrics?.atrPercentile === 'number' ? result.metrics.atrPercentile : undefined
     });
 
     return { allowed: gate.allowed, reason: gate.reason };
