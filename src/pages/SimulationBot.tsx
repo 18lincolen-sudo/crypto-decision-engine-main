@@ -351,9 +351,16 @@ const SimulationBotPage = () => {
           <SimulationEngineColumn
             title="מנוע נתיב 4H · Empirical Path"
             subtitle={
-              path.table
-                ? `פירוק נר 4H ל-16 נתחי 15 דק׳ · ${path.table.buckets} דליים מ-${path.table.sourceBars} נרים`
-                : 'פירוק נר 4H ל-16 נתחי 15 דק׳ · טבלת הסתברויות נטענת'
+              // The table's PROVENANCE is the headline, not its size: a
+              // validated table and an in-sample one look identical in the trade
+              // list and are worth completely different things.
+              !path.table
+                ? 'פירוק נר 4H ל-16 נתחי 15 דק׳ · טבלת הסתברויות נטענת'
+                : path.table.source === 'validated'
+                  ? `נתחי 15 דק׳ בתוך נר 4H · ${path.table.buckets} דליים מאומתים (walk-forward)`
+                  : path.table.source === 'live-in-sample'
+                    ? `נתחי 15 דק׳ בתוך נר 4H · ${path.table.buckets} דליים IN-SAMPLE — לא אומת`
+                    : 'נתחי 15 דק׳ בתוך נר 4H · אין טבלה — הבוט נמנע'
             }
             accentClass="text-violet-400"
             cryptoData={cryptoData}

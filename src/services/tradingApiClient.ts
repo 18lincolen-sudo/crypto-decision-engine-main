@@ -317,6 +317,18 @@ export interface PathSimBotStateResponse {
  *  market offered nothing look identical from the trade list. */
 export interface PathTableStatus {
   buckets: number;
+  /** Which table the bot is actually trading.
+   *  'validated'      — walk-forward tested by scripts/pathStudy.ts. Tradeable.
+   *  'live-in-sample' — the runtime fallback. Exercises the machinery, proves
+   *                     nothing; its buckets may be look-elsewhere survivors.
+   *  'none'           — no table; the bot abstains. */
+  source?: 'validated' | 'live-in-sample' | 'none';
+  validated?: {
+    builtAt?: string;
+    snapshotFrom?: string;
+    snapshotTo?: string;
+    survivors?: number;
+  } | null;
   builtAt: number;
   sourceBars: number;
   minSamples: number;

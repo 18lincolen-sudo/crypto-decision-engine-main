@@ -18,6 +18,8 @@
 // what scripts/pathStudy.ts is for — a walk-forward build over cached history,
 // whose output can be loaded here in place of the live one.
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   createGenericSimEngine,
   SimEngineStrategy,
@@ -32,7 +34,8 @@ import {
   buildPathTable,
   measureBarPaths,
   labelBarState,
-  riskUnitFor,
+  riskUnitFrom15M,
+  prior15mFor,
   barOpenFor,
   SLOTS_PER_BAR,
   PathBucket,
@@ -60,9 +63,52 @@ const MIN_EXPECTED_R = 0.05;
 let pathTable: PathBucket[] = [];
 let tableBuiltAt = 0;
 let tableSourceBars = 0;
+/** Where the table in memory came from. The two are not interchangeable and the
+ *  difference decides how much the bot's results are worth. */
+let tableSource: 'validated' | 'live-in-sample' | 'none' = 'none';
+let validatedMeta: { builtAt?: string; snapshotFrom?: string; snapshotTo?: string; survivors?: number } | null = null;
 
 export function getPathTable(): PathBucket[] {
   return pathTable;
+}
+
+/**
+ * Loads the walk-forward table produced by scripts/pathStudy.ts, if one exists.
+ *
+ * This is the table the bot SHOULD trade: every bucket in it held a positive
+ * expectancy on periods it was not built from, across several disjoint windows.
+ * The runtime rebuild below is the fallback, and it is in-sample — good enough
+ * to exercise the machinery, not good enough to believe.
+ *
+ * Reading the file is deliberately synchronous and best-effort: a missing or
+ * malformed table must not stop the engine from starting, it must only leave the
+ * bot abstaining, which is the correct behaviour when nothing has been
+ * validated.
+ */
+function loadValidatedTable(): boolean {
+  try {
+    const path = join(process.cwd(), 'path-study', 'table.json');
+    if (!existsSync(path)) return false;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      builtAt?: string; snapshotFrom?: string; snapshotTo?: string;
+      survivors?: number; table?: PathBucket[];
+    };
+    if (!Array.isArray(parsed.table)) return false;
+    pathTable = parsed.table;
+    tableSource = 'validated';
+    tableBuiltAt = Date.now();
+    validatedMeta = {
+      builtAt: parsed.builtAt,
+      snapshotFrom: parsed.snapshotFrom,
+      snapshotTo: parsed.snapshotTo,
+      survivors: parsed.survivors
+    };
+    console.log(`[path-sim-engine] loaded VALIDATED table: ${pathTable.length} buckets (study ${parsed.snapshotFrom} → ${parsed.snapshotTo})`);
+    return true;
+  } catch (e) {
+    console.warn('[path-sim-engine] validated table unreadable, falling back to live rebuild:', e instanceof Error ? e.message : String(e));
+    return false;
+  }
 }
 
 /**
@@ -96,15 +142,28 @@ function rebuildTable(input: StrategyTickInput): void {
       else slotsByBar.set(open, [candle]);
     }
 
+    // Sorted once, then walked with a cursor: prior15mFor advances through the
+    // series instead of rescanning it per bar.
+    const sorted15m = [...m15].sort((a, b) => a.timestamp - b.timestamp);
+    const cursor = { i: 0 };
+
     for (let i = 60; i < h4.length; i++) {
       const bar = h4[i];
       const slots = slotsByBar.get(bar.timestamp);
       if (!slots || slots.length < SLOTS_PER_BAR) continue;
       slots.sort((a, b) => a.timestamp - b.timestamp);
 
-      // Label from bars that closed BEFORE this one. The Fear & Greed value is
-      // today's for every bar in the window, which is a known simplification of
-      // the live build — the offline study reads the historical series.
+      // Label from bars that closed BEFORE this one.
+      //
+      // The sentiment value here is TODAY'S, applied to every bar in the window.
+      // That is a real leak of present information into a past label, and it is
+      // why this table is only ever a fallback: scripts/pathStudy.ts reads the
+      // value published on each bar's own date (fearGreedHistory.ts) and is the
+      // one whose output should be traded. Fixing it here would mean carrying a
+      // full sentiment history in the worker's memory to build a table that is
+      // still in-sample and therefore still not tradeable evidence — the leak is
+      // not the binding limitation of this path, the missing out-of-sample test
+      // is.
       const priorBars = h4.slice(0, i);
       const state = labelBarState(priorBars, input.fearGreedIndex ?? 50);
       if (!state) continue;
@@ -113,7 +172,10 @@ function rebuildTable(input: StrategyTickInput): void {
       const forward = nextBar ? (slotsByBar.get(nextBar.timestamp) ?? []) : [];
       forward.sort((a, b) => a.timestamp - b.timestamp);
 
-      const riskUnit = riskUnitFor(priorBars);
+      // 1R on the 15M ATR of the candles that closed before this bar — same
+      // basis the live decision uses, so the table and the trades agree.
+      const riskUnit = riskUnitFrom15M(prior15mFor(sorted15m, bar.timestamp, cursor));
+      if (!(riskUnit > 0)) continue;
       outcomes.push(...measureBarPaths(state, bar.timestamp, slots, forward, riskUnit));
       barsUsed++;
     }
@@ -122,7 +184,8 @@ function rebuildTable(input: StrategyTickInput): void {
   pathTable = buildPathTable(outcomes, { minSamples: LIVE_MIN_SAMPLES });
   tableBuiltAt = Date.now();
   tableSourceBars = barsUsed;
-  console.log(`[path-sim-engine] table rebuilt: ${pathTable.length} buckets from ${barsUsed} bars (${outcomes.length} outcomes)`);
+  tableSource = 'live-in-sample';
+  console.log(`[path-sim-engine] IN-SAMPLE table rebuilt: ${pathTable.length} buckets from ${barsUsed} bars (${outcomes.length} outcomes)`);
 }
 
 function toSignalEvaluation(decision: PathDecision, price: number, priceChange24h: number): SignalEvaluation {
@@ -172,7 +235,16 @@ const pathStrategy: SimEngineStrategy = {
   logCandleFetch: false,
 
   buildEvaluations(input: StrategyTickInput): SignalEvaluation[] {
-    if (Date.now() - tableBuiltAt > TABLE_REBUILD_MS) rebuildTable(input);
+    // A validated table is loaded once and never overwritten by the live
+    // rebuild. Letting a 30-minute in-sample refresh clobber a walk-forward
+    // result would silently downgrade the bot from "trading a tested rule" to
+    // "trading whatever the last few weeks happened to look like", and nothing
+    // in the trade list would show it.
+    if (tableSource === 'none') {
+      if (!loadValidatedTable()) rebuildTable(input);
+    } else if (tableSource === 'live-in-sample' && Date.now() - tableBuiltAt > TABLE_REBUILD_MS) {
+      rebuildTable(input);
+    }
 
     const results: SignalEvaluation[] = [];
     const now = Date.now();
@@ -229,6 +301,11 @@ const pathStrategy: SimEngineStrategy = {
 export function getPathTableStatus() {
   return {
     buckets: pathTable.length,
+    // 'validated' = walk-forward tested, tradeable evidence.
+    // 'live-in-sample' = the fallback rebuild; exercises the machinery, proves
+    // nothing. 'none' = no table at all, the bot abstains.
+    source: tableSource,
+    validated: validatedMeta,
     builtAt: tableBuiltAt,
     sourceBars: tableSourceBars,
     minSamples: LIVE_MIN_SAMPLES,

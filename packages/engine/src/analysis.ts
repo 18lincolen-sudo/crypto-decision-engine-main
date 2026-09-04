@@ -115,7 +115,10 @@ export {
   buildPathTable,
   measureBarPaths,
   labelBarState,
-  riskUnitFor,
+  riskUnitFrom15M,
+  prior15mFor,
+  PATH_RISK_UNIT_ATR_MULT,
+  RISK_UNIT_LOOKBACK_15M,
   selectBucket,
   wilsonLowerBound,
   recencyWeight,
@@ -132,3 +135,24 @@ export {
   DEFAULT_COST_R
 } from './services/pathStudy';
 export type { PathBucket, PathOutcome, BarState, PathDirection, PathRegime, FearGreedBucket } from './services/pathStudy';
+export {
+  buildValidatedPathTable,
+  buildWalkForwardWindows,
+  scoreBucketOutOfSample
+} from './services/pathStudy';
+// WalkForwardWindow is aliased: intradayBacktest.ts already exports a type of
+// that name for a different thing (a backtest window, not a study split).
+export type {
+  ValidatedBucket,
+  WalkForwardWindow as PathWalkForwardWindow,
+  WalkForwardReport,
+  WalkForwardOptions
+} from './services/pathStudy';
+export {
+  fetchFearGreedHistory,
+  buildFearGreedSeries,
+  parseFearGreedPayload,
+  fearGreedAt,
+  utcDayStart
+} from './services/fearGreedHistory';
+export type { FearGreedPoint, FearGreedSeries } from './services/fearGreedHistory';

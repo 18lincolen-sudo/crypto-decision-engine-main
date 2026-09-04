@@ -122,7 +122,10 @@ describe('path measurement', () => {
   }));
 
   it('measures favourable and adverse excursion in R', () => {
-    const outcomes = measureBarPaths(STATE, T0, rising, [], 1);
+    // Explicit 3-slot horizon: this test is about the excursion maths, not about
+    // the forward budget, and at the full 16-slot horizon no slot in a 16-candle
+    // bar has a complete forward window.
+    const outcomes = measureBarPaths(STATE, T0, rising, [], 1, 3);
     const longs = outcomes.filter((o) => o.direction === 'LONG');
     const shorts = outcomes.filter((o) => o.direction === 'SHORT');
     expect(longs.length).toBeGreaterThan(0);
@@ -139,9 +142,17 @@ describe('path measurement', () => {
       { timestamp: T0, open: 100, high: 100, low: 100, close: 100, volume: 1 },
       { timestamp: T0 + SLOT_MS, open: 100, high: 105, low: 99, close: 105, volume: 1 }
     ];
-    const [long] = measureBarPaths(STATE, T0, slots, [], 1).filter((o) => o.direction === 'LONG' && o.slot === 0);
+    const [long] = measureBarPaths(STATE, T0, slots, [], 1, 1).filter((o) => o.direction === 'LONG' && o.slot === 0);
     expect(long.stopped).toBe(true);
     expect(long.mfeR).toBe(0);
+  });
+
+  it('discards a slot whose forward window is short rather than scoring it', () => {
+    // No forward candles at all: at the full 16-slot horizon not one slot has a
+    // complete window, so nothing is measured. Accepting the short windows would
+    // have scored late slots against fewer candles than early ones — a bias in
+    // exactly the comparison the study exists to make.
+    expect(measureBarPaths(STATE, T0, rising, [], 1)).toHaveLength(0);
   });
 
   it('gives every slot the same forward budget, including the last', () => {
@@ -161,7 +172,7 @@ describe('table construction', () => {
   function outcomes(n: number, mfeR: number, slot = 3): PathOutcome[] {
     return Array.from({ length: n }, (_, i) => ({
       state: STATE, slot, direction: 'LONG' as const,
-      mfeR, maeR: 0.2, stopped: false, at: Date.now() - i * 3_600_000
+      mfeR, maeR: 0.2, stopped: false, terminalR: 0, at: Date.now() - i * 3_600_000
     }));
   }
 

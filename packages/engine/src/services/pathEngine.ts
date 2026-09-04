@@ -30,7 +30,7 @@ import {
   PathDirection,
   barOpenFor,
   labelBarState,
-  riskUnitFor,
+  riskUnitFrom15M,
   selectBucket,
   slotIndexAt
 } from './pathStudy';
@@ -175,9 +175,14 @@ export function evaluatePathDecision(input: PathDecisionInput): PathDecision {
 
   // Inside the window. The statistics have chosen the moment; the trigger
   // decides whether this particular instance is worth taking.
-  const riskUnit = riskUnitFor(priorBars);
+  //
+  // 1R is drawn on the 15-MINUTE ATR, not the 4H one. The bot holds for at most
+  // one 4H bar, and a stop set to the typical range of a whole bar is a stop the
+  // trade cannot reach from inside it — measured, that left 91.5% of entries
+  // expiring at neither level. See PATH_RISK_UNIT_ATR_MULT for the sweep.
+  const riskUnit = riskUnitFrom15M(input.m15);
   if (!(riskUnit > 0)) {
-    return noSignal(input.symbol, 'NO_DATA', nowSlot, 'יחידת סיכון לא תקינה (ATR אפס)', { state, bucket });
+    return noSignal(input.symbol, 'NO_DATA', nowSlot, 'יחידת סיכון לא תקינה (ATR 15M אפס)', { state, bucket });
   }
 
   const isLong = bucket.direction === 'LONG';
@@ -263,12 +268,9 @@ export function pathKellyFraction(bucket: PathBucket): number {
 export const PATH_MAX_HOLD_MS = BAR_MS;
 export const PATH_TIME_STOP_MS = Math.round(BAR_MS * 0.5);
 
-/** Estimated ATR-based risk unit for a symbol, exported for the order layer. */
-export function pathRiskUnit(h1: Candle[]): number {
-  const h4 = aggregateToH4(h1);
-  if (h4.length < 15) {
-    const { atr } = calculateATR(h1, 14);
-    return atr * SL_ATR_MULTIPLIER;
-  }
-  return riskUnitFor(h4);
+/** The risk unit a symbol would trade with right now. Same 15M basis the live
+ *  decision uses — the two must not diverge, or a position would be sized
+ *  against a different R than the one its expectancy was measured in. */
+export function pathRiskUnit(m15: Candle[]): number {
+  return riskUnitFrom15M(m15);
 }
