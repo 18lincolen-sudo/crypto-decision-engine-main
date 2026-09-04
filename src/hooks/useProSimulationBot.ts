@@ -35,6 +35,7 @@ import type {
 import { DecisionEngine, ProAdapter } from '@cde/engine';
 import type { DecisionResult, DecisionContext } from '@cde/engine';
 import { ProMarketRegimeResult } from '@cde/engine/analysis';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from './useSimulationBot';
 
@@ -577,7 +578,7 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
   return {
     cash, positions, positionsValue, equity, trades, history: displayHistory, pending,
     totalFees, totalSlippageCost, winRate, totalTrades: trades.length, closedTrades: closedTrades.length,
-    lastEvaluation, evaluations, reset, minConfidence: 60, hasSavedSession, nextTickAt,
+    lastEvaluation, evaluations, reset, minConfidence: SIM_MIN_CONFIDENCE.pro, hasSavedSession, nextTickAt,
     totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, activeMarketRegimes,
     candleCount: Object.keys(candlesBySymbol).length
   };

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useMemo, ReactNode } from 'react';
+import { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo, ReactNode } from 'react';
 import {
   getLegacySimState,
   startLegacySim,
@@ -21,29 +21,22 @@ import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
 import type { SimStatus } from './SimulationBotContext';
 import { useApiPolling } from '../hooks/useApiPolling';
+import { simBotDefaults } from '@cde/engine/execution';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
+import { useServerSimDefaults } from '../hooks/useServerSimDefaults';
 
 // Matches server/legacySimEngine.ts DEFAULT_LEGACY_SIM_CONFIG — this engine is
 // server-driven (the poll effect below overwrites this with the server's real
 // config on sync), so this is only the pre-sync placeholder shown briefly on
 // first load.
-const DEFAULT_LEGACY_CONFIG: SimBotConfig = {
-  riskLevel: 'medium',
-  initialAmount: 10000,
-  // 5, the same cap the live bot runs (BOT_MAX_OPEN_POSITIONS) and the same
-  // one the server sims now take from it. At 7 the simulations were allowed
-  // 40% more concurrent risk than the bot they exist to predict.
-  maxPositions: 5,
-  maxFuturesPositions: 2,
-  feePercent: 0.1,
-  slippagePercent: 0.05,
-  executionDelaySec: 3,
-  minConfidenceOverride: 58,
-  // Matches the server config (tradingWorker.ts DEFAULT_SIM_CONFIG) and the
-  // real bot's BOT_POSITION_PERCENT. Absent, this browser fallback would size
-  // entries at the engine default of 15% while the 24/7 engine running the
-  // same bot sized them at 10%.
-  positionPercent: 10
-};
+// The static base, shared with server/tradingWorker.ts so the two runtimes
+// cannot drift. What is NOT shared: the operator's deploy-time environment
+// (BOT_MIN_CONFIDENCE, BOT_POSITION_PERCENT, BOT_MAX_OPEN_POSITIONS,
+// BOT_RISK_LEVEL). The browser cannot read those, so this is the value shown
+// until the first successful poll adopts the server's real config — a
+// placeholder that is now provably the same number the worker starts from,
+// rather than a second hand-maintained copy of it.
+const DEFAULT_LEGACY_CONFIG: SimBotConfig = simBotDefaults('legacy');
 
 export interface LegacySimulationBotContextValue {
   cash: number;
@@ -103,6 +96,9 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
   const [serverSnapshot, setServerSnapshot] = useState<LegacySimBotStateResponse['snapshot']>(null);
   const [controlError, setControlError] = useState<string | null>(null);
   const fearGreedIndex = useFearGreedIndex();
+  // True once this bot's own /state has delivered a config. The RUNNING
+  // config is a fact and always beats the worker's starting defaults.
+  const configFromServer = useRef(false);
   const { baseUrl } = useWorkerAuth();
 
   const isRunning = status === 'running';
@@ -126,12 +122,18 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
       try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, st.running ? '1' : '0'); } catch { /* ignore */ }
     }
     if (st.config) {
+      configFromServer.current = true;
       setConfigState(st.config as SimBotConfig);
     }
   }, []);
 
   // Poll server state with exponential backoff on 429s / network errors.
   const pollingOptions = useMemo(() => ({ baseInterval: 5000, maxInterval: 30000 }), []);
+  // Fills the window before the first poll: the compile-time base cannot
+  // carry this worker's BOT_* environment overrides. Writes locally only —
+  // it never POSTs a config the operator did not choose.
+  useServerSimDefaults('legacy', baseUrl, setConfigState, configFromServer.current);
+
   const { data: legacySimStateData, syncStatus, syncError } = useApiPolling<LegacySimBotStateResponse>(
     () => getLegacySimState(baseUrl),
     pollingOptions
@@ -233,7 +235,7 @@ export function LegacySimulationBotProvider({ children }: { children: ReactNode 
     closedTrades: activeSource.closedTrades ?? 0,
     lastEvaluation: activeSource.lastEvaluation ?? '',
     evaluations: (activeSource.evaluations ?? []) as SignalEvaluation[],
-    minConfidence: activeSource.minConfidence ?? 58,
+    minConfidence: activeSource.minConfidence ?? SIM_MIN_CONFIDENCE.legacy,
     hasSavedSession: activeSource.hasSavedSession ?? false,
     nextTickAt: activeSource.nextTickAt ?? 0,
     totalLeveragedExposureUsd: activeSource.totalLeveragedExposureUsd ?? 0,

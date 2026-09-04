@@ -419,6 +419,15 @@ export interface ProRouterOptions {
 // +15 points from 2% ATR to 8% ATR.
 // Formula: base + ((atrPercent - 2) / 6) * 15, clamped to [base, base+15]
 
+/** Pro Spot base threshold, owned by this engine. */
+export const PRO_SPOT_BASE_THRESHOLD = 60;
+
+/** Pro Futures base threshold, owned by this engine. Unlike Legacy this one
+ *  stays at 72 — alg.md specifies it and Pro is the literal implementation of
+ *  that document. The two engines are allowed to disagree; what is not allowed
+ *  is a second copy of either number living in the UI or the worker. */
+export const PRO_FUTURES_BASE_THRESHOLD = 72;
+
 export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
   // Ramps only once ATR% is genuinely extended (>=4%): keeping the base
   // threshold flat through the typical 2-4% crypto range was making entries
@@ -434,6 +443,20 @@ export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: nu
 
 export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegimeResult, options: ProRouterOptions = {}): ProRouterResult {
   const softTrendBase = options.softTrendBaseOverride ?? 65;
+  // THE routing number. Every threshold comparison below reads this one value.
+  //
+  // It used to be rawConfidence here while proAdapter.normalize() gated on the
+  // post-penalty `confidence`, so the two layers could disagree: routing
+  // approved a trade on a score the penalties had already withdrawn, and the
+  // adapter blocked it one stage later under gate MIN_CONFIDENCE. Worse, the
+  // approval strings printed `signal.confidence` — the number that had NOT been
+  // compared — so the log said "confidence 61 >= 60" for a trade routed on a
+  // raw 74. Penalties exist to withdraw a signal; a signal they withdrew must
+  // not reach Layer 2 intact.
+  //
+  // `?? rawConfidence` covers synthetic callers (tests, the backtest sweep)
+  // that build a ProSignalResult without running the penalty pass.
+  const routingConfidence = signal.confidence ?? signal.rawConfidence;
   if (options.isWeeklyLocked) {
     return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'WEEKLY_DRAWDOWN_LOCK', reason: 'נעילת מערכת שבועית (הפסד >= 15%) — נדרש שחרור ידני' };
   }
@@ -461,7 +484,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
     const supertrendAgrees =
       (signal.action === 'BUY' && regime.direction === 'BULL') ||
       (signal.action === 'SELL' && regime.direction === 'BEAR');
-    const softTrend = supertrendAgrees && (regime.adx > 22 || signal.rawConfidence >= 80);
+    const softTrend = supertrendAgrees && (regime.adx > 22 || routingConfidence >= 80);
     if (!softTrend) {
       return { type: 'HOLD', side: 'NONE', hardGateBlocked: true, blockReason: 'TRANSITIONAL_HARD_BLOCK', reason: `TRANSITIONAL MARKET REGIME: כניסות חדשות חסומות (ADX ${regime.adx.toFixed(1)})` };
     }
@@ -473,7 +496,7 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
 
   // FUTURES — ALL 5 conditions per alg.md §Layer2.1 (no extra Supertrend-match
   // gate — that condition exists in tradeEngine.ts but is not in the spec):
-  // 1. regime TRENDING  2. confidence>=dynamic(72)  3. volatility LOW/NORMAL
+  // 1. regime TRENDING  2. post-penalty confidence>=dynamic(72)  3. volatility LOW/NORMAL
   // 4. ADX>25  5. no existing Futures position on this asset
   // HIGH-volatility carve-out (aligned with intradayEngine.ts and
   // tradeEngine.ts): normally FUTURES is blocked in HIGH vol, which mutes
@@ -482,23 +505,23 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
   // trade the trend's direction.
   const isTrending = regime.regime === 'TRENDING' && regime.adx > 25;
   const isFuturesVolOk = regime.volatility === 'LOW' || regime.volatility === 'NORMAL';
-  const futuresThreshold = dynamicConfidenceThreshold(72, regime.atrPercent);
-  const isFuturesScoreOk = signal.rawConfidence >= futuresThreshold;
+  const futuresThreshold = dynamicConfidenceThreshold(PRO_FUTURES_BASE_THRESHOLD, regime.atrPercent);
+  const isFuturesScoreOk = routingConfidence >= futuresThreshold;
   const isHighVolCarveOut = regime.volatility === 'HIGH' && isTrending && isFuturesScoreOk;
   if (isTrending && (isFuturesVolOk || isHighVolCarveOut) && isFuturesScoreOk && !options.hasExistingFutures) {
     const side: ProTradeSide = signal.action === 'BUY' ? 'LONG' : 'SHORT';
     const volNote = isHighVolCarveOut
       ? `HIGH VOL carve-out (סף ${futuresThreshold.toFixed(1)} הושג)`
       : `תנודתיות ${regime.volatility}`;
-    return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${signal.confidence} >= ${futuresThreshold.toFixed(1)}, ${volNote}` };
+    return { type: 'FUTURES', side, reason: `כל תנאי Futures התקיימו: TRENDING (ADX ${regime.adx.toFixed(1)}), confidence ${routingConfidence} >= ${futuresThreshold.toFixed(1)}, ${volNote}` };
   }
 
   // SPOT — confidence>=dynamic(60), regime TRENDING or RANGING (or SOFT_TREND with higher bar)
   const isSpotRegimeOk = regime.regime === 'TRENDING' || regime.regime === 'RANGING' || (regime.regime === 'TRANSITIONAL' && regime.adx > 22);
   const softTrendSpot = regime.regime === 'TRANSITIONAL' && regime.adx > 22;
-  const spotThreshold = dynamicConfidenceThreshold(60, regime.atrPercent);
+  const spotThreshold = dynamicConfidenceThreshold(PRO_SPOT_BASE_THRESHOLD, regime.atrPercent);
   const requiredSpotScore = softTrendSpot ? dynamicConfidenceThreshold(softTrendBase, regime.atrPercent) : spotThreshold;
-  if (isSpotRegimeOk && signal.rawConfidence >= requiredSpotScore) {
+  if (isSpotRegimeOk && routingConfidence >= requiredSpotScore) {
     // Spot cannot short (no margin on the spot book): a SELL signal that
     // fails Futures routing must not surface as a "ready" SPOT SELL only to be
     // silently dropped by the execution layer (proSimExecution.ts skips
@@ -508,12 +531,12 @@ export function routeProTradeType(signal: ProSignalResult, regime: ProMarketRegi
     }
     const side: ProTradeSide = 'BUY';
     const reason = softTrendSpot
-      ? `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} ב-SOFT_TREND (ADX ${regime.adx.toFixed(1)})`
-      : `עסקת Spot מאושרת: confidence ${signal.confidence} >= ${requiredSpotScore.toFixed(1)} במצב ${regime.regime}`;
+      ? `עסקת Spot מאושרת: confidence ${routingConfidence} >= ${requiredSpotScore.toFixed(1)} ב-SOFT_TREND (ADX ${regime.adx.toFixed(1)})`
+      : `עסקת Spot מאושרת: confidence ${routingConfidence} >= ${requiredSpotScore.toFixed(1)} במצב ${regime.regime}`;
     return { type: 'SPOT', side, reason };
   }
 
-  return { type: 'HOLD', side: 'NONE', reason: signal.confidence < requiredSpotScore ? `confidence ${signal.confidence} מתחת לסף המינימלי (${requiredSpotScore.toFixed(1)})` : 'לא עומד בתנאי הבטיחות של Spot או Futures' };
+  return { type: 'HOLD', side: 'NONE', reason: routingConfidence < requiredSpotScore ? `confidence ${routingConfidence} מתחת לסף המינימלי (${requiredSpotScore.toFixed(1)})` : 'לא עומד בתנאי הבטיחות של Spot או Futures' };
 }
 
 // ── LAYER 3 — RISK MANAGEMENT ────────────────────────────────────────────────

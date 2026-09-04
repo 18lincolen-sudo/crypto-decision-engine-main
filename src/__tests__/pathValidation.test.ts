@@ -23,7 +23,7 @@ const OTHER: BarState = { regime: 'RANGING', fng: 'GREED' };
 function outcome(at: number, mfeR: number, state: BarState = STATE, slot = 3): PathOutcome {
   // terminalR 0: a trade that reached neither level ends flat, which is the
   // third outcome the expectancy model needs and the fixtures predate.
-  return { state, slot, direction: 'LONG', mfeR, maeR: 0.2, stopped: false, terminalR: 0, at };
+  return { state, slot, direction: 'LONG', mfeR, maeR: 0.2, stopped: false, terminalR: 0, costR: 0, at };
 }
 
 describe('walk-forward windows', () => {
@@ -49,7 +49,7 @@ describe('walk-forward windows', () => {
 describe('out-of-sample scoring', () => {
   const bucket: PathBucket = {
     state: STATE, slot: 3, direction: 'LONG', n: 400, rawN: 400,
-    tpR: 2, slR: 1, pHit: 0.6, pLow: 0.55, expectedR: 0.6
+    tpR: 2, slR: 1, pHit: 0.6, pLow: 0.55, costR: 0.06, expectedR: 0.6
   };
 
   it('scores only the outcomes that match the bucket', () => {

@@ -12,6 +12,7 @@ import {
   StrategyTickInput,
   SimSnapshot
 } from './simEngineFactory';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 import { generateNewOrders } from '@cde/engine/execution';
 import { SignalEvaluation, DecisionFactor } from '@cde/engine';
 import { Candle, PortfolioRiskStats } from '@cde/engine';
@@ -44,13 +45,26 @@ const engine = new DecisionEngine({
 });
 engine.registerAdapter(new IntradayAdapter());
 
+/**
+ * This engine's confidence floor, defined once.
+ *
+ * It was written twice: here as the strategy's default, and again as a
+ * literal fallback in the DecisionContext below. Two copies of a threshold
+ * do not stay equal, and the one that drifts is invisible — the panel reads
+ * the strategy field while the engine gates on the fallback.
+ *
+ * An operator override (config.minConfidenceOverride / BOT_MIN_CONFIDENCE)
+ * still replaces it; this is the value in force when nobody set one.
+ */
+const INTRADAY_MIN_CONFIDENCE = SIM_MIN_CONFIDENCE.intraday;
+
 const intradayStrategy: SimEngineStrategy = {
   id: 'intraday',
   logPrefix: '[sim-engine]',
   telegramTag: 'sim',
   telegramTitle: '🤖 מנוע חדש · Multi-Timeframe',
   statusFooterLabel: 'מצב כולל של הבוט',
-  minConfidence: 52,
+  minConfidence: INTRADAY_MIN_CONFIDENCE,
   minCandlesForH1View: 0,
   logCandleFetch: true,
 
@@ -115,7 +129,7 @@ const intradayStrategy: SimEngineStrategy = {
           // The server's configured floor comes from the persisted sim config
           // (DEFAULT_SIM_CONFIG.minConfidenceOverride = 52). The old hardcoded
           // 40 silently contradicted both the UI default and ALG_intraday.md.
-          minConfidenceOverride: typeof input.config.minConfidenceOverride === 'number' ? input.config.minConfidenceOverride : 52,
+          minConfidenceOverride: typeof input.config.minConfidenceOverride === 'number' ? input.config.minConfidenceOverride : INTRADAY_MIN_CONFIDENCE,
           maxPositions: input.config.maxPositions || 7,
           maxFuturesPositions: input.config.maxFuturesPositions || 2
         }

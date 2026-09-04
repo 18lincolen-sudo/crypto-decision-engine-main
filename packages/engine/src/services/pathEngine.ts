@@ -86,6 +86,19 @@ export interface PathDecisionInput {
   now: number;
   /** Minimum out-of-sample expectancy a bucket must clear to be traded. */
   minExpectedR?: number;
+  /**
+   * Operator's confidence floor, 0-100, applied to the bucket's lower-bound hit
+   * rate. Omit it and the engine behaves exactly as before.
+   *
+   * This bot's "confidence" is not a score borrowed from the H1 engines — it IS
+   * the bucket's Wilson lower bound, so the floor here is a probability. That is
+   * also why the number is small: at a 1.5R target a 45% bucket is a good bet,
+   * and demanding the 58 the Legacy and Pro bots use would reject every
+   * asymmetric trade this engine exists to find. The two knobs share a name in
+   * the config and mean different things by it; they are not interchangeable and
+   * must not be aligned "for consistency".
+   */
+  minConfidence?: number;
 }
 
 export interface PathDecision {
@@ -163,6 +176,20 @@ export function evaluatePathDecision(input: PathDecisionInput): PathDecision {
   if (!bucket) {
     return noSignal(input.symbol, 'NO_BUCKET', nowSlot,
       `אין נתח עם תוחלת חיובית למצב ${state.regime} / ${state.fng}`, { state });
+  }
+
+  // The operator's floor, applied to the statistics before the trigger runs.
+  //
+  // Without this the config field was inert for this bot: the panel displayed a
+  // minimum confidence, the operator could edit it, and no decision anywhere
+  // read it — the other three engines route theirs through the DecisionEngine
+  // adapters, and this one evaluates directly. A control that moves and changes
+  // nothing is worse than no control.
+  const bucketConfidence = Math.round(bucket.pLow * 100);
+  if (typeof input.minConfidence === 'number' && bucketConfidence < input.minConfidence) {
+    return noSignal(input.symbol, 'NO_BUCKET', nowSlot,
+      `ביטחון הנתח ${bucketConfidence} מתחת לרצפה שהוגדרה (${input.minConfidence})`,
+      { state, bucket, armedSlot: bucket.slot, expectedR: bucket.expectedR });
   }
 
   if (nowSlot !== bucket.slot) {

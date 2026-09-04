@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useRef, useCallback, useEffect, ReactNode } from 'react';
 import {
   getSimState,
   startSim,
@@ -14,24 +14,18 @@ import { useCryptoData } from '../hooks/useCryptoData';
 import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
 import { useApiPolling } from '../hooks/useApiPolling';
+import { simBotDefaults, SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
+import { useServerSimDefaults } from '../hooks/useServerSimDefaults';
 
 // Matches server/simEngine.ts DEFAULT_SIM_CONFIG — this engine is server-driven
 // (the poll effect below overwrites this with the server's real config on sync),
 // so this is only the pre-sync placeholder shown for a moment on first load.
-const DEFAULT_CONFIG: SimBotConfig = {
-  riskLevel: 'medium',
-  initialAmount: 10000,
-  // 5, the same cap the live bot runs (BOT_MAX_OPEN_POSITIONS) and the same
-  // one the server sims now take from it. At 7 the simulations were allowed
-  // 40% more concurrent risk than the bot they exist to predict.
-  maxPositions: 5,
-  maxFuturesPositions: 2,
-  feePercent: 0.1,
-  slippagePercent: 0.05,
-  executionDelaySec: 3,
-  minConfidenceOverride: 52,
-  positionPercent: 10
-};
+// The static base, shared with server/tradingWorker.ts so the two runtimes
+// cannot drift. What is NOT shared: the operator's deploy-time environment
+// (BOT_MIN_CONFIDENCE, BOT_POSITION_PERCENT, BOT_MAX_OPEN_POSITIONS,
+// BOT_RISK_LEVEL). useServerSimDefaults() below reads those from the worker at
+// boot; this is what is shown until that lands, or if it never does.
+const DEFAULT_CONFIG: SimBotConfig = simBotDefaults('intraday');
 
 export type SimStatus = 'running' | 'paused' | 'idle';
 
@@ -96,6 +90,9 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   const [serverSnapshot, setServerSnapshot] = useState<SimBotSnapshot | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
   const fearGreedIndex = useFearGreedIndex();
+  // True once this bot's own /state has delivered a config. The RUNNING
+  // config is a fact and always beats the worker's starting defaults.
+  const configFromServer = useRef(false);
   const { baseUrl } = useWorkerAuth();
 
   const isRunning = status === 'running';
@@ -123,6 +120,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
       try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, st.running ? '1' : '0'); } catch { /* ignore */ }
     }
     if (st.config) {
+      configFromServer.current = true;
       setConfigState(st.config as SimBotConfig);
     }
   }, []);
@@ -132,6 +130,11 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   // on the client never pauses real trading, it only affects what this device
   // can currently SEE. Backoff prevents hammering an already rate-limited
   // backend and lets the rate-limit window recover.
+  // Fills the window before the first poll: the compile-time base cannot
+  // carry this worker's BOT_* environment overrides. Writes locally only —
+  // it never POSTs a config the operator did not choose.
+  useServerSimDefaults('intraday', baseUrl, setConfigState, configFromServer.current);
+
   const { data: simStateData, syncStatus, syncError, refresh: refreshSimState } = useApiPolling<SimBotStateResponse>(
     () => getSimState(baseUrl),
     { baseInterval: 5000, maxInterval: 30000 }
@@ -233,7 +236,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     closedTrades: activeSource.closedTrades ?? 0,
     lastEvaluation: activeSource.lastEvaluation ?? '',
     evaluations: (activeSource.evaluations ?? []) as SignalEvaluation[],
-    minConfidence: activeSource.minConfidence ?? 52,
+    minConfidence: activeSource.minConfidence ?? SIM_MIN_CONFIDENCE.intraday,
     hasSavedSession: activeSource.hasSavedSession ?? false,
     nextTickAt: activeSource.nextTickAt ?? 0,
     totalLeveragedExposureUsd: activeSource.totalLeveragedExposureUsd ?? 0,

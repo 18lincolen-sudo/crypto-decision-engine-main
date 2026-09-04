@@ -15,6 +15,8 @@ export {
   detectMarketRegime,
   evaluateSignals,
   dynamicConfidenceThreshold,
+  LEGACY_SPOT_BASE_THRESHOLD,
+  LEGACY_FUTURES_BASE_THRESHOLD,
   routeTradeType,
   computeEntryIndicators,
   computeRelativeVolume,
@@ -29,6 +31,15 @@ export {
   DEFAULT_SLIPPAGE_PERCENT,
   calculateBreakEvenPrice
 } from './services/tradeEngine';
+
+// ── Simulation defaults, shared by the worker and the browser ─────────────
+export {
+  SIM_BASE_DEFAULTS,
+  SIM_MIN_CONFIDENCE,
+  SIM_MAX_FUTURES_POSITIONS,
+  simBotDefaults
+} from './services/simDefaults';
+export type { SimBotId } from './services/simDefaults';
 
 // ── Order generation per engine ──────────────────────────────────────────────
 export type { LegacyOrderGenContext } from './services/legacySimExecution';

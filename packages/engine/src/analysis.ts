@@ -16,6 +16,8 @@ export {
   evaluateProSignals,
   calculateProOptimalEntry,
   dynamicConfidenceThreshold as proDynamicConfidenceThreshold,
+  PRO_SPOT_BASE_THRESHOLD,
+  PRO_FUTURES_BASE_THRESHOLD,
   routeProTradeType,
   calculateProRisk,
   PRO_FUTURES_TIME_STOP_EXTENDED_HOURS,

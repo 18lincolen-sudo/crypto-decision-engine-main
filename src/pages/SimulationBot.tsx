@@ -9,23 +9,15 @@ import SimulationEngineColumn from '../components/trading/SimulationEngineColumn
 import { useSimulationBotContext } from '../contexts/SimulationBotContext';
 import { useLegacySimulationBotContext } from '../contexts/LegacySimulationBotContext';
 import { useProSimulationBotContext } from '../contexts/ProSimulationBotContext';
-import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContext';
 import { useWorkerAuth } from '../contexts/WorkerAuthContext';
 import { useCryptoData } from '../hooks/useCryptoData';
-import { SIM_BOT_STORAGE_KEY } from '../hooks/useSimulationBot';
-import { LEGACY_SIM_BOT_STORAGE_KEY } from '../hooks/useLegacySimulationBot';
-import { PRO_SIM_BOT_STORAGE_KEY } from '../hooks/useProSimulationBot';
-
-// Keys that hold the bots' remembered history (positions/trades/equity).
-// Distinct from workerConfig/theme/credentials — those are connection/app
-// settings, not simulation state, and are intentionally left untouched.
-const SIM_CACHE_KEYS = [
-  SIM_BOT_STORAGE_KEY,
-  'simulation-bot-state-v1',
-  LEGACY_SIM_BOT_STORAGE_KEY,
-  PRO_SIM_BOT_STORAGE_KEY,
-  'crypto-portfolio'
-];
+import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContext';
+// Thresholds are READ from the engines that own them, never restated here. A
+// number typed into JSX is a second definition, and the moment the engine moves
+// the panel starts describing a bot that no longer exists.
+import { LEGACY_SPOT_BASE_THRESHOLD, LEGACY_FUTURES_BASE_THRESHOLD } from '@cde/engine/execution';
+import { PRO_SPOT_BASE_THRESHOLD, PRO_FUTURES_BASE_THRESHOLD } from '@cde/engine/analysis';
+import { SIM_CACHE_KEYS, toAggregated, combineRisk, groupAction, type AggregatedBot } from '../lib/botAggregation';
 
 const SimulationBotPage = () => {
   const intraday = useSimulationBotContext();
@@ -50,9 +42,27 @@ const SimulationBotPage = () => {
     none: 'לא הוגדר'
   };
 
+  // The four engines as one list.
+  //
+  // Every "all bots" action and every combined figure below iterates this, so a
+  // fifth engine is one line here rather than a hunt through eight call sites.
+  // That hunt is exactly what went wrong: Path shipped as a peer in the UI while
+  // eight aggregations still read `intraday + legacy + pro`, and the risk meter
+  // under-reported the portfolio for as long as Path held anything.
+  const allBots: AggregatedBot[] = [
+    toAggregated('חדש', intraday),
+    toAggregated('מקורי', legacy),
+    toAggregated('פרו', pro),
+    // Path is the one engine with no browser fallback. When the worker is
+    // unreachable its snapshot is a placeholder (equity 10,000, exposure 0),
+    // not a reading — and `hasServerData` is how it says so.
+    toAggregated('נתיב 4H', path, path.hasServerData)
+  ];
+
   const runGroupAction = async (actions: Array<() => Promise<void>>) => {
     setGroupBusy(true);
     setGroupError(null);
+    // allSettled, not all: one engine refusing must not stop the other three.
     const results = await Promise.allSettled(actions.map((action) => action()));
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failures.length) {
@@ -62,8 +72,12 @@ const SimulationBotPage = () => {
     return failures.length === 0;
   };
 
+  // Reset All is NOT Clear Cache. It resets simulation state through each
+  // engine's own resetAll and touches no localStorage key: clearing the
+  // remembered market data as a side effect of "start over" is a different,
+  // heavier operation, and the operator gets to choose it deliberately.
   const clearAllCache = async () => {
-    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של שלושת המנועים ותרענן את הדף.')) {
+    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של ארבעת המנועים ותרענן את הדף.')) {
       return;
     }
     for (const key of SIM_CACHE_KEYS) {
@@ -73,20 +87,20 @@ const SimulationBotPage = () => {
         // ignore
       }
     }
-    // resetAll() on the intraday engine also calls the server's /api/sim/reset,
-    // clearing the persisted server-side snapshot (sim-state.json) that
-    // otherwise survives a fresh deploy — that's the "remembers the past even
-    // after I uploaded a new dist" symptom.
-    if (await runGroupAction([intraday.resetAll, legacy.resetAll, pro.resetAll])) {
+    // resetAll() on each engine also calls the server's reset endpoint,
+    // clearing the persisted server-side snapshot that otherwise survives a
+    // fresh deploy - that's the "remembers the past even after I uploaded a new
+    // dist" symptom.
+    if (await runGroupAction(groupAction(allBots, 'resetAll'))) {
       window.location.reload();
     }
   };
 
-  const combinedPositionsCount = intraday.positions.length + legacy.positions.length + pro.positions.length;
-  const combinedFuturesCount =
-    intraday.positions.filter((p: { type?: string }) => p.type === 'FUTURES').length +
-    legacy.positions.filter((p: { type?: string }) => p.type === 'FUTURES').length +
-    pro.positions.filter((p: { type?: string }) => p.type === 'FUTURES').length;
+  const risk = combineRisk(allBots);
+
+  const anyControlError = allBots.map((bot) => bot.controlError).find(Boolean) ?? null;
+  const allRunning = allBots.every((bot) => bot.isRunning);
+  const noneRunning = allBots.every((bot) => !bot.isRunning);
 
   return (
     <div className="min-h-screen bg-background">
@@ -97,16 +111,16 @@ const SimulationBotPage = () => {
         <div className="text-center pt-2">
           <h1 className="text-3xl sm:text-4xl font-bold mb-2 text-primary flex items-center justify-center gap-3 font-mono">
             <Bot className="w-9 h-9" />
-            בוט סימולציה — השוואת שלושה אלגוריתמים
+            בוט סימולציה — השוואת ארבעה אלגוריתמים
           </h1>
           <p className="text-sm sm:text-base text-muted-foreground font-mono break-words">
-            מנוע חדש (רב-שכבתי Multi-Timeframe) · מנוע מקורי (ציון ביטחון משוקלל) · בוט פרו (מימוש מדויק של alg.md) — כל אחד עם הון וסטטיסטיקה נפרדים
+            מנוע חדש (רב-שכבתי Multi-Timeframe) · מנוע מקורי (ציון ביטחון משוקלל) · בוט פרו (מימוש מדויק של alg.md) · מנוע נתיב 4H (Empirical Path) — כל אחד עם הון וסטטיסטיקה נפרדים
           </p>
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <Button
               size="sm"
-              onClick={() => void runGroupAction([intraday.start, legacy.start, pro.start])}
-              disabled={groupBusy || (intraday.isRunning && legacy.isRunning && pro.isRunning)}
+              onClick={() => void runGroupAction(groupAction(allBots, 'start'))}
+              disabled={groupBusy || allRunning}
               className="bg-green-600 hover:bg-green-700 gap-2"
             >
               <Play className="w-4 h-4" />
@@ -115,8 +129,8 @@ const SimulationBotPage = () => {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void runGroupAction([intraday.pause, legacy.pause, pro.pause])}
-              disabled={groupBusy || (!intraday.isRunning && !legacy.isRunning && !pro.isRunning)}
+              onClick={() => void runGroupAction(groupAction(allBots, 'pause'))}
+              disabled={groupBusy || noneRunning}
               className="gap-2"
             >
               <Pause className="w-4 h-4" />
@@ -125,7 +139,7 @@ const SimulationBotPage = () => {
             <Button
               size="sm"
               variant="destructive"
-              onClick={() => void runGroupAction([intraday.resetAll, legacy.resetAll, pro.resetAll])}
+              onClick={() => void runGroupAction(groupAction(allBots, 'resetAll'))}
               disabled={groupBusy}
               className="gap-2"
             >
@@ -143,10 +157,10 @@ const SimulationBotPage = () => {
             </Button>
           </div>
 
-          {(groupError || intraday.controlError || legacy.controlError || pro.controlError) && (
+          {(groupError || anyControlError) && (
             <Card className="mt-3 border-red-500/40 bg-red-500/10">
               <CardContent className="p-3 text-sm text-red-300 font-mono">
-                {groupError || intraday.controlError || legacy.controlError || pro.controlError}
+                {groupError || anyControlError}
               </CardContent>
             </Card>
           )}
@@ -194,7 +208,7 @@ const SimulationBotPage = () => {
         {/* Cross-device sync status — the shared server state (so a second device
             sees the SAME running bot) needs a Worker URL configured on THIS
             device too; localStorage is per-device and never syncs on its own. */}
-        {(intraday.syncStatus === 'local-only' || legacy.syncStatus === 'local-only' || pro.syncStatus === 'local-only') && (
+        {(intraday.syncStatus === 'local-only' || legacy.syncStatus === 'local-only' || pro.syncStatus === 'local-only' || path.syncStatus === 'local-only') && (
           <Card className="border-yellow-500/40 bg-yellow-500/5">
             <CardContent className="p-4 space-y-2 font-mono">
               <div className="flex items-center gap-2 text-yellow-400 text-sm font-bold">
@@ -203,16 +217,19 @@ const SimulationBotPage = () => {
                   const offline = [
                     intraday.syncStatus === 'local-only' && 'חדש',
                     legacy.syncStatus === 'local-only' && 'מקורי',
-                    pro.syncStatus === 'local-only' && 'פרו'
+                    pro.syncStatus === 'local-only' && 'פרו',
+                    // Path has no local twin: offline for it means no data at
+                    // all, not "running locally". The banner below says so.
+                    path.syncStatus === 'local-only' && 'נתיב 4H'
                   ].filter(Boolean) as string[];
-                  return offline.length === 3
-                    ? 'שלושת המנועים לא מסונכרנים עם שרת — מציגים סימולציה מקומית בלבד במכשיר הזה'
+                  return offline.length === 4
+                    ? 'ארבעת המנועים לא מסונכרנים עם שרת — שלושה מציגים סימולציה מקומית, ומנוע נתיב 4H אינו זמין כלל (הוא רץ בשרת בלבד)'
                     : `מנוע ${offline.join(' ו-')} לא מסונכרן עם שרת — מציג סימולציה מקומית בלבד במכשיר הזה`;
                 })()}
               </div>
               <p className="text-xs text-muted-foreground">
                 אם הפעלת את הבוט במכשיר אחר, לא תראה כאן את אותה פעילות עד שתחבר את המכשיר הזה לאותה כתובת Worker.
-                {intraday.syncError ? ` (${intraday.syncError})` : legacy.syncError ? ` (${legacy.syncError})` : pro.syncError ? ` (${pro.syncError})` : ''}
+                {intraday.syncError ? ` (${intraday.syncError})` : legacy.syncError ? ` (${legacy.syncError})` : pro.syncError ? ` (${pro.syncError})` : path.syncError ? ` (${path.syncError})` : ''}
               </p>
               <div className="flex gap-2 flex-wrap items-center">
                 <Input
@@ -239,7 +256,7 @@ const SimulationBotPage = () => {
             <div className="flex items-center gap-2 text-sm font-mono">
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
               <span className="text-muted-foreground">
-                {isLoading ? 'טוען נתוני שוק...' : `${cryptoData?.length || 0} נכסים חיים · נתונים משותפים לשלושת המנועים`}
+                {isLoading ? 'טוען נתוני שוק...' : `${cryptoData?.length || 0} נכסים חיים · נתונים משותפים לארבעת המנועים`}
               </span>
             </div>
           </CardContent>
@@ -247,15 +264,16 @@ const SimulationBotPage = () => {
 
         {/* Combined risk overview */}
         <PortfolioRiskMeter
-          portfolioValue={intraday.equity + legacy.equity + pro.equity}
-          totalInvestedUsd={intraday.positionsValue + legacy.positionsValue + pro.positionsValue}
-          totalLeveragedExposureUsd={intraday.totalLeveragedExposureUsd + legacy.totalLeveragedExposureUsd + pro.totalLeveragedExposureUsd}
-          openPositionsCount={combinedPositionsCount}
-          maxPositions={(intraday.config.maxPositions ?? 7) + (legacy.config.maxPositions ?? 7) + (pro.config.maxPositions ?? 7)}
-          openFuturesCount={combinedFuturesCount}
-          maxFutures={(intraday.config.maxFuturesPositions ?? 2) + (legacy.config.maxFuturesPositions ?? 2) + (pro.config.maxFuturesPositions ?? 2)}
-          dailyDrawdownPercent={Math.max(intraday.dailyDrawdownPercent, legacy.dailyDrawdownPercent, pro.dailyDrawdownPercent)}
-          weeklyDrawdownPercent={Math.max(intraday.weeklyDrawdownPercent, legacy.weeklyDrawdownPercent, pro.weeklyDrawdownPercent)}
+          portfolioValue={risk.portfolioValue}
+          totalInvestedUsd={risk.totalInvestedUsd}
+          totalLeveragedExposureUsd={risk.totalLeveragedExposureUsd}
+          openPositionsCount={risk.openPositionsCount}
+          maxPositions={risk.maxPositions}
+          openFuturesCount={risk.openFuturesCount}
+          maxFutures={risk.maxFutures}
+          dailyDrawdownPercent={risk.dailyDrawdownPercent}
+          weeklyDrawdownPercent={risk.weeklyDrawdownPercent}
+          unavailableEngines={risk.unavailableEngines}
         />
 
         {/* Four engines — 1 column on mobile, 2 from large up. Three-across left the
@@ -292,7 +310,7 @@ const SimulationBotPage = () => {
 
           <SimulationEngineColumn
             title="מנוע מקורי · Confidence Score"
-            subtitle="ציון משוקלל 7 אינדיקטורים, סף Spot 58 (62 בתנודתיות גבוהה) / Futures 70%"
+            subtitle={`ציון משוקלל 7 אינדיקטורים · סף בסיס Spot ${LEGACY_SPOT_BASE_THRESHOLD} / Futures ${LEGACY_FUTURES_BASE_THRESHOLD} — שניהם עולים עד +15 נק׳ עם ATR`}
             accentClass="text-cyan-400"
             cryptoData={cryptoData}
             cash={legacy.cash}
@@ -321,7 +339,7 @@ const SimulationBotPage = () => {
 
           <SimulationEngineColumn
             title="בוט פרו · alg.md"
-            subtitle="מימוש מדויק של ASSETS/alg.md — Spot 60% / Futures 72%, Kelly ישיר, קנסות Volume/Ranging"
+            subtitle={`מימוש מדויק של ASSETS/alg.md · סף בסיס Spot ${PRO_SPOT_BASE_THRESHOLD} / Futures ${PRO_FUTURES_BASE_THRESHOLD} (אחרי קנסות), Kelly ישיר`}
             accentClass="text-amber-400"
             cryptoData={cryptoData}
             cash={pro.cash}
@@ -394,7 +412,7 @@ const SimulationBotPage = () => {
   );
 };
 
-// The three sim-bot providers now live at the app root (see App.tsx) so every
+// The four sim-bot providers now live at the app root (see App.tsx) so every
 // page — not just this one — sees live, server-synced bot state.
 export default SimulationBotPage;
 

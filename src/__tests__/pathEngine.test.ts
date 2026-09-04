@@ -172,7 +172,7 @@ describe('table construction', () => {
   function outcomes(n: number, mfeR: number, slot = 3): PathOutcome[] {
     return Array.from({ length: n }, (_, i) => ({
       state: STATE, slot, direction: 'LONG' as const,
-      mfeR, maeR: 0.2, stopped: false, terminalR: 0, at: Date.now() - i * 3_600_000
+      mfeR, maeR: 0.2, stopped: false, terminalR: 0, costR: 0, at: Date.now() - i * 3_600_000
     }));
   }
 
@@ -234,7 +234,7 @@ describe('the engine abstains rather than guesses', () => {
     const table: PathBucket[] = [{
       state: { regime: 'TRENDING_UP', fng: 'FEAR' },
       slot: armed, direction: 'LONG', n: 400, rawN: 400,
-      tpR: 2, slR: 1, pHit: 0.5, pLow: 0.45, expectedR: 0.29
+      tpR: 2, slR: 1, pHit: 0.5, pLow: 0.45, costR: 0.06, expectedR: 0.29
     }];
     const d = evaluatePathDecision({ ...base, table, now });
     // The state label depends on the fixture's regime, so accept either the
@@ -251,7 +251,7 @@ describe('the engine abstains rather than guesses', () => {
 describe('sizing comes from the bucket, capped by the operator', () => {
   const bucket = (pLow: number, tpR: number): PathBucket => ({
     state: STATE, slot: 3, direction: 'LONG', n: 400, rawN: 400,
-    tpR, slR: 1, pHit: pLow + 0.05, pLow, expectedR: pLow * tpR - (1 - pLow) - 0.06
+    tpR, slR: 1, pHit: pLow + 0.05, pLow, costR: 0.06, expectedR: pLow * tpR - (1 - pLow) - 0.06
   });
 
   it('is half-Kelly on the LOWER bound, never the point estimate', () => {

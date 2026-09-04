@@ -12,6 +12,7 @@ import {
   StrategyTickInput,
   SimSnapshot
 } from './simEngineFactory';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 import { generateProOrders, MIN_PRO_CANDLES } from '@cde/engine/execution';
 import { SignalEvaluation, DecisionFactor } from '@cde/engine';
 import { Candle, PortfolioRiskStats } from '@cde/engine';
@@ -43,13 +44,26 @@ const engine = new DecisionEngine({
 });
 engine.registerAdapter(new ProAdapter());
 
+/**
+ * This engine's confidence floor, defined once.
+ *
+ * It was written twice: here as the strategy's default, and again as a
+ * literal fallback in the DecisionContext below. Two copies of a threshold
+ * do not stay equal, and the one that drifts is invisible — the panel reads
+ * the strategy field while the engine gates on the fallback.
+ *
+ * An operator override (config.minConfidenceOverride / BOT_MIN_CONFIDENCE)
+ * still replaces it; this is the value in force when nobody set one.
+ */
+const PRO_MIN_CONFIDENCE = SIM_MIN_CONFIDENCE.pro;
+
 const proStrategy: SimEngineStrategy = {
   id: 'pro',
   logPrefix: '[pro-sim-engine]',
   telegramTag: 'pro-sim',
   telegramTitle: '🤖 בוט פרו · alg.md',
   statusFooterLabel: 'מצב כולל של הבוט (פרו)',
-  minConfidence: 58,
+  minConfidence: PRO_MIN_CONFIDENCE,
   minCandlesForH1View: MIN_PRO_CANDLES,
   logCandleFetch: false,
 
@@ -100,7 +114,7 @@ const proStrategy: SimEngineStrategy = {
         now: Date.now(),
         closedTrades: input.closedTradeMetrics?.map(t => ({ pnl: t.pnl, at: t.at, symbol: t.symbol, riskUsd: t.riskUsd })),
         config: {
-          minConfidenceOverride: typeof input.config.minConfidenceOverride === 'number' ? input.config.minConfidenceOverride : 58,
+          minConfidenceOverride: typeof input.config.minConfidenceOverride === 'number' ? input.config.minConfidenceOverride : PRO_MIN_CONFIDENCE,
           maxPositions: input.config.maxPositions || 7,
           maxFuturesPositions: input.config.maxFuturesPositions || 2
         }

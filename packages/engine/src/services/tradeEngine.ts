@@ -742,12 +742,23 @@ export interface TradeRouterOptions {
 // ═══════════════════════════════════════════════════════
 // DYNAMIC CONFIDENCE THRESHOLDS
 // ═══════════════════════════════════════════════════════
-// Static thresholds (72 Futures / 60 Spot) are safe in LOW volatility
+// Static thresholds (70 Futures / 58 Spot for Legacy) are safe in LOW volatility
 // but become dangerously loose as ATR rises. The formula below ramps the
 // threshold by up to +15 points from the 2% ATR mark to the 8% mark,
-// matching the report's targets: ~87+ for Futures and ~75+ for Spot
-// in EXTREME volatility, flat at the base in LOW volatility.
+// in EXTREME volatility (Legacy: 85 Futures / 73 Spot), flat at the base in
+// LOW volatility.
 // Formula: base + ((atrPercent - 2) / 6) * 15, clamped to [base, base+15]
+
+/** Legacy Spot base threshold. The engine owns this number: the UI reads it
+ *  from here rather than printing its own copy, and the worker never redefines
+ *  it. Base, not floor — dynamicConfidenceThreshold ramps it with ATR. */
+export const LEGACY_SPOT_BASE_THRESHOLD = 58;
+
+/** Legacy Futures base threshold. Was 72 in code while the routing comment two
+ *  hundred lines below already documented "base 70, ramps to 85" — the code and
+ *  its own description disagreed. 70 is the official figure; the ramp is
+ *  unchanged. */
+export const LEGACY_FUTURES_BASE_THRESHOLD = 70;
 
 export function dynamicConfidenceThreshold(baseThreshold: number, atrPercent: number): number {
   // Aligned with proAlgEngine.ts: the ramp starts at 4% ATR instead of 2%.
@@ -885,7 +896,7 @@ export function routeTradeType(
   // ═══════════════════════════════════════════════════════
   const isTrending = layer0.regime === 'TRENDING' && layer0.adx > 25;
   const isVolatilitySafeForFutures = layer0.volatility === 'LOW' || layer0.volatility === 'NORMAL';
-  const futuresThreshold = dynamicConfidenceThreshold(72, layer0.atrPercent);
+  const futuresThreshold = dynamicConfidenceThreshold(LEGACY_FUTURES_BASE_THRESHOLD, layer0.atrPercent);
   const isFuturesScorePassed = routingScore >= futuresThreshold;
   // HIGH-volatility carve-out (aligned with intradayEngine.ts): normally
   // FUTURES is blocked in HIGH vol, which mutes SHORT in sharp down-moves
@@ -910,11 +921,16 @@ export function routeTradeType(
   // SPOT ROUTING EVALUATION (Evaluated independently)
   // Conditions:
   // 1. Regime in ['TRENDING', 'RANGING'] (Never TRANSITIONAL)
-  // 2. SignalScore >= dynamic threshold (base 60, ramps to 75 in EXTREME)
+  // 2. SignalScore >= dynamic threshold (base 58, ramps to 73 in EXTREME)
   // ═══════════════════════════════════════════════════════
   const isSpotRegimeValid = layer0.regime === 'TRENDING' || layer0.regime === 'RANGING' || (layer0.regime === 'TRANSITIONAL' && (layer0.adx > 22 || routingScore >= 80));
   const softTrendSpot = layer0.regime === 'TRANSITIONAL' && (layer0.adx > 22 || routingScore >= 80);
-  const spotThreshold = 58; // Fixed minimum for legacy bot
+  // Dynamic, not fixed. A flat 58 is safe at 2% ATR and far too loose at 7%,
+  // which is precisely the regime that produced the repeated stop-outs: the
+  // Futures leg ramped with volatility while the Spot leg stood still, so every
+  // signal volatility pushed out of Futures range landed on an unchanged Spot
+  // bar. Same ramp both sides now.
+  const spotThreshold = dynamicConfidenceThreshold(LEGACY_SPOT_BASE_THRESHOLD, layer0.atrPercent);
   const requiredSpotScore = softTrendSpot ? Math.max(spotThreshold, softTrendBase) : spotThreshold;
   const isSpotScorePassed = routingScore >= requiredSpotScore;
 
@@ -952,7 +968,7 @@ export function routeTradeType(
   // ═══════════════════════════════════════════════════════
   // SPECIFIC BLOCK REASONS FOR TELEMETRY & LOGS
   // ═══════════════════════════════════════════════════════
-  if (layer0.volatility === 'HIGH' && !isSpotScorePassed && routingScore < 72) {
+  if (layer0.volatility === 'HIGH' && !isSpotScorePassed && routingScore < futuresThreshold) {
     return {
       type: 'HOLD',
       side: 'NONE',
@@ -962,7 +978,7 @@ export function routeTradeType(
     };
   }
 
-  if (routingScore < requiredSpotScore && routingScore < 72) {
+  if (routingScore < requiredSpotScore && routingScore < futuresThreshold) {
     return {
       type: 'HOLD',
       side: 'NONE',

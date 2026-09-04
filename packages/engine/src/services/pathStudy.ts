@@ -57,7 +57,26 @@ export const SLOTS_PER_BAR = 16;
 export const BAR_MS = 4 * 60 * 60 * 1000;
 export const SLOT_MS = 15 * 60 * 1000;
 
-/** Reward:risk multiples tested for each bucket. */
+/**
+ * The target this study commits to, ahead of looking at the data.
+ *
+ * Testing five targets per bucket is testing five hypotheses per bucket, and the
+ * noise floor scales with the product: 96 buckets × 5 targets is 480 questions,
+ * 96 × 1 is 96. Picking the best-scoring target per bucket after the fact is the
+ * same look-elsewhere error as picking the best-scoring bucket, one level down,
+ * and it was invisible because the grid search looked like thoroughness.
+ *
+ * 1.5R is chosen from the RESOLUTION sweep, not from any P&L: at the 15M risk
+ * unit, 36.5% of entries reach +1R within the hold budget, so a 1.5R target is
+ * demanding but not out of reach, while 2.5R and 3R are reached rarely enough
+ * that a bucket's hit count would be too thin to bound. It is a pre-registration,
+ * not an optimum.
+ */
+export const DEFAULT_TP_R = 1.5;
+
+/** The full grid, retained for a deliberate, separately-reported sweep. Passing
+ *  it to a production build re-introduces the multiple-comparisons problem it
+ *  was removed to avoid. */
 export const TP_GRID_R = [1.0, 1.5, 2.0, 2.5, 3.0];
 
 /** Below this many samples a bucket is not eligible, whatever it scores. */
@@ -81,7 +100,37 @@ export function bucketKey(state: BarState, slot: number, direction: PathDirectio
  * `priorBars` must END with the bar immediately preceding the one being
  * labelled. Returns undefined when there is not enough history to judge.
  */
-export function labelBarState(priorBars: Candle[], fearGreedIndex: number): BarState | undefined {
+/**
+ * Whether the sentiment split is part of the state.
+ *
+ * Off by default, and that is the single highest-leverage decision in the whole
+ * study. Every extra split multiplies the hypothesis count, and the noise floor
+ * moves with it:
+ *
+ *     with F&G:  3 regimes × 5 sentiment × 16 slots × 2 directions = 480 buckets
+ *     without:   3 regimes ×             16 slots × 2 directions =  96 buckets
+ *
+ * At 480 buckets a pure-noise null produces ~10 apparent survivors; at 96 it
+ * produces ~2. The same 10 real survivors are ambiguous against the first floor
+ * and decisive against the second. Nothing about the data changed — only how
+ * many questions were asked of it.
+ *
+ * The discipline this encodes: add ONE split, measure, keep it only if it earns
+ * its own multiplier. Sentiment is a plausible conditioner for intra-bar path
+ * shape, but plausible is not the standard, and it was never tested on its own.
+ */
+export const DEFAULT_USE_FEAR_GREED = false;
+
+/** The bucket every state collapses to when the sentiment split is off. Chosen
+ *  rather than inventing a sixth 'ALL' member, so the type, the keys and the
+ *  persisted tables stay one shape whichever way the study is run. */
+const COLLAPSED_FNG: FearGreedBucket = 'NEUTRAL';
+
+export function labelBarState(
+  priorBars: Candle[],
+  fearGreedIndex: number,
+  useFearGreed: boolean = DEFAULT_USE_FEAR_GREED
+): BarState | undefined {
   if (priorBars.length < 60) return undefined;
   const last = priorBars[priorBars.length - 1];
   const regimeResult = detectMarketRegime(priorBars, last.close);
@@ -90,7 +139,7 @@ export function labelBarState(priorBars: Candle[], fearGreedIndex: number): BarS
     ? (regimeResult.direction === 'BEAR' ? 'TRENDING_DOWN' : 'TRENDING_UP')
     : 'RANGING';
 
-  return { regime, fng: fearGreedBucket(fearGreedIndex) };
+  return { regime, fng: useFearGreed ? fearGreedBucket(fearGreedIndex) : COLLAPSED_FNG };
 }
 
 /**
@@ -149,6 +198,55 @@ export function riskUnitFrom15M(prior15m: Candle[]): number {
 export const RISK_UNIT_LOOKBACK_15M = 60;
 
 /**
+ * Which timeframe 1R is drawn on.
+ *
+ * This is the third corner of the horizon/R/cost triangle, and the only one that
+ * can be moved without leaving spot. Cost in R is cost% / R%, so doubling R
+ * halves the bill — but a bigger R also needs a longer hold to stay reachable,
+ * which is why this ships paired with the horizon flag rather than alone.
+ *
+ * '15m' — 1R = ATR(15M) × 2.0. Reachable inside one 4H bar, costs ~0.30R.
+ * '1h'  — 1R = ATR(1H)  × 2.0, built from four 15M candles per hour. Roughly
+ *         twice as wide, so roughly half the cost in R, and it needs a horizon
+ *         of several bars to be reached at all.
+ */
+export type RiskBasis = '15m' | '1h';
+
+/** Aggregates 15M candles into 1H, then measures ATR on those. Same multiplier,
+ *  so the only thing that changes between bases is the timeframe the volatility
+ *  is read from. */
+export function riskUnitFrom1H(prior15m: Candle[]): number {
+  if (prior15m.length < 80) return 0;
+  const hourly: Candle[] = [];
+  const byHour = new Map<number, Candle[]>();
+  for (const c of prior15m) {
+    const h = Math.floor(c.timestamp / 3_600_000) * 3_600_000;
+    const g = byHour.get(h);
+    if (g) g.push(c); else byHour.set(h, [c]);
+  }
+  for (const [open, group] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
+    if (group.length < 4) continue;
+    group.sort((a, b) => a.timestamp - b.timestamp);
+    hourly.push({
+      timestamp: open,
+      open: group[0].open,
+      high: Math.max(...group.map((c) => c.high)),
+      low: Math.min(...group.map((c) => c.low)),
+      close: group[group.length - 1].close,
+      volume: group.reduce((sum, c) => sum + c.volume, 0)
+    });
+  }
+  if (hourly.length < 20) return 0;
+  const { atr } = calculateATR(hourly, 14);
+  return atr > 0 ? atr * PATH_RISK_UNIT_ATR_MULT : 0;
+}
+
+/** Dispatches on the configured basis. */
+export function riskUnitFor(prior15m: Candle[], basis: RiskBasis): number {
+  return basis === '1h' ? riskUnitFrom1H(prior15m) : riskUnitFrom15M(prior15m);
+}
+
+/**
  * The trailing 15M window that closed before `barOpenAt`.
  *
  * Takes a cursor so a caller walking bars in order does not rescan the series
@@ -157,10 +255,21 @@ export const RISK_UNIT_LOOKBACK_15M = 60;
 export function prior15mFor(
   m15: Candle[],
   barOpenAt: number,
-  cursor: { i: number }
+  cursor: { i: number },
+  /** How many trailing candles to return. Must cover the ATR window of the basis
+   *  being measured: ATR(14) on the 1H series needs 15 hours, which is 60 of
+   *  these candles before the aggregation even starts — handing it the 15M
+   *  lookback returned an empty risk unit for every bar, and the study silently
+   *  produced zero outcomes. */
+  lookback: number = RISK_UNIT_LOOKBACK_15M
 ): Candle[] {
   while (cursor.i < m15.length && m15[cursor.i].timestamp < barOpenAt) cursor.i++;
-  return m15.slice(Math.max(0, cursor.i - RISK_UNIT_LOOKBACK_15M), cursor.i);
+  return m15.slice(Math.max(0, cursor.i - lookback), cursor.i);
+}
+
+/** Trailing 15M candles needed to measure a risk unit on each basis. */
+export function lookbackForBasis(basis: RiskBasis): number {
+  return basis === '1h' ? 240 : RISK_UNIT_LOOKBACK_15M;
 }
 
 export interface PathOutcome {
@@ -187,6 +296,11 @@ export interface PathOutcome {
    *  PATH_MAX_HOLD_MS), so what it actually earns is its excursion at that moment,
    *  which is what this records. */
   terminalR: number;
+  /** Round-trip cost in R for THIS trade, from its own risk unit and price.
+   *  Carried per outcome rather than applied as a constant because it varies by
+   *  a factor of two across the universe (0.21R on NEAR, 0.49R on BTC) and by
+   *  volatility regime within a single symbol. */
+  costR: number;
   /** Bar open timestamp — drives recency weighting. */
   at: number;
 }
@@ -200,13 +314,34 @@ export interface PathOutcome {
  * score late slots as structurally worse for a reason that has nothing to do
  * with the market. Every slot gets the same forward budget.
  */
+/**
+ * Which extreme of a candle is assumed to print first.
+ *
+ * An OHLC candle records that price visited both its high and its low, and not
+ * in which order. When one of them is the stop and the other is the target, that
+ * missing ordering decides the trade, and no amount of care elsewhere recovers
+ * it — only finer-grained data does.
+ *
+ * 'adverse'    — the stop prints first. The conservative bound, and the default:
+ *                a study that assumes otherwise reports an edge no fill could
+ *                have captured.
+ * 'favourable' — the target prints first. The optimistic bound.
+ *
+ * Running both brackets the truth. If the two bounds agree on the conclusion,
+ * the ordering does not matter and 1-minute data would buy nothing; if they
+ * straddle it, the conclusion is unresolved at 15-minute resolution and the
+ * honest next step is finer candles rather than a firmer opinion.
+ */
+export type CandleOrdering = 'adverse' | 'favourable';
+
 export function measureBarPaths(
   state: BarState,
   barOpenAt: number,
   slots: Candle[],
   forward: Candle[],
   riskUnit: number,
-  horizonSlots: number = SLOTS_PER_BAR
+  horizonSlots: number = SLOTS_PER_BAR,
+  ordering: CandleOrdering = 'adverse'
 ): PathOutcome[] {
   if (!(riskUnit > 0) || slots.length === 0) return [];
   const out: PathOutcome[] = [];
@@ -232,21 +367,31 @@ export function measureBarPaths(
       let terminalR = 0;
 
       for (const candle of window) {
-        // Worst-case ordering inside a candle: the adverse extreme is assumed to
-        // print first. A study that assumes the favourable one prints first
-        // reports an edge that no fill could have captured.
         const adverse = ((direction === 'LONG' ? candle.low : candle.high) - entry) * sign / riskUnit;
         const favourable = ((direction === 'LONG' ? candle.high : candle.low) - entry) * sign / riskUnit;
-        maeR = Math.max(maeR, -adverse);
-        if (maeR >= 1) { stopped = true; break; }
-        mfeR = Math.max(mfeR, favourable);
+
+        if (ordering === 'favourable') {
+          // Optimistic bound: the target is credited before the stop is checked,
+          // so a candle that spans both counts as a win.
+          mfeR = Math.max(mfeR, favourable);
+          maeR = Math.max(maeR, -adverse);
+          if (maeR >= 1) { stopped = true; break; }
+        } else {
+          maeR = Math.max(maeR, -adverse);
+          if (maeR >= 1) { stopped = true; break; }
+          mfeR = Math.max(mfeR, favourable);
+        }
         // Close-to-close, so the terminal value is where the position would
         // actually be marked when the hold budget runs out — not the extreme it
         // touched on the way.
         terminalR = ((candle.close - entry) * sign) / riskUnit;
       }
 
-      out.push({ state, slot, direction, mfeR, maeR, stopped, terminalR, at: barOpenAt });
+      out.push({
+        state, slot, direction, mfeR, maeR, stopped, terminalR,
+        costR: costInR(riskUnit, entry),
+        at: barOpenAt
+      });
     }
   }
 
@@ -290,18 +435,77 @@ export interface PathBucket {
   slR: number;
   pHit: number;
   pLow: number;
-  /** Expected R per trade at pLow, net of the round-trip cost estimate. */
+  /** Expected R per trade at pLow, net of the round-trip cost actually paid. */
   expectedR: number;
+  /** Mean round-trip cost in R across this bucket's trades. Surfaced because it
+   *  is usually the largest single term in expectedR, and a reader comparing two
+   *  buckets needs to see whether the difference is edge or just cheaper R. */
+  costR: number;
 }
 
-/** Round-trip cost in R, subtracted from every bucket's expectancy. Taker fees
- *  plus slippage on both sides, expressed against a 1R stop — an edge of 0.05R
- *  is not an edge once the exchange is paid. */
+// ── Cost ─────────────────────────────────────────────────────────────────────
+//
+// Cost is charged in R, and R is not a fixed fraction of price — so a flat
+// "cost = 0.06R" is not a conservative simplification, it is a wrong number that
+// happens to look small. Measured against the 15M risk unit this bot actually
+// trades, the true figure ranges from 0.21R on a volatile alt to 0.49R on BTC:
+// four to eight times what was being charged.
+//
+// The direction of the error is the dangerous one. Under-charging cost inflates
+// every bucket's expectancy, which inflates the number of buckets that clear the
+// in-sample bar, which inflates the multiple-comparisons problem the whole
+// walk-forward apparatus exists to control.
+//
+// The relationship is structural and worth stating plainly: cost/R = cost% / R%.
+// Shrinking R to make it reachable inside the hold budget makes cost/R larger by
+// exactly the same factor. Horizon, R and cost are one triangle, and it has to
+// be closed deliberately rather than one corner at a time.
+
+/** Entry is a resting limit order (maker); the exit is a stop or a time close,
+ *  both of which cross the book (taker). Bybit SPOT: 0.1% either side. */
+export const SPOT_MAKER_PCT = 0.1;
+export const SPOT_TAKER_PCT = 0.1;
+
+/** Slippage charged on the taker leg only. Midpoint of the simulator's own
+ *  0.05-0.15% band (simulateSlippage), so the study and the sim agree. */
+export const EXIT_SLIPPAGE_PCT = 0.10;
+
+/** Round-trip cost as a percentage of notional, for the SPOT path this bot
+ *  trades. Deliberately not parameterised by market type: bot 4 is spot-only,
+ *  and quoting a futures number here would invite someone to apply it without
+ *  the rest of the futures machinery. */
+export const ROUND_TRIP_COST_PCT = SPOT_MAKER_PCT + SPOT_TAKER_PCT + EXIT_SLIPPAGE_PCT;
+
+/**
+ * Round-trip cost expressed in R for one specific trade.
+ *
+ * `riskUnit` and `price` are in the same units, so this is cost% / R%. Returns a
+ * large finite number rather than Infinity when the risk unit is degenerate, so
+ * a bad bar is scored as unprofitable instead of poisoning an average with NaN.
+ *
+ * What this still does NOT model: the per-symbol bid/ask spread at the moment of
+ * the fill. Historical klines do not carry it, and inventing one would be the
+ * same class of error this function was written to remove. The omission biases
+ * cost DOWNWARD, so every expectancy below remains optimistic by roughly half a
+ * spread.
+ */
+export function costInR(riskUnit: number, price: number): number {
+  if (!(riskUnit > 0) || !(price > 0)) return 999;
+  const riskPercent = (riskUnit / price) * 100;
+  return ROUND_TRIP_COST_PCT / riskPercent;
+}
+
+/** Fallback used only where a per-trade cost is genuinely unavailable. Kept at
+ *  the OLD flat value on purpose: if it ever shows up in a result, the number is
+ *  recognisable as the placeholder it is rather than blending in. */
 export const DEFAULT_COST_R = 0.06;
 
 export interface BuildTableOptions {
   now?: number;
   minSamples?: number;
+  /** Overrides the per-outcome cost with a flat figure. For tests and for
+   *  measuring how much of a result is the cost model — not for production
+   *  builds, where each trade should pay its own bill. */
   costR?: number;
   tpGrid?: number[];
 }
@@ -316,8 +520,8 @@ export interface BuildTableOptions {
 export function buildPathTable(outcomes: PathOutcome[], options: BuildTableOptions = {}): PathBucket[] {
   const now = options.now ?? Date.now();
   const minSamples = options.minSamples ?? MIN_BUCKET_SAMPLES;
-  const costR = options.costR ?? DEFAULT_COST_R;
-  const tpGrid = options.tpGrid ?? TP_GRID_R;
+  const costOverrideR = options.costR;
+  const tpGrid = options.tpGrid ?? [DEFAULT_TP_R];
 
   const grouped = new Map<string, PathOutcome[]>();
   for (const outcome of outcomes) {
@@ -344,6 +548,7 @@ export function buildPathTable(outcomes: PathOutcome[], options: BuildTableOptio
       // worth (terminalR). Collapsing the third case into the second is what
       // made every bucket look like −0.9R.
       let weightedR = 0;
+      let weightedCost = 0;
 
       for (const outcome of group) {
         const weight = recencyWeight(outcome.at, now);
@@ -355,6 +560,10 @@ export function buildPathTable(outcomes: PathOutcome[], options: BuildTableOptio
         if (won) { weightedHits += weight; hits++; }
         const realisedR = won ? tpR : outcome.stopped ? -1 : outcome.terminalR;
         weightedR += weight * realisedR;
+        // Each trade pays its OWN cost. Averaging riskUnit across a bucket first
+        // and costing that would understate the bill, because cost/R is convex
+        // in R: the cheap wide-R bars cannot subsidise the expensive tight-R ones.
+        weightedCost += weight * (Number.isFinite(outcome.costR) ? outcome.costR : DEFAULT_COST_R);
       }
 
       if (weightedTotal <= 0) continue;
@@ -369,7 +578,8 @@ export function buildPathTable(outcomes: PathOutcome[], options: BuildTableOptio
       // own uncertainty without pretending a flat trade was a full loss.
       const realisedExpectedR = weightedR / weightedTotal;
       const confidenceHaircut = (pHit - pLow) * tpR;
-      const expectedR = realisedExpectedR - confidenceHaircut - costR;
+      const bucketCostR = costOverrideR ?? (weightedCost / weightedTotal);
+      const expectedR = realisedExpectedR - confidenceHaircut - bucketCostR;
 
       if (!best || expectedR > best.expectedR) {
         best = {
@@ -382,6 +592,7 @@ export function buildPathTable(outcomes: PathOutcome[], options: BuildTableOptio
           slR: 1,
           pHit: Number(pHit.toFixed(4)),
           pLow: Number(pLow.toFixed(4)),
+          costR: Number(bucketCostR.toFixed(4)),
           expectedR: Number(expectedR.toFixed(4))
         };
       }
@@ -487,20 +698,23 @@ export interface ValidatedBucket extends PathBucket {
 export function scoreBucketOutOfSample(
   bucket: PathBucket,
   testOutcomes: PathOutcome[],
-  costR: number = DEFAULT_COST_R
+  /** Flat override. Omit in production so each trade pays its own cost. */
+  costR?: number
 ): { expectedR: number; samples: number } | undefined {
   const key = bucketKey(bucket.state, bucket.slot, bucket.direction);
   let total = 0;
   let sumR = 0;
+  let sumCost = 0;
   for (const outcome of testOutcomes) {
     if (bucketKey(outcome.state, outcome.slot, outcome.direction) !== key) continue;
     total++;
     // Same three-outcome model as buildPathTable. No Wilson haircut here: this
     // IS the test, so it is scored on what the rule actually earned.
     sumR += outcome.mfeR >= bucket.tpR ? bucket.tpR : outcome.stopped ? -1 : outcome.terminalR;
+    sumCost += costR ?? (Number.isFinite(outcome.costR) ? outcome.costR : DEFAULT_COST_R);
   }
   if (total === 0) return undefined;
-  return { expectedR: sumR / total - costR, samples: total };
+  return { expectedR: (sumR - sumCost) / total, samples: total };
 }
 
 export interface WalkForwardOptions {
@@ -539,7 +753,12 @@ export function buildValidatedPathTable(
 ): WalkForwardReport {
   const minWindowsPositive = options.minWindowsPositive ?? 2;
   const minOosExpectedR = options.minOosExpectedR ?? 0;
-  const costR = options.costR ?? DEFAULT_COST_R;
+  // Left undefined unless the caller explicitly overrides: resolving it to
+  // DEFAULT_COST_R here would push a flat 0.06R into both the in-sample build and
+  // the out-of-sample scoring, silently undoing the per-trade cost model. That is
+  // exactly what it did on the first run — the surviving bucket reported
+  // cost=0.06R while the universe mean was 0.304R.
+  const costOverrideR = options.costR;
 
   // key → accumulated evidence across windows
   const acc = new Map<string, {
@@ -561,7 +780,7 @@ export function buildValidatedPathTable(
     const trained = buildPathTable(train, {
       now: window.trainTo,
       minSamples: options.minSamples,
-      costR,
+      costR: costOverrideR,
       tpGrid: options.tpGrid
     });
 
@@ -570,7 +789,7 @@ export function buildValidatedPathTable(
       const key = bucketKey(bucket.state, bucket.slot, bucket.direction);
       candidateKeys.add(key);
 
-      const oos = scoreBucketOutOfSample(bucket, test, costR);
+      const oos = scoreBucketOutOfSample(bucket, test, costOverrideR);
       if (!oos) continue;
 
       const entry = acc.get(key) ?? {

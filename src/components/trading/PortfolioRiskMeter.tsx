@@ -26,6 +26,16 @@ interface PortfolioRiskMeterProps {
   dailyDrawdownPercent?: number;
   weeklyDrawdownPercent?: number;
   marketRegime?: MarketRegimeResult | null;
+  /**
+   * Engines whose figures could not be read, by name.
+   *
+   * Their numbers are NOT in the totals above, and that is the point: a bot
+   * with an unreachable worker reports placeholder equity and zero exposure,
+   * and folding that in would quietly shrink every percentage on this card. A
+   * risk meter is allowed to say "I do not know about this engine"; it is not
+   * allowed to imply exposure is lower than it is.
+   */
+  unavailableEngines?: string[];
 }
 
 export const PortfolioRiskMeter: React.FC<PortfolioRiskMeterProps> = ({
@@ -38,7 +48,8 @@ export const PortfolioRiskMeter: React.FC<PortfolioRiskMeterProps> = ({
   maxFutures = 2,
   dailyDrawdownPercent = 0,
   weeklyDrawdownPercent = 0,
-  marketRegime
+  marketRegime,
+  unavailableEngines = []
 }) => {
   const safePortfolio = Math.max(1, portfolioValue);
   
@@ -111,6 +122,18 @@ export const PortfolioRiskMeter: React.FC<PortfolioRiskMeterProps> = ({
       </CardHeader>
 
       <CardContent className="p-4 sm:p-5 space-y-4">
+        {/* Incomplete coverage. Shown ABOVE the drawdown warnings because it
+            qualifies every number below it: the totals are a lower bound while
+            any engine is missing. */}
+        {unavailableEngines.length > 0 && (
+          <div className="p-3 bg-orange-500/15 border border-orange-500/40 rounded-lg flex items-center gap-3 text-orange-300 text-xs font-mono">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            <div>
+              <strong>נתונים חסרים:</strong> {unavailableEngines.join(', ')} — המספרים כאן אינם כוללים את החשיפה של {unavailableEngines.length === 1 ? 'מנוע זה' : 'מנועים אלה'}, ולכן הם רצפה ולא הסכום המלא.
+            </div>
+          </div>
+        )}
+
         {/* Drawdown Circuit Breaker Warnings */}
         {(isDailyHalt || isWeeklyHalt) ? (
           <div className="p-3 bg-red-500/15 border border-red-500/40 rounded-lg flex items-center gap-3 text-red-400 text-sm font-mono animate-pulse">

@@ -25,6 +25,7 @@ import {
 import type { ClosedTradeRecord } from '@cde/engine/execution';
 import { DecisionEngine, IntradayAdapter } from '@cde/engine';
 import type { DecisionResult, DecisionContext } from '@cde/engine';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 
 export type { SignalEvaluation, DecisionFactor } from '@cde/engine';
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from '@cde/engine/execution';
@@ -692,7 +693,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
     lastEvaluation,
     evaluations,
     reset,
-    minConfidence: 52,
+    minConfidence: SIM_MIN_CONFIDENCE.intraday,
     hasSavedSession,
     nextTickAt,
     totalLeveragedExposureUsd,

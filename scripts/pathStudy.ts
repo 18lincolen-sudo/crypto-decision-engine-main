@@ -26,6 +26,10 @@
  *   npx tsx scripts/pathStudy.ts snapshot --from 2024-01-01 --to 2025-07-01
  *   npx tsx scripts/pathStudy.ts build
  *   npx tsx scripts/pathStudy.ts build --min-samples 150 --train-days 120 --test-days 30
+ *   npx tsx scripts/pathStudy.ts build --horizon-slots 96      # 24h hold
+ *   npx tsx scripts/pathStudy.ts build --use-fng               # re-add the sentiment split
+ *   npx tsx scripts/pathStudy.ts build --optimistic            # optimistic ordering bound
+ *   npx tsx scripts/pathStudy.ts build --risk-basis 1h --horizon-slots 96
  *   npx tsx scripts/pathStudy.ts show
  *
  * `snapshot` downloads 15-minute candles once and writes them to disk; `build`
@@ -43,9 +47,15 @@ import {
   buildValidatedPathTable,
   buildWalkForwardWindows,
   labelBarState,
+  DEFAULT_USE_FEAR_GREED,
+  DEFAULT_TP_R,
+  SLOT_MS,
+  type CandleOrdering,
   measureBarPaths,
-  riskUnitFrom15M,
+  riskUnitFor,
   prior15mFor,
+  lookbackForBasis,
+  type RiskBasis,
   barOpenFor,
   SLOTS_PER_BAR,
   type PathOutcome,
@@ -191,7 +201,11 @@ async function cmdSnapshot(): Promise<void> {
  *     with no reading available is SKIPPED, not defaulted to a neutral 50 —
  *     inventing a label is worse than losing a sample.
  */
-function outcomesForSymbol(m15: Candle[], fng: FearGreedSeries): PathOutcome[] {
+function outcomesForSymbol(
+  m15: Candle[],
+  fng: FearGreedSeries,
+  opts: { useFearGreed: boolean; horizonSlots: number; ordering: CandleOrdering; riskBasis: RiskBasis }
+): PathOutcome[] {
   const h4 = aggregateToH4(m15);
   if (h4.length < 62) return [];
 
@@ -206,6 +220,8 @@ function outcomesForSymbol(m15: Candle[], fng: FearGreedSeries): PathOutcome[] {
 
   const sorted15m = [...m15].sort((a, b) => a.timestamp - b.timestamp);
   const cursor = { i: 0 };
+  const byTimestamp = new Map<number, Candle>();
+  for (const c of sorted15m) byTimestamp.set(c.timestamp, c);
 
   const outcomes: PathOutcome[] = [];
   for (let i = 60; i < h4.length; i++) {
@@ -217,18 +233,29 @@ function outcomesForSymbol(m15: Candle[], fng: FearGreedSeries): PathOutcome[] {
     if (sentiment === undefined) continue;
 
     const priorBars = h4.slice(0, i);
-    const state = labelBarState(priorBars, sentiment);
+    const state = labelBarState(priorBars, sentiment, opts.useFearGreed);
     if (!state) continue;
 
-    const nextBar = h4[i + 1];
-    const forward = nextBar ? (slotsByBar.get(nextBar.timestamp) ?? []) : [];
+    // Forward window taken from the flat series, not from "the next bar":
+    // a horizon longer than one bar needs more than one bar of lookahead, and
+    // every slot must get the SAME budget or late slots are scored on less data
+    // than early ones.
+    const barEnd = bar.timestamp + SLOTS_PER_BAR * SLOT_MS;
+    const forwardNeeded = opts.horizonSlots + SLOTS_PER_BAR;
+    const forward: Candle[] = [];
+    for (let k = 0; k < forwardNeeded; k++) {
+      const t = barEnd + k * SLOT_MS;
+      const c = byTimestamp.get(t);
+      if (!c) break;
+      forward.push(c);
+    }
     // 1R on the 15M ATR of candles that closed before this bar. Anything wider
     // (the 4H ATR this used to use) is unreachable inside a one-bar hold, which
     // is what made the first run measure nothing — see PATH_RISK_UNIT_ATR_MULT.
-    const riskUnit = riskUnitFrom15M(prior15mFor(sorted15m, bar.timestamp, cursor));
+    const riskUnit = riskUnitFor(prior15mFor(sorted15m, bar.timestamp, cursor, lookbackForBasis(opts.riskBasis)), opts.riskBasis);
     if (!(riskUnit > 0)) continue;
 
-    outcomes.push(...measureBarPaths(state, bar.timestamp, slots, forward, riskUnit));
+    outcomes.push(...measureBarPaths(state, bar.timestamp, slots, forward, riskUnit, opts.horizonSlots, opts.ordering));
   }
   return outcomes;
 }
@@ -245,14 +272,32 @@ function cmdBuild(): void {
   const trainDays = num('train-days', 120);
   const testDays = num('test-days', 30);
   const minWindowsPositive = num('min-windows', 2);
+  // Horizon in 15-minute slots. 16 = one 4H bar, the original thesis. Longer
+  // horizons widen the reachable move without shrinking R, which is the only
+  // lever that relieves the cost/R squeeze while staying on spot.
+  const horizonSlots = num('horizon-slots', SLOTS_PER_BAR);
+  const useFearGreed = process.argv.includes('--use-fng') ? true : DEFAULT_USE_FEAR_GREED;
+  const tpR = num('tp', DEFAULT_TP_R);
+  // 'adverse' is the conservative bound and the default. Run 'favourable' to get
+  // the optimistic bound: if both agree on the verdict, 15-minute resolution is
+  // enough and 1-minute candles would change nothing.
+  const ordering: CandleOrdering = process.argv.includes('--optimistic') ? 'favourable' : 'adverse';
+  const riskBasis = (arg('risk-basis', '15m') === '1h' ? '1h' : '15m') as RiskBasis;
 
   console.log(`replaying ${snap.histories.length} symbols (${snap.from} → ${snap.to})`);
   console.log(`sentiment: ${fng.count} daily readings`);
 
+  console.log(`state space: regime × ${useFearGreed ? 'sentiment × ' : ''}16 slots × 2 directions`);
+  console.log(`horizon ${horizonSlots} slots (${(horizonSlots * 15 / 60).toFixed(1)}h), single target ${tpR}R`);
+  console.log(`intra-candle ordering: ${ordering === 'adverse' ? 'ADVERSE first (conservative bound)' : 'FAVOURABLE first (optimistic bound)'}`);
+  console.log(`risk basis: 1R = ATR(${riskBasis.toUpperCase()}) x 2.0`);
+
   const outcomes: PathOutcome[] = [];
   for (const history of snap.histories) {
-    const symbolOutcomes = outcomesForSymbol(history.m15, fng);
-    outcomes.push(...symbolOutcomes);
+    const symbolOutcomes = outcomesForSymbol(history.m15, fng, { useFearGreed, horizonSlots, ordering, riskBasis });
+    // A loop, not push(...spread): a full-history symbol contributes hundreds of
+    // thousands of outcomes and spreading them as arguments overflows the stack.
+    for (const o of symbolOutcomes) outcomes.push(o);
     console.log(`  ${history.symbol} ... ${symbolOutcomes.length} outcomes`);
   }
 
@@ -281,8 +326,13 @@ function cmdBuild(): void {
 
   const report = buildValidatedPathTable(outcomes, windows, {
     minSamples,
-    minWindowsPositive
+    minWindowsPositive,
+    tpGrid: [tpR]
   });
+
+  const meanCost = outcomes.reduce((a, o) => a + (Number.isFinite(o.costR) ? o.costR : 0), 0) / outcomes.length;
+  console.log(`mean round-trip cost: ${meanCost.toFixed(3)}R  (was charged as a flat 0.06R before this pass)
+`);
 
   console.log('── validation ──────────────────────────────────────────────');
   console.log(`  candidates (passed in-sample)      ${report.candidates}`);
@@ -307,7 +357,7 @@ function cmdBuild(): void {
     for (const b of report.table.slice(0, 10)) {
       console.log(
         `    ${b.state.regime.padEnd(14)} ${b.state.fng.padEnd(13)} slot ${String(b.slot).padStart(2)} ` +
-        `${b.direction.padEnd(5)} n=${String(b.rawN).padStart(5)} tp=${b.tpR}R ` +
+        `${b.direction.padEnd(5)} n=${String(b.rawN).padStart(5)} tp=${b.tpR}R cost=${b.costR.toFixed(2)}R ` +
         `oos=${b.oosExpectedR >= 0 ? '+' : ''}${b.oosExpectedR.toFixed(3)}R ` +
         `windows=${b.windows}/${b.windowsTested}`
       );
@@ -331,7 +381,7 @@ function cmdBuild(): void {
     expectedUnderNull: report.expectedUnderNull,
     survivors: report.survivors,
     published: publish.length,
-    settings: { minSamples, trainDays, testDays, minWindowsPositive },
+    settings: { minSamples, trainDays, testDays, minWindowsPositive, horizonSlots, useFearGreed, tpR, ordering, riskBasis },
     table: publish
   }, null, 2));
 

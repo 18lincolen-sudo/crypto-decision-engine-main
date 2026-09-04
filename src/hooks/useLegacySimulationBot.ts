@@ -34,6 +34,7 @@ import type {
 } from './useSimulationBot';
 import { DecisionEngine, LegacyAdapter } from '@cde/engine';
 import type { DecisionResult, DecisionContext } from '@cde/engine';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig } from './useSimulationBot';
 
@@ -554,7 +555,7 @@ export function useLegacySimulationBot({ config, isRunning, cryptoData, fearGree
   return {
     cash, positions, positionsValue, equity, trades, history: displayHistory, pending,
     totalFees, totalSlippageCost, winRate, totalTrades: trades.length, closedTrades: closedTrades.length,
-    lastEvaluation, evaluations, reset, minConfidence: 58, hasSavedSession, nextTickAt,
+    lastEvaluation, evaluations, reset, minConfidence: SIM_MIN_CONFIDENCE.legacy, hasSavedSession, nextTickAt,
     totalLeveragedExposureUsd, dailyDrawdownPercent, weeklyDrawdownPercent, activeMarketRegimes,
     candleCount: Object.keys(candlesBySymbol).length
   };

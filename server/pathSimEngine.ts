@@ -26,6 +26,7 @@ import {
   StrategyTickInput,
   SimSnapshot
 } from './simEngineFactory';
+import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 import { generatePathOrders, MIN_PATH_CANDLES } from '@cde/engine/execution';
 import type { SignalEvaluation, DecisionFactor, Candle } from '@cde/engine';
 import {
@@ -165,6 +166,10 @@ function rebuildTable(input: StrategyTickInput): void {
       // not the binding limitation of this path, the missing out-of-sample test
       // is.
       const priorBars = h4.slice(0, i);
+      // Sentiment split OFF by default, matching the study (DEFAULT_USE_FEAR_GREED).
+      // The two MUST agree: labelling with a different state space here would
+      // build keys the validated table cannot contain, and the bot would abstain
+      // forever while looking like it was working.
       const state = labelBarState(priorBars, input.fearGreedIndex ?? 50);
       if (!state) continue;
 
@@ -220,6 +225,14 @@ function toSignalEvaluation(decision: PathDecision, price: number, priceChange24
   } as SignalEvaluation;
 }
 
+/**
+ * This engine's confidence floor, defined once.
+ *
+ * A probability, not a score — see PathDecisionInput.minConfidence. An operator
+ * override replaces it; this is the value in force when nobody set one.
+ */
+const PATH_MIN_CONFIDENCE = SIM_MIN_CONFIDENCE.path;
+
 const pathStrategy: SimEngineStrategy = {
   id: 'path',
   logPrefix: '[path-sim-engine]',
@@ -230,7 +243,7 @@ const pathStrategy: SimEngineStrategy = {
   // so the floor here is a probability, not a score: a 2R target only needs to
   // land ~36% of the time to be profitable, and demanding 58 the way the H1
   // bots do would reject every genuinely good asymmetric bet.
-  minConfidence: 33,
+  minConfidence: PATH_MIN_CONFIDENCE,
   minCandlesForH1View: MIN_PATH_CANDLES,
   logCandleFetch: false,
 
@@ -263,7 +276,14 @@ const pathStrategy: SimEngineStrategy = {
         fearGreedIndex: input.fearGreedIndex ?? 50,
         table: pathTable,
         now,
-        minExpectedR: MIN_EXPECTED_R
+        minExpectedR: MIN_EXPECTED_R,
+        // The operator's floor, forwarded so the panel's control is real. The
+        // other three engines carry theirs in DecisionContext.config; this bot
+        // calls its engine directly, which is how the field ended up displayed
+        // but never read.
+        minConfidence: typeof input.config.minConfidenceOverride === 'number' && input.config.minConfidenceOverride > 0
+          ? input.config.minConfidenceOverride
+          : PATH_MIN_CONFIDENCE
       });
 
       results.push(toSignalEvaluation(decision, crypto.current_price, crypto.price_change_percentage_24h || 0));

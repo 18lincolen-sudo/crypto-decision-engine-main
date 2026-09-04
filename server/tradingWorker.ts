@@ -30,6 +30,12 @@ import { createPathSimEngine, PathSimSnapshot, getPathTableStatus } from './path
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, IntradayTradeType as TradeType } from '@cde/engine/analysis';
 import { buildPortfolioRiskStats } from '@cde/engine';
+// The static half of every sim bot's config. The env-driven half
+// (BOT_MIN_CONFIDENCE / BOT_POSITION_PERCENT / BOT_MAX_OPEN_POSITIONS /
+// BOT_RISK_LEVEL) is layered on top below and stays owned by this file — the
+// browser cannot see those variables, which is exactly why they are NOT in the
+// shared module pretending to be defaults both runtimes agree on.
+import { simBotDefaults } from '@cde/engine/execution';
 import { getMultiTimeframeData, exportMarketDataCache, importMarketDataCache, TIMEFRAME_SPECS, TIMEFRAME_ORDER, type TimeframeCacheEntry } from '@cde/engine/market-data';
 import { toBybitSymbol } from '@cde/engine/market-data';
 import { TARGET_SYMBOLS } from '@cde/engine/market-data';
@@ -517,9 +523,9 @@ function applySimConfigPatch<T extends { config: Record<string, unknown>; snapsh
 }
 
 const DEFAULT_SIM_CONFIG = {
-  riskLevel, initialAmount: 10000,
-  maxPositions: maxOpenPositions, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 52, positionPercent
+  ...simBotDefaults('intraday'),
+  riskLevel, maxPositions: maxOpenPositions, positionPercent,
+  ...(minConfidenceOverrideEnv === undefined ? {} : { minConfidenceOverride: minConfidenceOverrideEnv })
 };
 const simState = {
   running: false, config: { ...DEFAULT_SIM_CONFIG } as typeof DEFAULT_SIM_CONFIG,
@@ -554,9 +560,9 @@ async function persistSim() {
 }
 
 const DEFAULT_LEGACY_SIM_CONFIG = {
-  riskLevel, initialAmount: 10000,
-  maxPositions: maxOpenPositions, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 58, positionPercent
+  ...simBotDefaults('legacy'),
+  riskLevel, maxPositions: maxOpenPositions, positionPercent,
+  ...(minConfidenceOverrideEnv === undefined ? {} : { minConfidenceOverride: minConfidenceOverrideEnv })
 };
 const legacySimState = { running: false, config: { ...DEFAULT_LEGACY_SIM_CONFIG } as typeof DEFAULT_LEGACY_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.legacy as string };
 
@@ -582,9 +588,9 @@ async function persistLegacySim() {
 }
 
 const DEFAULT_PRO_SIM_CONFIG = {
-  riskLevel, initialAmount: 10000,
-  maxPositions: maxOpenPositions, maxFuturesPositions: 2, feePercent: 0.1, slippagePercent: 0.05,
-  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 58, positionPercent
+  ...simBotDefaults('pro'),
+  riskLevel, maxPositions: maxOpenPositions, positionPercent,
+  ...(minConfidenceOverrideEnv === undefined ? {} : { minConfidenceOverride: minConfidenceOverrideEnv })
 };
 const proSimState = { running: false, config: { ...DEFAULT_PRO_SIM_CONFIG } as typeof DEFAULT_PRO_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.pro as string };
 
@@ -613,12 +619,12 @@ async function persistProSim() {
 // Same config shape and the same shared defaults as the other three: the point
 // of the fourth bot is to isolate its DECISION layer, so every other variable
 // (capital, position cap, costs, sizing ceiling) is deliberately identical.
+// maxFuturesPositions is 0 and minConfidenceOverride is 33 (a probability, not
+// a score) — both come from the shared table, where the reasoning lives.
 const DEFAULT_PATH_SIM_CONFIG = {
-  riskLevel, initialAmount: 10000,
-  maxPositions: maxOpenPositions, maxFuturesPositions: 0, feePercent: 0.1, slippagePercent: 0.05,
-  // The confidence a path signal reports is the bucket's lower-bound hit rate,
-  // so this floor is a probability: a 2R target clears breakeven around 36%.
-  executionDelaySec: 3, minConfidenceOverride: minConfidenceOverrideEnv ?? 33, positionPercent
+  ...simBotDefaults('path'),
+  riskLevel, maxPositions: maxOpenPositions, positionPercent,
+  ...(minConfidenceOverrideEnv === undefined ? {} : { minConfidenceOverride: minConfidenceOverrideEnv })
 };
 const pathSimState = { running: false, config: { ...DEFAULT_PATH_SIM_CONFIG } as typeof DEFAULT_PATH_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.path as string };
 
@@ -1223,6 +1229,42 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   if (req.method === 'GET' && url.pathname === '/api/public/universe') {
     return json(res, 200, { symbols, generatedAt: universeGeneratedAt });
+  }
+
+  /**
+   * The config each sim bot ACTUALLY starts from, after the environment layer.
+   *
+   * `@cde/engine`'s simBotDefaults() gives both runtimes the same compile-time
+   * base, but the worker then lays BOT_MIN_CONFIDENCE, BOT_POSITION_PERCENT,
+   * BOT_MAX_OPEN_POSITIONS and BOT_RISK_LEVEL on top — and a browser cannot read
+   * environment variables. Without this endpoint the panel showed the base and
+   * called it the default, which is true only on a deployment that sets none of
+   * those four.
+   *
+   * Public, like /api/public/universe: these are operating parameters the sim
+   * state endpoints already expose to the same unauthenticated callers, and
+   * nothing here is a credential.
+   *
+   * The RUNNING config still comes from each bot's own /state — this is only
+   * what a fresh bot would start with, which is exactly the gap the frontend
+   * had to fill with a guess.
+   */
+  if (req.method === 'GET' && url.pathname === '/api/public/sim-defaults') {
+    return json(res, 200, {
+      intraday: DEFAULT_SIM_CONFIG,
+      legacy: DEFAULT_LEGACY_SIM_CONFIG,
+      pro: DEFAULT_PRO_SIM_CONFIG,
+      path: DEFAULT_PATH_SIM_CONFIG,
+      // Which of the four environment variables are actually set here. The
+      // frontend does not need this to function; an operator looking at two
+      // deployments that disagree does.
+      envOverrides: {
+        minConfidence: minConfidenceOverrideEnv ?? null,
+        positionPercent,
+        maxOpenPositions,
+        riskLevel
+      }
+    });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/fear-greed') {

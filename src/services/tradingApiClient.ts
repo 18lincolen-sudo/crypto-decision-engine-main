@@ -430,3 +430,39 @@ export function createTradingApiClient(configuredBaseUrl: string, adminToken: st
   };
 }
 
+
+// ── Sim config bootstrap ─────────────────────────────────────────────────────
+
+export interface SimDefaultsResponse {
+  intraday: SimBotConfig;
+  legacy: SimBotConfig;
+  pro: SimBotConfig;
+  path: SimBotConfig;
+  /** Which deploy-time variables the worker actually has set. Diagnostic only. */
+  envOverrides: {
+    minConfidence: number | null;
+    positionPercent: number;
+    maxOpenPositions: number;
+    riskLevel: string;
+  };
+}
+
+/**
+ * The config each bot would START with on this worker.
+ *
+ * `@cde/engine`'s simBotDefaults() already gives the browser and the worker the
+ * same compile-time base. What the browser cannot see is the environment layer
+ * the worker lays on top (BOT_MIN_CONFIDENCE and friends), so until this is
+ * read the panel is showing the base and calling it the default — correct only
+ * on a deployment that sets none of them.
+ *
+ * This is NOT the running config. Each bot's own /state endpoint carries that,
+ * and it always wins; this only fills the window before the first poll lands.
+ */
+export async function getSimDefaults(configuredBaseUrl?: string): Promise<SimDefaultsResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/public/sim-defaults`);
+  if (!res.ok) throw new Error(`Failed to fetch sim defaults: ${res.status} ${res.statusText}`);
+  return (await res.json()) as SimDefaultsResponse;
+}
