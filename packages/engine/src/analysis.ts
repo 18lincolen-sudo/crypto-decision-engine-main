@@ -13,6 +13,7 @@ export {
   proTechnicalScore,
   proMinConfidence,
   proAllocationPercent,
+  calculateOptimalEntryPrice,
   evaluateProExit,
   PRO_INDICATOR_WEIGHTS,
   PRO_COVERAGE_FULL_WEIGHT,

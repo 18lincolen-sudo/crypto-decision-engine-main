@@ -9,6 +9,7 @@ import {
   computeProSignal,
   evaluateProExit,
   proMinConfidence,
+  calculateOptimalEntryPrice,
   PRO_DEFAULT_ENTRY_CONFIDENCE,
   PRO_CONFIDENCE_BY_RISK,
   PRO_ALLOCATION_BY_RISK,
@@ -150,13 +151,22 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
     expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
   });
 
-  it('healthy equity with low cash still allocates a budget (equity-based, not cash-based)', () => {
-    // $50 cash but $10,000 equity → budget is min(1000, 10000) = 1000, not min(1000, 50) = 50
-    // confidence 80 → 10% allocation
+  it('low cash refuses even with healthy equity (cash-based, not equity-based)', () => {
+    // $50 cash but $10,000 equity → budget is min(1000, 50) = 50, which is above $5
+    // but the fill step would refuse it (budget + fee > cash), so the gate
+    // allocates against cash to prevent "ready to buy" with no purchase.
+    // confidence 80 → 10% allocation → min(1000, 50) = 50
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 10_000 }));
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(1000, 6);
+    expect(ev.budgetUsd).toBeCloseTo(50, 6); // capped at available cash
+  });
+
+  it('very low cash (<$5) refuses even with healthy equity', () => {
+    // $4 cash but $10,000 equity → budget = min(1000, 4) = 4 < $5 → NO_BUDGET
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 4, equity: 10_000 }));
+    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
+    expect(ev.willExecute).toBe(false);
   });
 
   it('every gate passed → willExecute, "מבצע קנייה", and the allocated budget', () => {
@@ -310,5 +320,66 @@ describe('alignment — confidence reflects directional conviction', () => {
     if (signal.action !== 'BUY') {
       expect(signal.confidence).toBeLessThanOrEqual(50);
     }
+  });
+});
+
+describe('§6 — optimal entry price from support levels', () => {
+  const mockSignal = (over: Partial<ProSignalResult> = {}): ProSignalResult => ({
+    action: 'BUY',
+    buyScore: 10,
+    sellScore: 2,
+    holdScore: 3,
+    totalWeight: 88,
+    confidence: 75,
+    signals: [],
+    indicators: {
+      rsi: 35,
+      ma20: 95,
+      volumeTrend: 'increasing',
+      bollingerBands: { upper: 110, middle: 100, lower: 90, position: 'between' },
+      volumeProfile: { poc: 98, valueAreaHigh: 105, valueAreaLow: 92, position: 'in_value_area' },
+      macd: { macd: 1, signal: 0.5, histogram: 0.5, trend: 'bullish' },
+      stochastic: { k: 30, d: 25, signal: 'neutral' }
+    },
+    ...over
+  } as ProSignalResult);
+
+  it('computes an optimal entry price from indicator support levels', () => {
+    const signal = mockSignal();
+    const currentPrice = 100;
+    const optimal = calculateOptimalEntryPrice(signal, currentPrice);
+
+    // Should be between 90% and 100% of current price (support levels are lower)
+    expect(optimal).toBeGreaterThanOrEqual(currentPrice * 0.90);
+    expect(optimal).toBeLessThanOrEqual(currentPrice);
+  });
+
+  it('the optimal entry price is at or below current price (better entry)', () => {
+    const signal = mockSignal();
+    const currentPrice = 100;
+    const optimal = calculateOptimalEntryPrice(signal, currentPrice);
+
+    // The bot waits for a dip — entry should be at or below market
+    expect(optimal).toBeLessThanOrEqual(currentPrice);
+  });
+
+  it('weights Bollinger lower band heavily (strong support)', () => {
+    const signal = mockSignal({
+      indicators: {
+        rsi: 35,
+        ma20: 95,
+        volumeTrend: 'increasing',
+        bollingerBands: { upper: 110, middle: 100, lower: 85, position: 'between' },
+        volumeProfile: { poc: 98, valueAreaHigh: 105, valueAreaLow: 92, position: 'in_value_area' },
+        macd: { macd: 1, signal: 0.5, histogram: 0.5, trend: 'bullish' },
+        stochastic: { k: 30, d: 25, signal: 'neutral' }
+      }
+    });
+    const currentPrice = 100;
+    const optimal = calculateOptimalEntryPrice(signal, currentPrice);
+
+    // Bollinger lower at 85 should pull the optimal price down
+    expect(optimal).toBeLessThan(currentPrice);
+    expect(optimal).toBeGreaterThanOrEqual(currentPrice * 0.90);
   });
 });

@@ -24,6 +24,7 @@ import {
   evaluateProExit,
   proMinConfidence,
   proTechnicalScore,
+  calculateOptimalEntryPrice,
   MIN_PRO_CANDLES,
   type ProSignalResult,
   type ProRiskLevel
@@ -84,6 +85,10 @@ export function buildProEvaluation(
 
   const tradeSide: SignalEvaluation['tradeSide'] = signal.action === 'BUY' ? 'BUY' : signal.action === 'SELL' ? 'SELL' : 'NONE';
 
+  // §6: compute optimal entry price from indicator support levels.
+  // When limitEntries is on, the bot places a LIMIT at this price and waits.
+  const optimalEntryPrice = calculateOptimalEntryPrice(signal, currentPrice);
+
   return {
     symbol,
     action: signal.action.toLowerCase() as 'buy' | 'sell' | 'hold',
@@ -99,7 +104,9 @@ export function buildProEvaluation(
     confidenceGap: Math.max(0, minConfidence - signal.confidence),
     riskLevel,
     stopLoss: undefined, // fixed % — resolved against the fill price at order time, not the signal price
-    takeProfit1: undefined
+    takeProfit1: undefined,
+    indicators: signal.indicators,
+    optimalEntryPrice
   };
 }
 
@@ -120,10 +127,11 @@ export interface ProGateContext {
   positions: SimPosition[];
   pending: PendingOrder[];
   cash: number;
-  /** Total portfolio equity = cash + positions value. The budget gate uses this
-   *  (not just cash) so a portfolio that has value tied up in open positions can
-   *  still allocate a new budget — otherwise "no budget" fires despite a healthy
-   *  total equity. */
+  /** Total portfolio equity = cash + positions value — displayed in the UI so
+   *  the operator sees why a healthy-looking portfolio can still be cash-poor.
+   *  The budget GATE itself allocates against `cash` (what's actually spendable):
+   *  an allocation that equity would allow but cash couldn't cover would create
+   *  an order the fill step then refuses — "ready to buy" with no purchase. */
   equity: number;
   initialAmount: number;
   maxPositions: number;
@@ -161,10 +169,11 @@ export function applyProEntryGates(
   // §4 gate 5: open positions AND queued buys occupy slots. A slot an exit is
   // about to free stays occupied until that exit FILLS.
   let occupiedSlots = ctx.positions.length + ctx.pending.filter((o) => o.side === 'buy').length;
-  // Budget is tracked against total equity (cash + positions value), not just
-  // cash — a portfolio with value tied up in open positions can still allocate
-  // a new budget. projectedEquity decreases as we allocate within this batch.
-  let projectedEquity = ctx.equity;
+  // Budget is tracked against CASH (what's actually spendable), not equity —
+  // an allocation that equity would allow but cash couldn't cover would create
+  // an order the fill step then refuses, producing "ready to buy" with no
+  // purchase. projectedCash decreases as we allocate within this batch.
+  let projectedCash = ctx.cash;
 
   return evaluations
     .map((ev, i) => ({ ev, i }))
@@ -210,16 +219,18 @@ export function applyProEntryGates(
         return gateResult(ev, 'NO_SIGNAL [NO_PRICE]', 'אין מחיר תקף', false, minConfidence);
       }
       // Allocation is confidence-dependent: >70% → 10%, >80% → 15% of the
-      // remaining equity. This prevents a single position from consuming most
+      // spendable cash. This prevents a single position from consuming most
       // of the portfolio — high confidence gets a larger slice, but never the
-      // whole pie.
+      // whole pie. Allocated against CASH (not equity): an equity-based
+      // allocation that cash couldn't cover would create an order the fill
+      // step refuses — "ready to buy" with no purchase.
       const confidenceAllocation = ev.confidence > 80 ? 0.15 : 0.10;
-      const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedEquity);                                       // 7
+      const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash);                                        // 7
       if (budget < 5) {
         return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $5)`, false, minConfidence);
       }
       occupiedSlots++;                                                                                                          // 8
-      projectedEquity -= budget;
+      projectedCash -= budget;
       return gateResult(ev, 'SIGNAL SPOT BUY', `אות BUY בביטחון ${ev.confidence.toFixed(1)} >= סף ${minConfidence} — מבצע קנייה`, true, minConfidence, budget);
     });
 }
@@ -284,15 +295,20 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     if (positions.some((p) => p.symbol === ev.symbol)) continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
 
+    // §6: when limitEntries is on, use the optimal entry price (computed from
+    // support levels) instead of the current market price. This is typically
+    // LOWER — the bot waits for a dip to enter at a better price.
+    const entryPrice = limitEntries && ev.optimalEntryPrice ? ev.optimalEntryPrice : ev.price;
+
     newOrders.push({
       id: uid(`${ev.symbol}-buy`), symbol: ev.symbol, type: 'SPOT', side: 'buy',
-      signalPrice: ev.price, quantity: budget / ev.price, budgetUsd: budget, leverage: 1,
+      signalPrice: entryPrice, quantity: budget / entryPrice, budgetUsd: budget, leverage: 1,
       // §6 default: delayed MARKET fills — at executeAt the order fills at the
       // market price of that moment, adverse slippage and a Taker fee included.
-      // With `limitEntries` on, the order rests as a LIMIT at the signal price
-      // instead: the bot waits until the market reaches that price (or better,
-      // i.e. lower for a buy) and only then buys — "יחשב מתי להיכנס, יגיע לשער
-      // וירכוש". Fills are Maker (lower fee) and carry no slippage.
+      // With `limitEntries` on, the order rests as a LIMIT at the optimal entry
+      // price (from support levels): the bot waits until the market reaches that
+      // price (or better, i.e. lower for a buy) and only then buys — "יחשב מתי
+      // להיכנס, יגיע לשער וירכוש". Fills are Maker (lower fee) and carry no slippage.
       fill: limitEntries ? 'limit' : 'market',
       reason: ev.reasoning, confidence: ev.confidence,
       executeAt: Date.now() + delayMs, createdAt: Date.now()

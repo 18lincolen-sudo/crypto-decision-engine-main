@@ -345,6 +345,60 @@ export function proTechnicalScore(result: ProSignalResult): number {
   return calculateTechnicalScore(result.indicators);
 }
 
+/**
+ * §6 — compute an optimal entry price from indicator support levels.
+ *
+ * Instead of buying at the current market price, this calculates a better entry
+ * at technical support: Bollinger lower band, MA20, and Volume Profile value
+ * area low / POC. The result is typically LOWER than current price — the bot
+ * waits for a dip to enter.
+ *
+ * Weights (sum to 1.0):
+ *   - Bollinger lower band: 30% (strong volatility support)
+ *   - MA20: 25% (trend support)
+ *   - Volume Profile VAL: 25% (high-volume support)
+ *   - Volume Profile POC: 10% (point of control)
+ *   - Current price with 1% discount: 10% (slight pullback)
+ */
+export function calculateOptimalEntryPrice(signal: ProSignalResult, currentPrice: number): number {
+  const { bollingerBands, volumeProfile, ma20 } = signal.indicators;
+
+  const supportLevels: { price: number; weight: number }[] = [];
+
+  // Bollinger lower band (strong support)
+  if (bollingerBands.lower > 0) {
+    supportLevels.push({ price: bollingerBands.lower, weight: 0.30 });
+  }
+
+  // MA20 (trend support)
+  if (ma20 > 0) {
+    supportLevels.push({ price: ma20, weight: 0.25 });
+  }
+
+  // Volume Profile Value Area Low (high-volume support)
+  if (volumeProfile.valueAreaLow > 0) {
+    supportLevels.push({ price: volumeProfile.valueAreaLow, weight: 0.25 });
+  }
+
+  // Volume Profile POC (point of control)
+  if (volumeProfile.poc > 0) {
+    supportLevels.push({ price: volumeProfile.poc, weight: 0.10 });
+  }
+
+  // Current price with 1% discount (slight pullback)
+  supportLevels.push({ price: currentPrice * 0.99, weight: 0.10 });
+
+  // Weighted average
+  const totalWeight = supportLevels.reduce((sum, s) => sum + s.weight, 0);
+  if (totalWeight === 0) return currentPrice;
+
+  const weightedPrice = supportLevels.reduce((sum, s) => sum + s.price * s.weight, 0) / totalWeight;
+
+  // Cap at current price (we don't want to buy above market on entry)
+  // and floor at 90% of current price (don't wait for too big a drop)
+  return Number(Math.min(currentPrice, Math.max(currentPrice * 0.90, weightedPrice)).toFixed(2));
+}
+
 // ── §3 — risk-level thresholds ───────────────────────────────────────────────
 
 export type ProRiskLevel = 'low' | 'medium' | 'high';

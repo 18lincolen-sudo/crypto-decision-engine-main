@@ -92,6 +92,21 @@ export interface SignalEvaluation {
   advancedSupport?: number;
   advancedResistance?: number;
   advancedRiskLevel?: 'low' | 'medium' | 'high';
+  /** Pro (§2): the full indicator breakdown, carried onto the evaluation so the
+   *  order generator can compute an optimal entry price from support levels
+   *  (Bollinger lower, MA20, Volume Profile VAL/POC) instead of buying at the
+   *  current market price. */
+  indicators?: {
+    rsi: number;
+    ma20: number;
+    bollingerBands: { upper: number; middle: number; lower: number; position: string };
+    volumeProfile: { poc: number; valueAreaHigh: number; valueAreaLow: number; position: string };
+  };
+  /** Pro (§6): the optimal entry price computed from indicator support levels.
+   *  When `limitEntries` is true, the bot places a LIMIT order at this price and
+   *  waits for the market to reach it — "יחשב מתי להיכנס, יגיע לשער וירכוש".
+   *  This is typically LOWER than current price (a better entry at support). */
+  optimalEntryPrice?: number;
 }
 
 export interface PortfolioInput {

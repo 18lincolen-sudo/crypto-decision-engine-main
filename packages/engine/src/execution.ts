@@ -44,6 +44,7 @@ export {
   applyProEntryGates,
   generateProOrders
 } from './services/proSimExecution';
+export { calculateOptimalEntryPrice } from './services/proAlgEngine';
 
 // ── Simulation bot: positions, fills, config (shared by all three engines) ──
 export type {
