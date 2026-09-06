@@ -274,12 +274,13 @@ export function useProSimulationBot({ config, isRunning, cryptoData, initialSnap
       positions,
       pending,
       cash,
+      equity,
       initialAmount: config.initialAmount,
       maxPositions: config.maxPositions || 7,
       riskLevel,
       minConfidenceOverride
     });
-  }, [rawEvaluations, positions, pending, cash, config.initialAmount, config.maxPositions, riskLevel, minConfidenceOverride]);
+  }, [rawEvaluations, positions, pending, cash, equity, config.initialAmount, config.maxPositions, riskLevel, minConfidenceOverride]);
 
   // Per-held-symbol current signal, for the exit check (§4's "flip to SELL").
   const signalsBySymbol = useMemo<Record<string, ProSignalResult>>(() => {

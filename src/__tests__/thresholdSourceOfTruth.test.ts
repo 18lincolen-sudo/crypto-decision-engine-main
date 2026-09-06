@@ -54,8 +54,18 @@ describe('§3 — minConfidence comes from one flat operator bar, or an override
     expect(proMinConfidence('medium', undefined)).toBe(70);
   });
 
-  it('the §3 allocation travels with the same risk level', () => {
-    expect(PRO_ALLOCATION_BY_RISK).toEqual({ low: 0.15, medium: 0.25, high: 0.40 });
+  it('allocation is confidence-based: >70% → 10%, >80% → 15%', () => {
+    // 70% confidence (at the bar) → 10% allocation
+    const [ev70] = applyProEntryGates([buyEval('LA', 70)], gateCtx());
+    expect(ev70.budgetUsd).toBeCloseTo(1000, 6); // 10% of 10,000
+
+    // 80% confidence (at the bar) → 10% allocation (not >80)
+    const [ev80] = applyProEntryGates([buyEval('LA', 80)], gateCtx());
+    expect(ev80.budgetUsd).toBeCloseTo(1000, 6); // 10% of 10,000
+
+    // 81% confidence (>80) → 15% allocation
+    const [ev81] = applyProEntryGates([buyEval('LA', 81)], gateCtx());
+    expect(ev81.budgetUsd).toBeCloseTo(1500, 6); // 15% of 10,000
   });
 });
 
@@ -96,6 +106,7 @@ const gateCtx = (over: Partial<ProGateContext> = {}): ProGateContext => ({
   positions: [],
   pending: [],
   cash: 10_000,
+  equity: 10_000,
   initialAmount: 10_000,
   maxPositions: 3,
   riskLevel: 'medium',
@@ -134,16 +145,34 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
     expect(ev.status).toBe('NO_SIGNAL [NO_SLOTS]');
   });
 
-  it('cash below the $5 floor → NO_BUDGET', () => {
-    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 4 }));
+  it('equity below the $5 floor → NO_BUDGET', () => {
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 4, equity: 4 }));
     expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
   });
 
+  it('healthy equity with low cash still allocates a budget (equity-based, not cash-based)', () => {
+    // $50 cash but $10,000 equity → budget is min(1000, 10000) = 1000, not min(1000, 50) = 50
+    // confidence 80 → 10% allocation
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 10_000 }));
+    expect(ev.status).toBe('SIGNAL SPOT BUY');
+    expect(ev.willExecute).toBe(true);
+    expect(ev.budgetUsd).toBeCloseTo(1000, 6);
+  });
+
   it('every gate passed → willExecute, "מבצע קנייה", and the allocated budget', () => {
+    // confidence 80 → 10% allocation → 1000
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx());
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(10_000 * 0.25, 6); // medium → 25%
+    expect(ev.budgetUsd).toBeCloseTo(1000, 6); // confidence 80 → 10%
+  });
+
+  it('high confidence (>80%) gets 15% allocation', () => {
+    // confidence 85 → 15% allocation → 1500
+    const [ev] = applyProEntryGates([buyEval('LA', 85)], gateCtx());
+    expect(ev.status).toBe('SIGNAL SPOT BUY');
+    expect(ev.willExecute).toBe(true);
+    expect(ev.budgetUsd).toBeCloseTo(1500, 6); // confidence 85 → 15%
   });
 });
 

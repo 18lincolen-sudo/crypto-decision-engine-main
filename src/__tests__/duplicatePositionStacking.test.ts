@@ -171,17 +171,17 @@ describe('a close fills against the lot it was issued for', () => {
 
 describe('sizing respects the batch: §4 gate 7 allocates against projected cash', () => {
   const gateCtx = (over: Partial<ProGateContext> = {}): ProGateContext => ({
-    positions: [], pending: [], cash: 10_000, initialAmount: 10_000, maxPositions: 7, riskLevel: 'low', ...over
+    positions: [], pending: [], cash: 10_000, equity: 10_000, initialAmount: 10_000, maxPositions: 7, riskLevel: 'low', ...over
   });
 
-  it('pro: a later entry in the batch is capped by the projected cash §4 leaves', () => {
-    // low → 15% × 10_000 = 1500 per entry. With 1650 in cash: the first take
-    // gets min(1500, 1650) = 1500 (the allocation caps, not the cash) and the
-    // projected cash drops to 150; the second gets min(1500, 150) = 150 —
-    // sized off the projected cash §4 leaves.
-    const gated = applyProEntryGates([evaluation('LA'), evaluation('BTC')], gateCtx({ cash: 1650 }));
-    expect(gated.find((e) => e.symbol === 'LA')?.budgetUsd).toBeCloseTo(1500, 6);
-    expect(gated.find((e) => e.symbol === 'BTC')?.budgetUsd).toBeCloseTo(150, 6);
+  it('pro: a later entry in the batch is capped by the projected equity §4 leaves', () => {
+    // confidence 70 → 10% × 10_000 = 1000 per entry. With 1650 in equity: the first take
+    // gets min(1000, 1650) = 1000 (the allocation caps, not the equity) and the
+    // projected equity drops to 650; the second gets min(1000, 650) = 650 —
+    // sized off the projected equity §4 leaves.
+    const gated = applyProEntryGates([evaluation('LA'), evaluation('BTC')], gateCtx({ cash: 1650, equity: 1650 }));
+    expect(gated.find((e) => e.symbol === 'LA')?.budgetUsd).toBeCloseTo(1000, 6);
+    expect(gated.find((e) => e.symbol === 'BTC')?.budgetUsd).toBeCloseTo(650, 6);
   });
 
   it('pro: the strongest confidence is allocated first (§4)', () => {

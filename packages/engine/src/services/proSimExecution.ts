@@ -23,7 +23,6 @@ import {
   computeProSignal,
   evaluateProExit,
   proMinConfidence,
-  proAllocationPercent,
   proTechnicalScore,
   MIN_PRO_CANDLES,
   type ProSignalResult,
@@ -121,6 +120,11 @@ export interface ProGateContext {
   positions: SimPosition[];
   pending: PendingOrder[];
   cash: number;
+  /** Total portfolio equity = cash + positions value. The budget gate uses this
+   *  (not just cash) so a portfolio that has value tied up in open positions can
+   *  still allocate a new budget — otherwise "no budget" fires despite a healthy
+   *  total equity. */
+  equity: number;
   initialAmount: number;
   maxPositions: number;
   riskLevel: ProRiskLevel;
@@ -153,12 +157,14 @@ export function applyProEntryGates(
   const heldSymbols = new Set(ctx.positions.map((p) => p.symbol));
   const queuedSymbols = new Set(ctx.pending.map((o) => o.symbol));
   const minConfidence = proMinConfidence(ctx.riskLevel, ctx.minConfidenceOverride);
-  const allocation = proAllocationPercent(ctx.riskLevel);
 
   // §4 gate 5: open positions AND queued buys occupy slots. A slot an exit is
   // about to free stays occupied until that exit FILLS.
   let occupiedSlots = ctx.positions.length + ctx.pending.filter((o) => o.side === 'buy').length;
-  let projectedCash = ctx.cash;
+  // Budget is tracked against total equity (cash + positions value), not just
+  // cash — a portfolio with value tied up in open positions can still allocate
+  // a new budget. projectedEquity decreases as we allocate within this batch.
+  let projectedEquity = ctx.equity;
 
   return evaluations
     .map((ev, i) => ({ ev, i }))
@@ -203,12 +209,17 @@ export function applyProEntryGates(
       if (!ev.price || ev.price <= 0) {                                                                                         // 6
         return gateResult(ev, 'NO_SIGNAL [NO_PRICE]', 'אין מחיר תקף', false, minConfidence);
       }
-      const budget = Math.min(ctx.initialAmount * allocation, projectedCash);                                                   // 7
+      // Allocation is confidence-dependent: >70% → 10%, >80% → 15% of the
+      // remaining equity. This prevents a single position from consuming most
+      // of the portfolio — high confidence gets a larger slice, but never the
+      // whole pie.
+      const confidenceAllocation = ev.confidence > 80 ? 0.15 : 0.10;
+      const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedEquity);                                       // 7
       if (budget < 5) {
         return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $5)`, false, minConfidence);
       }
       occupiedSlots++;                                                                                                          // 8
-      projectedCash -= budget;
+      projectedEquity -= budget;
       return gateResult(ev, 'SIGNAL SPOT BUY', `אות BUY בביטחון ${ev.confidence.toFixed(1)} >= סף ${minConfidence} — מבצע קנייה`, true, minConfidence, budget);
     });
 }

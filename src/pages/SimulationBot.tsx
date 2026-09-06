@@ -307,7 +307,7 @@ const SimulationBotPage = () => {
 
           <SimulationEngineColumn
             title="בוט פרו · alg.md"
-            subtitle={`מימוש מדויק של ASSETS/alg.md · הבוט קונה כשהביטחון הכולל עובר ${PRO_DEFAULT_ENTRY_CONFIDENCE}% · הקצאה ${(PRO_ALLOCATION_BY_RISK.medium * 100).toFixed(0)}% · SL ${PRO_STOP_LOSS_PERCENT}% / TP ${PRO_TAKE_PROFIT_PERCENT}%`}
+            subtitle={`מימוש מדויק של ASSETS/alg.md · הבוט קונה כשהביטחון הכולל עובר ${PRO_DEFAULT_ENTRY_CONFIDENCE}% · הקצאה 10% (מעל 70%) או 15% (מעל 80%) · SL ${PRO_STOP_LOSS_PERCENT}% / TP ${PRO_TAKE_PROFIT_PERCENT}%`}
             accentClass="text-amber-400"
             cryptoData={cryptoData}
             cash={pro.cash}

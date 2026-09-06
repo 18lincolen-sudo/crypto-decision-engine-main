@@ -71,6 +71,7 @@ const proStrategy: SimEngineStrategy = {
       positions: input.positions,
       pending: input.pending,
       cash: input.cash,
+      equity: input.equity,
       initialAmount: input.initialAmount,
       maxPositions: input.maxPositions,
       riskLevel,
