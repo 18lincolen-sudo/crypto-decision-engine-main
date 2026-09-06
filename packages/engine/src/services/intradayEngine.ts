@@ -366,7 +366,10 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
 
   // High-confidence bypass: if buildRiskPlan rejected but confidence >= 72,
   // use a minimal fallback with fixed 1.8% SL / 3% TP.
-  const effectiveRisk = risk.approved ? risk : (confidence >= 72 && tradeType !== null
+  // BUT: never bypass per-asset cap or circuit breaker limits. If the rejection
+  // reason is per-asset exposure, don't fallback.
+  const isPerAssetRejection = risk.blockReason && risk.blockReason.includes('אקספוזר על נכס זה');
+  const effectiveRisk = risk.approved ? risk : (confidence >= 72 && tradeType !== null && !isPerAssetRejection
     ? buildFallbackIntradayRisk(entry.entryPrice, setup.direction as Exclude<Direction, 'NONE'>, tradeType, sizingMultiplier)
     : null);
 

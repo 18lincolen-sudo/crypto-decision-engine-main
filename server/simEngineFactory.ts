@@ -227,8 +227,13 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     const now = Date.now();
     const oneDay = now - 24 * 60 * 60 * 1000;
     const oneWeek = now - 7 * 24 * 60 * 60 * 1000;
-    let peakDay = eq;
-    let peakWeek = eq;
+    // Start from initialAmount, not current equity — drawdown against starting
+    // capital, so a run that opened at 10k, peaked at 10.5k, and sits at 10.1k
+    // shows 0% drawdown (above the waterline). This is the correct semantics for
+    // a circuit breaker (protection against losses, not against winning moves
+    // that briefly retrace).
+    let peakDay = initialAmount;
+    let peakWeek = initialAmount;
     // Use hourlyHistory for longer time windows (up to 30 days) — history only
     // covers ~48 minutes (720 points × 4s), which is insufficient for daily/weekly
     // drawdown calculation. Without this, circuit breakers only react to drawdowns
