@@ -1,22 +1,14 @@
 // Shared server-side simulation engine — the tick/market-data/persistence
-// plumbing used by ALL THREE sim bots (intraday multi-timeframe, legacy
-// single-timeframe, pro/alg.md). This used to be copy-pasted three times
-// (server/simEngine.ts, legacySimEngine.ts, proSimEngine.ts) with only the
-// decision algorithm actually differing between them. That file has been
-// deleted; this factory now owns everything that was duplicated, and each
-// bot supplies a small `SimEngineStrategy` (see simEngine.ts /
-// legacySimEngine.ts / proSimEngine.ts) that plugs its own
-// evaluation/order-generation functions — from simExecution.ts /
-// legacySimExecution.ts / proSimExecution.ts, all UNCHANGED — into this
-// shared loop.
-//
-// Behavior is intended to be identical to the three original files for every
-// field every strategy actually reads; the only intentional new behavior is
-// that hydrate() now restores `lastEvaluation` for the legacy/pro bots too
-// (the original legacy/pro hydrate() forgot to, even though their own
-// getSnapshot() already persisted it — cosmetic only, affects nothing but the
-// displayed "last evaluation" timestamp for the few seconds between a
-// restart and the next tick).
+// plumbing used by all THREE sim bots (intraday multi-timeframe, pro/alg.md,
+// 4H Path/Empirical). A fourth bot, "Legacy" (single-timeframe), existed
+// early on and was deleted along with legacySimEngine.ts/
+// legacySimExecution.ts — this factory itself was written to end three
+// separate copy-pastes of this plumbing (server/simEngine.ts,
+// legacySimEngine.ts, proSimEngine.ts) down to one, and now backs
+// simEngine.ts / proSimEngine.ts / pathSimEngine.ts, each supplying a small
+// `SimEngineStrategy` that plugs its own evaluation/order-generation
+// functions — from simExecution.ts / proSimExecution.ts /
+// pathSimExecution.ts — into this shared loop.
 import { formatDynamicPrice } from '@cde/engine/execution';
 import type { Candle } from '@cde/engine';
 import { getAggregatedPrices } from '@cde/engine/market-data';

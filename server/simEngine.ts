@@ -18,15 +18,20 @@ import { SignalEvaluation, DecisionFactor } from '@cde/engine';
 import { Candle, PortfolioRiskStats } from '@cde/engine';
 import { IntradayParams, DEFAULT_INTRADAY_PARAMS } from '@cde/engine';
 
-/** Base asset for a position symbol, keyed the same way the candle maps and
- *  the exposure map are. */
-function toBase(symbol: string): string {
-  return symbol.replace(/USDT$/, '').replace(/BUSD$/, '');
-}
-
-/** Notional exposure per base asset — feeds the 8%-per-asset cap in the risk
- *  layer, which read a hardcoded {} before and so never saw existing holdings. */
-function exposureByAsset(positions: { symbol: string; notionalUsd?: number }[]): Record<string, number> {
+/**
+ * Notional exposure per base asset — feeds the 8%-per-asset cap in the risk
+ * layer, which read a hardcoded {} before and so never saw existing holdings.
+ *
+ * Takes the caller's own toBase (input.toBase, i.e. toBaseAsset from
+ * @cde/engine/market-data) rather than a local re-implementation. This file
+ * used to carry its own USDT/BUSD-stripping toBase() plus a third, inline
+ * copy of the same regex a few lines below — three normalizations of the
+ * same symbol, none of them the one simEngineFactory.ts already threads
+ * through as input.toBase and already uses to key candlesBySymbol/
+ * correlationCandles/liveCandles. A base asset normalized one way here and
+ * looked up the other way in those maps is a silent miss, not an error.
+ */
+function exposureByAsset(positions: { symbol: string; notionalUsd?: number }[], toBase: (symbol: string) => string): Record<string, number> {
   const map: Record<string, number> = {};
   for (const p of positions) {
     const base = toBase(p.symbol);
@@ -74,8 +79,7 @@ const intradayStrategy: SimEngineStrategy = {
 
     // Build symbol mapping
     for (const c of input.cryptoData) {
-      const base = c.symbol.replace(/USDT$/, '').replace(/BUSD$/, '');
-      baseAssetToSymbol.set(base, c.symbol);
+      baseAssetToSymbol.set(input.toBase(c.symbol), c.symbol);
     }
 
     for (const [baseAsset, snap] of Object.entries(input.liveCandles)) {
@@ -83,7 +87,7 @@ const intradayStrategy: SimEngineStrategy = {
       if (!snap.h1 || snap.h1.length < 200 || !snap.m15 || snap.m15.length < 300 || !snap.m5 || snap.m5.length < 500) continue;
 
       const symbol = baseAssetToSymbol.get(baseAsset) || `${baseAsset}USDT`;
-      const cryptoData = input.cryptoData.find(c => c.symbol === symbol) || input.cryptoData.find(c => c.symbol.replace(/USDT$/, '') === baseAsset);
+      const cryptoData = input.cryptoData.find(c => c.symbol === symbol) || input.cryptoData.find(c => input.toBase(c.symbol) === baseAsset);
       const currentPrice = snap.livePrice || cryptoData?.current_price || 0;
       const priceChange24h = cryptoData?.price_change_percentage_24h || 0;
 
@@ -104,16 +108,16 @@ const intradayStrategy: SimEngineStrategy = {
           openPositionsCount: input.positions.length,
           openFuturesPositionsCount: input.positions.filter(p => p.type === 'FUTURES').length,
           totalLeveragedExposureUsd: input.totalLeveragedExposureUsd,
-          existingExposureByAsset: exposureByAsset(input.positions),
+          existingExposureByAsset: exposureByAsset(input.positions, input.toBase),
           systemLocked: false
         } as PortfolioRiskStats,
         // `candles` is what lets the correlation gate actually run — without a
         // series per held position it finds nothing and abstains.
         openPositions: input.positions.map(p => ({
-          symbol: toBase(p.symbol),
+          symbol: input.toBase(p.symbol),
           type: p.type,
           side: p.side,
-          candles: input.correlationCandles[toBase(p.symbol)]
+          candles: input.correlationCandles[input.toBase(p.symbol)]
         })),
         marketData: {
           spreadPercent: snap.liquidity?.spreadPercent ?? 0,

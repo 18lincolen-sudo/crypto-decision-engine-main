@@ -500,11 +500,6 @@ const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_LEADER_TIMEOUT_MS = 8000;
 
-// Fixed max positions: 7 for all bots (regardless of initial amount)
-function calcMaxPositions(_initialAmount: number): number {
-  return 7;
-}
-
 /** Validates a sim config arriving from the API or from persisted state.
  *
  *  Every numeric field is range-checked and anything out of range is dropped

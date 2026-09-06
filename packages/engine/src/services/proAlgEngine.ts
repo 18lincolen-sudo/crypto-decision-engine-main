@@ -403,9 +403,9 @@ export function calculateOptimalEntryPrice(signal: ProSignalResult, currentPrice
 
 export type ProRiskLevel = 'low' | 'medium' | 'high';
 
-/** §3's table, literally: minConfidence / allocation% per risk level. */
+/** §3's table, literally: minConfidence per risk level. Exported as the
+ *  reference only — see PRO_DEFAULT_ENTRY_CONFIDENCE for what actually runs. */
 export const PRO_CONFIDENCE_BY_RISK: Record<ProRiskLevel, number> = { low: 55, medium: 40, high: 25 };
-export const PRO_ALLOCATION_BY_RISK: Record<ProRiskLevel, number> = { low: 0.15, medium: 0.25, high: 0.40 };
 
 /**
  * The flat default entry threshold for the Pro bot.
@@ -424,10 +424,25 @@ export function proMinConfidence(riskLevel: ProRiskLevel, override?: number): nu
   return typeof override === 'number' && override > 0 ? override : PRO_DEFAULT_ENTRY_CONFIDENCE;
 }
 
-/** §3/§6: allocation is a function of risk level alone — there is no override
- *  for it in §3, unlike the confidence threshold. */
-export function proAllocationPercent(riskLevel: ProRiskLevel): number {
-  return PRO_ALLOCATION_BY_RISK[riskLevel];
+/**
+ * Entry allocation, as a percent of spendable cash.
+ *
+ * §3 also specifies a risk-level allocation table (15/25/40%) — that table
+ * used to live here as PRO_ALLOCATION_BY_RISK / proAllocationPercent(), fully
+ * wired to nothing: applyProEntryGates (proSimExecution.ts) has always sized
+ * entries off confidence, never off riskLevel, so the risk table was dead code
+ * that the panel imported and displayed as if it were live. Confidence-based
+ * sizing is the one actually running four bots' worth of history, so it is
+ * now the only definition — a bucket, not a formula, because the buckets
+ * (10%/15%) don't interpolate: they were never meant to.
+ */
+export const PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD = 80;
+export const PRO_ALLOCATION_DEFAULT_PERCENT = 0.10;
+export const PRO_ALLOCATION_HIGH_PERCENT = 0.15;
+
+/** §4 gate 7: confidence > 80 → 15%, else 10%. */
+export function proAllocationPercent(confidence: number): number {
+  return confidence > PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD ? PRO_ALLOCATION_HIGH_PERCENT : PRO_ALLOCATION_DEFAULT_PERCENT;
 }
 
 // ── §5 — fixed exit percentages ──────────────────────────────────────────────

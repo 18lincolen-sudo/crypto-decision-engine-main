@@ -183,7 +183,13 @@ export function evaluatePathDecision(input: PathDecisionInput): PathDecision {
       `אין מספיק נרות 4H סגורים לפני הנר הנוכחי: ${priorBars.length}`);
   }
 
-  const state = labelBarState(priorBars, input.fearGreedIndex);
+  // Sentiment split forced OFF, explicitly — matching rebuildTable's own
+  // explicit false in server/pathSimEngine.ts and the offline study's
+  // DEFAULT_USE_FEAR_GREED. All three MUST agree: labelling live decisions
+  // in a different state space than whatever table (validated or in-sample)
+  // is active would look up keys that table cannot contain, and the bot
+  // would abstain forever while looking like a table was working.
+  const state = labelBarState(priorBars, input.fearGreedIndex, false);
   if (!state) {
     return noSignal(input.symbol, 'NO_STATE', nowSlot, 'לא ניתן לתייג את מצב הנר');
   }

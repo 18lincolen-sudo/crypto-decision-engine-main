@@ -24,6 +24,7 @@ import {
   evaluateProExit,
   proMinConfidence,
   proTechnicalScore,
+  proAllocationPercent,
   calculateOptimalEntryPrice,
   MIN_PRO_CANDLES,
   type ProSignalResult,
@@ -226,12 +227,14 @@ export function applyProEntryGates(
         return gateResult(ev, 'NO_SIGNAL [NO_PRICE]', 'אין מחיר תקף', false, minConfidence);
       }
       // Allocation is confidence-dependent: >70% → 10%, >80% → 15% of the
-      // spendable cash. This prevents a single position from consuming most
-      // of the portfolio — high confidence gets a larger slice, but never the
-      // whole pie. Allocated against CASH (not equity): an equity-based
-      // allocation that cash couldn't cover would create an order the fill
-      // step refuses — "ready to buy" with no purchase.
-      const confidenceAllocation = ev.confidence > 80 ? 0.15 : 0.10;
+      // spendable cash (proAllocationPercent — see its doc comment for why
+      // this replaced §3's risk-level allocation table). This prevents a
+      // single position from consuming most of the portfolio — high
+      // confidence gets a larger slice, but never the whole pie. Allocated
+      // against CASH (not equity): an equity-based allocation that cash
+      // couldn't cover would create an order the fill step refuses —
+      // "ready to buy" with no purchase.
+      const confidenceAllocation = proAllocationPercent(ev.confidence);
       // Per-asset concentration cap, shared with Intraday's futures sizing and
       // Path's entry budget (PER_ASSET_EXPOSURE_CAP_PERCENT). The
       // confidence allocation above (10-15%) was written before that cap

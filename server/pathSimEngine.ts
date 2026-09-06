@@ -172,11 +172,17 @@ function rebuildTable(input: StrategyTickInput): void {
       // not the binding limitation of this path, the missing out-of-sample test
       // is.
       const priorBars = h4.slice(0, i);
-      // Sentiment split OFF by default, matching the study (DEFAULT_USE_FEAR_GREED).
-      // The two MUST agree: labelling with a different state space here would
-      // build keys the validated table cannot contain, and the bot would abstain
-      // forever while looking like it was working.
-      const state = labelBarState(priorBars, input.fearGreedIndex ?? 50);
+      // Sentiment split forced OFF, explicitly — not merely defaulted off.
+      // labelBarState's third argument controls whether fearGreedIndex (today's
+      // reading, per the leak documented above) enters the label at all; while
+      // it stays false the leak is inert (every bar collapses to the same
+      // NEUTRAL bucket regardless of the value passed in). Relying on
+      // DEFAULT_USE_FEAR_GREED to keep it that way meant a change to that one
+      // constant — made for the offline study, which correctly reads the
+      // per-date historical value and has no leak — would silently switch the
+      // leak on here too, in the one caller that cannot fix it the way the
+      // study does. This call and that default are no longer the same knob.
+      const state = labelBarState(priorBars, input.fearGreedIndex ?? 50, false);
       if (!state) continue;
 
       const nextBar = h4[i + 1];

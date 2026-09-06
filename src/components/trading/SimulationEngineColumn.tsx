@@ -21,6 +21,17 @@ export interface EngineColumnProps {
   title: string;
   subtitle: string;
   accentClass: string; // e.g. 'text-primary' or 'text-cyan-400' — column header + accent color
+  /**
+   * What "confidence" means for THIS engine's numbers.
+   *
+   * Intraday and Pro report a 0-100 weighted technical score; Path reports a
+   * probability (a Wilson lower bound on a bucket's historical hit rate). The
+   * two scales share a UI (this same 0-100 input, the same "ביטחון X%" badge)
+   * but are not remotely the same thing — 33 is a strong probability edge for
+   * a 1.5R target, 33 is a weak score. Defaults to 'score' so the two
+   * existing engines render exactly as before; only Path passes 'probability'.
+   */
+  confidenceKind?: 'score' | 'probability';
   cryptoData?: CryptoData[];
   cash: number;
   positions: SimPosition[];
@@ -55,8 +66,9 @@ export default function SimulationEngineColumn({
   cash, positions, positionsValue, equity, trades, history, pending,
   totalFees, totalSlippageCost, winRate, totalTrades, closedTrades,
   evaluations, hasSavedSession, nextTickAt, config: botConfig, setConfig: setBotConfig,
-  status, isRunning, start, pause, resetAll
+  status, isRunning, start, pause, resetAll, confidenceKind = 'score'
 }: EngineColumnProps) {
+  const isProbability = confidenceKind === 'probability';
   const [openLogs, setOpenLogs] = useState<string[]>([]);
   // null = no schedule known yet; 0 = the tick is overdue (server is still
   // working on it). Anything > 0 is a real number of seconds.
@@ -239,7 +251,7 @@ export default function SimulationEngineColumn({
                           >
                             {isFutures ? `FUTURES ${rec.leverage}x ${rec.tradeSide}` : isSpot ? `SPOT ${rec.tradeSide}` : 'HOLD'}
                           </Badge>
-                          <span className={`text-sm font-bold ${accentClass}`}>ביטחון {confidence.toFixed(1)}%</span>
+                          <span className={`text-sm font-bold ${accentClass}`}>{isProbability ? 'הסתברות' : 'ביטחון'} {confidence.toFixed(1)}%</span>
                         </div>
                         <div className="text-sm text-muted-foreground">
                           ${price.toFixed(4)}{' '}
@@ -367,7 +379,11 @@ export default function SimulationEngineColumn({
                 <Input type="number" step="0.01" value={botConfig.slippagePercent} onChange={(e) => setBotConfig({ ...botConfig, slippagePercent: Math.max(0, Number(e.target.value)) })} />
               </div>
               <div>
-                <label className="text-sm text-muted-foreground mb-2 block">סף ביטחון כניסה (%) — הבוט קונה כשהביטחון הכולל עובר אותו</label>
+                <label className="text-sm text-muted-foreground mb-2 block">
+                  {isProbability
+                    ? 'סף הסתברות כניסה (%) — Wilson LB על שיעור ההצלחה ההיסטורי של הדלי, לא ציון טכני — הבוט קונה כשההסתברות עוברת אותו'
+                    : 'סף ביטחון כניסה (%) — הבוט קונה כשהביטחון הכולל עובר אותו'}
+                </label>
                 <Input
                   type="number"
                   step="1"

@@ -213,7 +213,9 @@ describe('Test 11 — the page names its three engines consistently', () => {
     // Pro's entry bar is the operator's flat 70 default — the panel imports it
     // rather than restating it.
     expect(page).toContain('PRO_DEFAULT_ENTRY_CONFIDENCE');
-    expect(page).toContain('PRO_ALLOCATION_BY_RISK');
+    expect(page).toContain('PRO_ALLOCATION_DEFAULT_PERCENT');
+    expect(page).toContain('PRO_ALLOCATION_HIGH_PERCENT');
+    expect(page).toContain('PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD');
     expect(page).toContain('PRO_STOP_LOSS_PERCENT');
     expect(page).toContain('PRO_TAKE_PROFIT_PERCENT');
     // The literals that used to sit in the legacy/pro subtitles.

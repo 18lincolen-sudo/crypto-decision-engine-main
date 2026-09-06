@@ -9,10 +9,13 @@ import {
   computeProSignal,
   evaluateProExit,
   proMinConfidence,
+  proAllocationPercent,
   calculateOptimalEntryPrice,
   PRO_DEFAULT_ENTRY_CONFIDENCE,
   PRO_CONFIDENCE_BY_RISK,
-  PRO_ALLOCATION_BY_RISK,
+  PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD,
+  PRO_ALLOCATION_DEFAULT_PERCENT,
+  PRO_ALLOCATION_HIGH_PERCENT,
   PRO_STOP_LOSS_PERCENT,
   PRO_TAKE_PROFIT_PERCENT,
   type ProSignalResult
@@ -68,6 +71,24 @@ describe('§3 — minConfidence comes from one flat operator bar, or an override
 
     const [ev81] = applyProEntryGates([buyEval('LA', 81)], gateCtx());
     expect(ev81.budgetUsd).toBeCloseTo(800, 6);
+  });
+
+  it('proAllocationPercent is the ONE allocation rule — the old risk-level table (15/25/40%) was dead code', () => {
+    // §3 also specifies a risk-level allocation table; it was exported
+    // (PRO_ALLOCATION_BY_RISK / proAllocationPercent(riskLevel)) but
+    // applyProEntryGates never read it — confidence-based sizing is the only
+    // one that has ever actually run. It is now the only one that exists.
+    expect(proAllocationPercent(70)).toBe(PRO_ALLOCATION_DEFAULT_PERCENT);
+    expect(proAllocationPercent(PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD)).toBe(PRO_ALLOCATION_DEFAULT_PERCENT); // not > threshold
+    expect(proAllocationPercent(PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD + 1)).toBe(PRO_ALLOCATION_HIGH_PERCENT);
+
+    // Isolated from the per-asset cap (large equity) so the allocation rule
+    // itself is what the assertion is measuring.
+    const roomyCtx = gateCtx({ initialAmount: 10_000, equity: 1_000_000, cash: 1_000_000 });
+    const [ev70] = applyProEntryGates([buyEval('LA', 70)], roomyCtx);
+    expect(ev70.budgetUsd).toBeCloseTo(10_000 * PRO_ALLOCATION_DEFAULT_PERCENT, 6);
+    const [ev85] = applyProEntryGates([buyEval('BTC', 85)], roomyCtx);
+    expect(ev85.budgetUsd).toBeCloseTo(10_000 * PRO_ALLOCATION_HIGH_PERCENT, 6);
   });
 });
 

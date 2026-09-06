@@ -16,7 +16,7 @@ import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContex
 // the panel starts describing a bot that no longer exists.
 // Pro's entry bar is the operator's flat default (70) — an override in the
 // settings overrides it; the risk table stays exported as reference.
-import { PRO_ALLOCATION_BY_RISK, PRO_DEFAULT_ENTRY_CONFIDENCE, PRO_STOP_LOSS_PERCENT, PRO_TAKE_PROFIT_PERCENT } from '@cde/engine/analysis';
+import { PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD, PRO_ALLOCATION_DEFAULT_PERCENT, PRO_ALLOCATION_HIGH_PERCENT, PRO_DEFAULT_ENTRY_CONFIDENCE, PRO_STOP_LOSS_PERCENT, PRO_TAKE_PROFIT_PERCENT } from '@cde/engine/analysis';
 import { SIM_CACHE_KEYS, toAggregated, combineRisk, groupAction, type AggregatedBot } from '../lib/botAggregation';
 
 const SimulationBotPage = () => {
@@ -307,7 +307,7 @@ const SimulationBotPage = () => {
 
           <SimulationEngineColumn
             title="בוט פרו · alg.md"
-            subtitle={`מימוש מדויק של ASSETS/alg.md · הבוט קונה כשהביטחון הכולל עובר ${PRO_DEFAULT_ENTRY_CONFIDENCE}% · הקצאה 10% (מעל 70%) או 15% (מעל 80%) · SL ${PRO_STOP_LOSS_PERCENT}% / TP ${PRO_TAKE_PROFIT_PERCENT}%`}
+            subtitle={`מימוש מדויק של ASSETS/alg.md · הבוט קונה כשהביטחון הכולל עובר ${PRO_DEFAULT_ENTRY_CONFIDENCE}% · הקצאה ${PRO_ALLOCATION_DEFAULT_PERCENT * 100}% (מעל ${PRO_DEFAULT_ENTRY_CONFIDENCE}%) או ${PRO_ALLOCATION_HIGH_PERCENT * 100}% (מעל ${PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD}%) · SL ${PRO_STOP_LOSS_PERCENT}% / TP ${PRO_TAKE_PROFIT_PERCENT}%`}
             accentClass="text-amber-400"
             cryptoData={cryptoData}
             cash={pro.cash}
@@ -336,6 +336,7 @@ const SimulationBotPage = () => {
 
           <SimulationEngineColumn
             title="מנוע נתיב 4H · Empirical Path"
+            confidenceKind="probability"
             subtitle={
               // The table's PROVENANCE is the headline, not its size: a
               // validated table and an in-sample one look identical in the trade
