@@ -40,23 +40,12 @@ export const uid = (p: string) => `path-${p}-${Date.now()}-${Math.random().toStr
 /**
  * H1 candles the Path engine needs before it can build a usable 4H series.
  *
- * DERIVED, not chosen. It was written as a bare 244 while the fetcher's own
- * spec asks for 240 (TIMEFRAME_SPECS['1h'].targetCandles), so on a cold start
- * every symbol failed this check and the table came back empty — a bot that
- * looked like it had found nothing when in fact it had never been given
- * anything to look at. In steady state the delta merge grows the series well
- * past either number, which is precisely why the mismatch survived: it only
- * bites the first few hours after a fresh deploy, when nobody is watching the
- * one metric that would show it.
- *
- * Two numbers that must agree get written once. This one is what the engine
- * structurally needs; TIMEFRAME_SPECS['1h'].targetCandles is what the fetcher
- * delivers, and it is now sized to cover this. `simDefaults.test.ts` asserts
- * the relationship holds, so raising the requirement without raising the fetch
- * fails a test instead of quietly reintroducing the cold-start hole.
+ * Re-exported, not redefined — the number lives in pathEngine.ts next to the
+ * check that actually enforces it. It used to be declared here as 62*4=248
+ * while evaluatePathDecision and pathAdapter each carried their own 244, so
+ * this module's H1 view and the engine's own gate disagreed by four candles.
  */
-export const PATH_MIN_H4_BARS = 62;
-export const MIN_PATH_CANDLES = PATH_MIN_H4_BARS * 4;
+export { PATH_MIN_H4_BARS, MIN_PATH_CANDLES } from './pathEngine';
 
 const PATH_ENTRY_ORDER_SIDES = new Set(['buy', 'sell', 'long', 'short']);
 

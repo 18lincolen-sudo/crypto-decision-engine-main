@@ -12,7 +12,7 @@
 // and routing through it means the fourth bot cannot quietly drift into a
 // different result contract than the three it is being compared against.
 
-import { evaluatePathDecision, pathKellyFraction } from '../../pathEngine';
+import { evaluatePathDecision, pathKellyFraction, MIN_PATH_CANDLES } from '../../pathEngine';
 import type { PathDecision } from '../../pathEngine';
 import type { PathBucket } from '../../pathStudy';
 import type {
@@ -39,9 +39,12 @@ export class PathAdapter implements EngineAdapter<DecisionContext> {
   params: EngineParams = {};
 
   canHandle(input: Partial<DecisionContext>): boolean {
-    // 244 H1 candles is what aggregateToH4 needs to produce 61 closed 4H bars,
-    // and 61 is what labelBarState needs (60 prior + the one being labelled).
-    return !!(input.candles?.h1 && input.candles.h1.length >= 244 && input.candles.m5?.length);
+    // MIN_PATH_CANDLES H1 candles is what aggregateToH4 needs to produce the
+    // closed 4H bars labelBarState requires (60 prior + the one being labelled).
+    // Read from pathEngine so this gate cannot drift from the one inside
+    // evaluatePathDecision — it admitted symbols at 244 that the engine's own
+    // check then rejected.
+    return !!(input.candles?.h1 && input.candles.h1.length >= MIN_PATH_CANDLES && input.candles.m5?.length);
   }
 
   execute(context: DecisionContext): unknown {

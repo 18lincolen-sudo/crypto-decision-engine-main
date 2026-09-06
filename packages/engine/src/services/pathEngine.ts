@@ -35,6 +35,22 @@ import {
   slotIndexAt
 } from './pathStudy';
 
+/**
+ * Closed 4H bars the study needs, and the H1 candles that aggregate into them.
+ *
+ * Defined HERE because this file is the deepest consumer — evaluatePathDecision,
+ * pathAdapter.canHandle and pathSimExecution all gate on the same requirement,
+ * and they previously carried it as three separate literals (244, 244, 62*4=248).
+ * Four apart by four is exactly the kind of near-miss that survives review: the
+ * adapter would admit a symbol the sim engine's own H1 view had already
+ * withheld. One number, re-exported, so the next edit cannot miss a copy.
+ *
+ * TIMEFRAME_SPECS['1h'].targetCandles must stay >= MIN_PATH_CANDLES — the
+ * fetcher has to deliver what this asks for. simBotRegistry.test.ts asserts it.
+ */
+export const PATH_MIN_H4_BARS = 62;
+export const MIN_PATH_CANDLES = PATH_MIN_H4_BARS * 4;
+
 /** Aggregates H1 candles into closed 4H bars, aligned to the UTC epoch the way
  *  exchanges bucket them. A partial group at the end is dropped: a 4H bar built
  *  from two H1 candles is not a 4H bar, and treating it as one would let the
@@ -148,9 +164,9 @@ function noSignal(symbol: string, gate: PathGate, slot: number, reason: string, 
 export function evaluatePathDecision(input: PathDecisionInput): PathDecision {
   const nowSlot = slotIndexAt(input.now, barOpenFor(input.now));
 
-  if (input.h1.length < 244 || input.m5.length < 30) {
+  if (input.h1.length < MIN_PATH_CANDLES || input.m5.length < 30) {
     return noSignal(input.symbol, 'NO_DATA', nowSlot,
-      `אין מספיק נתונים: H1=${input.h1.length} (דרוש 244), M5=${input.m5.length} (דרוש 30)`);
+      `אין מספיק נתונים: H1=${input.h1.length} (דרוש ${MIN_PATH_CANDLES}), M5=${input.m5.length} (דרוש 30)`);
   }
 
   const h4 = aggregateToH4(input.h1);

@@ -11,6 +11,7 @@ import {
 } from '../lib/botAggregation';
 import { PATH_SIM_BOT_LAST_KNOWN_RUNNING_KEY } from '../contexts/PathSimulationBotContext';
 import { evaluatePathDecision, barOpenFor, slotIndexAt } from '@cde/engine/analysis';
+import { MIN_PATH_CANDLES } from '@cde/engine/execution';
 import type { PathBucket, PathRegime, FearGreedBucket } from '@cde/engine/analysis';
 import type { Candle } from '@cde/engine';
 
@@ -269,7 +270,7 @@ function everyStateTable(): PathBucket[] {
 function pathInput() {
   return {
     symbol: 'BTC',
-    h1: pathCandles(244, HOUR),
+    h1: pathCandles(MIN_PATH_CANDLES, HOUR),
     m15: pathCandles(320, 15 * 60_000),
     m5: pathCandles(520, 5 * 60_000),
     livePrice: 100,

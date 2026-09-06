@@ -63,6 +63,15 @@ const MAX_CACHE_AGE_MS = 6 * 60 * 60 * 1000; // 6h
 const DELTA_BUFFER = 4;
 /** Max candles retained per (symbol,tf) after a delta merge. */
 const MAX_CANDLES_PER_TF = 600;
+/**
+ * How often a below-target cache may force a full backfill.
+ *
+ * Guards the self-heal below against hammering: a symbol listed three weeks ago
+ * has fewer than targetCandles 1h bars in existence, so it can never reach the
+ * target no matter how often we refetch. It gets one full window per 6h and
+ * serves its short-but-valid series in between.
+ */
+const BACKFILL_RETRY_MS = 6 * 60 * 60 * 1000;
 
 // ── Validation ───────────────────────────────────────────────────────────────
 
@@ -807,6 +816,18 @@ export interface TimeframeCacheEntry {
   source: CandleSource;
   fetchedAt: number;
   lastTimestamp: number;
+  /**
+   * When a FULL window fetch last ran for this key.
+   *
+   * Delta mode only ever pulls candles newer than what is cached, so a cache
+   * that starts SHORT stays short forever — it grows one bar per period and
+   * nothing re-pulls the missing history. Recording the last full fetch lets
+   * the delta path force a backfill when the merged series is under target,
+   * while a symbol whose exchange history is genuinely shorter than target
+   * (a new listing) retries at most once per BACKFILL_RETRY_MS instead of
+   * refetching the whole window on every tick.
+   */
+  backfilledAt?: number;
 }
 
 const tfCache = new Map<string, TimeframeCacheEntry>();
@@ -970,10 +991,25 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
       const delta = await fetchTimeframe(symbol, tf, { now, since: cached.lastTimestamp, category: opts.category });
       if (delta.candles.length) {
         const { merged, gap } = mergeDelta(cached.candles, delta.candles, spec.ms, MAX_CANDLES_PER_TF);
-        if (!gap && merged.length >= spec.minCandles) {
+        // Accept the delta only if the merged series still covers the most
+        // demanding consumer (targetCandles), not merely the usable floor
+        // (minCandles). A cache rehydrated short — from an older persist that
+        // truncated to minCandles, or from a partial cold fetch — passed the
+        // minCandles test forever while never reaching what the Path bot needs,
+        // because delta mode only ever adds what is newer. Falling through to
+        // the full refetch is the only thing that recovers the missing history.
+        const belowTarget = merged.length < spec.targetCandles;
+        const backfillDue = belowTarget && now - (cached.backfilledAt ?? 0) >= BACKFILL_RETRY_MS;
+        if (!gap && merged.length >= spec.minCandles && !backfillDue) {
           candles[tf] = merged;
           sources[tf] = delta.source;
-          tfCache.set(key, { candles: merged, source: delta.source, fetchedAt: now, lastTimestamp: merged[merged.length - 1].timestamp });
+          tfCache.set(key, {
+            candles: merged,
+            source: delta.source,
+            fetchedAt: now,
+            lastTimestamp: merged[merged.length - 1].timestamp,
+            backfilledAt: cached.backfilledAt
+          });
           telemetry[tf] = { received: delta.received, closed: delta.closed, valid: merged.length, required: spec.minCandles, source: delta.source };
           // Save to persistent cache after successful network fetch (Node.js only)
           // Uses variable path to prevent Vite from analyzing server-only import
@@ -985,7 +1021,7 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
           }
           continue;
         }
-        issues.push(`${tf}:delta-${gap ? 'gap' : 'insufficient'}-full-refetch`);
+        issues.push(`${tf}:delta-${gap ? 'gap' : backfillDue ? 'below-target' : 'insufficient'}-full-refetch`);
       } else if (delta.reason === 'RATE_LIMIT' || delta.reason === 'API_ERROR' || delta.reason === 'NO_NEW_CANDLES') {
         // Transient upstream failure (or simply no new candle yet): serve
         // last-known-good rather than dropping the asset or re-pulling the window.
@@ -1009,7 +1045,11 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
         candles: result.candles,
         source: result.source,
         fetchedAt: now,
-        lastTimestamp: result.candles[result.candles.length - 1].timestamp
+        lastTimestamp: result.candles[result.candles.length - 1].timestamp,
+        // Stamped even when the result is still under target: the exchange has
+        // been asked for the full window and gave what it has. Without this a
+        // genuinely short symbol would force a full refetch on every tick.
+        backfilledAt: now
       });
       // Save to persistent cache after successful network fetch (Node.js only)
       // Uses variable path to prevent Vite from analyzing server-only import

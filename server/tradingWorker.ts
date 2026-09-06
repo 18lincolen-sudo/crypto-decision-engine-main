@@ -761,7 +761,15 @@ async function persistMarketCache(): Promise<void> {
       for (const tf of TIMEFRAME_ORDER) {
         const entry = full[`${bybitSym}:${tf}`];
         if (entry) {
-          doc[tf] = { ...entry, candles: entry.candles.slice(-TIMEFRAME_SPECS[tf].minCandles) };
+          // targetCandles, NOT minCandles. minCandles is the floor a timeframe
+          // is still USABLE at (1h: 200); targetCandles is what the most
+          // demanding consumer needs (1h: 260, for the Path bot's 248). Saving
+          // the floor threw away the 60 candles Path depends on, so every
+          // restart rehydrated at 200 and the delta merge — which only fetches
+          // what is newer — grew it back one bar per hour. Path reported
+          // "H1=201 (דרוש 248)" and could not take a single entry for two days
+          // after a deploy, while the other two bots ran fine on 200.
+          doc[tf] = { ...entry, candles: entry.candles.slice(-TIMEFRAME_SPECS[tf].targetCandles) };
         }
       }
       if (Object.keys(doc).length) await store.set(`mcache:${bybitSym}`, JSON.stringify(doc));

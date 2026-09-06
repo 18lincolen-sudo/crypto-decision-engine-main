@@ -15,7 +15,7 @@ import {
   SLOT_MS
 } from '@cde/engine/analysis';
 import type { PathBucket, PathOutcome, BarState } from '@cde/engine/analysis';
-import { pathEntryBudget } from '@cde/engine/execution';
+import { pathEntryBudget, MIN_PATH_CANDLES } from '@cde/engine/execution';
 import type { Candle } from '@cde/engine';
 
 const HOUR = 3_600_000;
@@ -207,7 +207,9 @@ describe('table construction', () => {
 describe('the engine abstains rather than guesses', () => {
   const base = {
     symbol: 'BTC',
-    h1: candles(244, HOUR),
+    // Exactly the engine's own requirement — a bare 244 here silently became a
+    // NO_DATA case once the three copies of that number were unified at 248.
+    h1: candles(MIN_PATH_CANDLES, HOUR),
     m15: candles(320, 15 * 60_000),
     m5: candles(520, 5 * 60_000),
     livePrice: 100,
