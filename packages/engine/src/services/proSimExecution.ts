@@ -1,19 +1,19 @@
 /**
  * "Bot Pro" — order generation for the alg.md engine.
  * ============================================================================
- * Mirrors the shape every other bot's order-generation layer uses (build a
- * per-symbol SignalEvaluation, then turn evaluations + open positions into
- * pending orders), but the gates inside are §4's, not any other engine's:
+ * Three layers, each owning exactly what alg.md gives it:
  *
- *   §4 gate order, as implemented here:
- *     1. Already holding this symbol, or an order already pending on it? → skip.
- *     2. Portfolio circuit breaker tripped (daily/weekly drawdown lock)? → no
- *        NEW entries (existing positions still exit normally — §4 gates
- *        openings, §5's stop/target are not a "new position").
- *     3. confidence >= minConfidence (§3)? else → no entry.
- *     4. Capacity: openPositions + queuedBuys < maxPositions?
- *     5. budget = min(initialAmount × allocation(riskLevel), cash); budget >= 5?
- *     6. All pass → buy order queued.
+ *   buildProEvaluation  — §2's weighted signal for one symbol + §4's gate 4
+ *                         (the confidence threshold), as the SignalEvaluation
+ *                         shape every bot's UI column reads.
+ *   applyProEntryGates  — §4's FULL gate sequence, evaluated once on the
+ *                         evaluation itself so it is the single source of truth
+ *                         for both the panel and the executor, in the doc's own
+ *                         order, over a confidence-descending batch.
+ *   generateProOrders   — §5's exits first (fixed % + the confidence-gated
+ *                         flip-to-SELL), then the buy orders the evaluations
+ *                         already approved. Entries are §6's delayed MARKET
+ *                         fills (fill: 'market').
  *
  * Spot only, per §4's explicit "the system does not open shorts": a SELL
  * signal on a symbol with no open position produces no order at all, it only
@@ -31,25 +31,24 @@ import {
 } from './proAlgEngine';
 import type { Candle } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
-import { isInEntryCooldown } from './simExecution';
 import type { SimPosition, PendingOrder } from './simExecution';
-import { DAILY_DRAWDOWN_BLOCK_PERCENT, WEEKLY_DRAWDOWN_LOCK_PERCENT } from './intradayParams';
 
 export const uid = (p: string) => `pro-${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
 export { MIN_PRO_CANDLES };
 
 /**
- * §2/§4 for one symbol: computes the weighted signal, checks it against §3's
- * confidence floor, and reports the result as the same SignalEvaluation shape
- * every other bot's UI column reads.
+ * §2/§4 for one symbol: computes the weighted signal and the threshold-only
+ * view of §4 (gate 4), as the same SignalEvaluation shape every other bot's
+ * UI column reads. §4's STATE gates (queued / held / slots / price / budget)
+ * are applied per batch by applyProEntryGates — they need the portfolio,
+ * which a per-symbol call does not see.
  */
 export function buildProEvaluation(
   symbol: string,
   candles: Candle[],
   currentPrice: number,
   priceChange24h: number,
-  fearGreedIndex: number,
   riskLevel: ProRiskLevel,
   minConfidenceOverride: number | undefined
 ): SignalEvaluation {
@@ -61,7 +60,7 @@ export function buildProEvaluation(
     };
   }
 
-  const signal = computeProSignal(candles, priceChange24h, fearGreedIndex);
+  const signal = computeProSignal(candles, priceChange24h);
   const minConfidence = proMinConfidence(riskLevel, minConfidenceOverride);
   const willExecute = signal.action === 'BUY' && signal.confidence >= minConfidence;
 
@@ -105,6 +104,115 @@ export function buildProEvaluation(
   };
 }
 
+// ── §4 — the entry gates, evaluated ONCE, on the evaluation itself ──────────
+//
+// alg.md §4: the SignalEvaluation is the single source of truth — the same
+// object feeds the recommendations panel and the executor, "כך שאין פער בין
+// מה שמוצג לבין מה שמבוצע". The state gates therefore run HERE, in §4's own
+// order, over a batch walked in descending confidence so the slots and the
+// cash go to the strongest signals first ("ההמלצות ממוינות לפי ביטחון יורד,
+// כך שהסלוטים והמזומן מוקצים קודם לאותות החזקים ביותר").
+//
+// Deliberately ABSENT — §4 does not have them, and §9 assigns them to the
+// REAL bot only: the per-symbol entry cooldown and the daily/weekly drawdown
+// circuit breaker.
+
+export interface ProGateContext {
+  positions: SimPosition[];
+  pending: PendingOrder[];
+  cash: number;
+  initialAmount: number;
+  maxPositions: number;
+  riskLevel: ProRiskLevel;
+  minConfidenceOverride?: number;
+}
+
+function gateResult(
+  ev: SignalEvaluation,
+  status: string,
+  reasoning: string,
+  willExecute: boolean,
+  minConfidence: number,
+  budgetUsd?: number
+): SignalEvaluation {
+  return {
+    ...ev,
+    tradeType: willExecute ? 'SPOT' : 'HOLD',
+    status,
+    reasoning,
+    willExecute,
+    confidenceGap: Math.max(0, minConfidence - ev.confidence),
+    ...(budgetUsd !== undefined ? { budgetUsd } : {})
+  };
+}
+
+export function applyProEntryGates(
+  evaluations: SignalEvaluation[],
+  ctx: ProGateContext
+): SignalEvaluation[] {
+  const heldSymbols = new Set(ctx.positions.map((p) => p.symbol));
+  const queuedSymbols = new Set(ctx.pending.map((o) => o.symbol));
+  const minConfidence = proMinConfidence(ctx.riskLevel, ctx.minConfidenceOverride);
+  const allocation = proAllocationPercent(ctx.riskLevel);
+
+  // §4 gate 5: open positions AND queued buys occupy slots. A slot an exit is
+  // about to free stays occupied until that exit FILLS.
+  let occupiedSlots = ctx.positions.length + ctx.pending.filter((o) => o.side === 'buy').length;
+  let projectedCash = ctx.cash;
+
+  return evaluations
+    .map((ev, i) => ({ ev, i }))
+    .sort((a, b) => (b.ev.confidence - a.ev.confidence) || (a.i - b.i))
+    .map(({ ev }) => {
+      if (ev.action === 'sell') {
+        // §4's sell logic: not held → no action (Spot never shorts). Held → a
+        // close order for the WHOLE position goes out this tick, via the exit
+        // loop in generateProOrders, which owns §5's fixed percentages and the
+        // confidence-gated flip alike.
+        if (queuedSymbols.has(ev.symbol)) {
+          return gateResult(ev, 'NO_SIGNAL [ORDER_QUEUED]', 'פקודת מכירה כבר בתור ביצוע', false, minConfidence);
+        }
+        if (!heldSymbols.has(ev.symbol)) return ev;
+        if (ev.confidence >= minConfidence) {
+          return gateResult(ev, 'SIGNAL SPOT SELL', 'אות SELL מעל הסף — נשלחת פקודת מכירה לכל הפוזיציה', true, minConfidence);
+        }
+        return gateResult(
+          ev,
+          'NO_SIGNAL [BELOW_THRESHOLD]',
+          `היפוך SELL מתחת לסף (${ev.confidence.toFixed(1)} < ${minConfidence}) — הפוזיציה נשארת פתוחה, SL/TP עדיין פעילים`,
+          false,
+          minConfidence
+        );
+      }
+      if (ev.action !== 'buy') return ev;
+
+      // §4's buy sequence, in the doc's own order (gate 1, "הבוט פעיל?", is
+      // the runtime itself — a stopped engine produces no evaluations):
+      if (queuedSymbols.has(ev.symbol)) {                                                                                       // 2
+        return gateResult(ev, 'NO_SIGNAL [ORDER_QUEUED]', 'פקודה בתור ביצוע', false, minConfidence);
+      }
+      if (heldSymbols.has(ev.symbol)) {                                                                                         // 3
+        return gateResult(ev, 'NO_SIGNAL [ALREADY_HELD]', 'כבר מוחזק בתיק', false, minConfidence);
+      }
+      if (ev.confidence < minConfidence) {                                                                                      // 4
+        return gateResult(ev, 'NO_SIGNAL [BELOW_THRESHOLD]', `ביטחון נמוך מהסף (${ev.confidence.toFixed(1)} < ${minConfidence})`, false, minConfidence);
+      }
+      if (occupiedSlots >= ctx.maxPositions) {                                                                                  // 5
+        return gateResult(ev, 'NO_SIGNAL [NO_SLOTS]', `אין סלוט פנוי (${occupiedSlots}/${ctx.maxPositions})`, false, minConfidence);
+      }
+      if (!ev.price || ev.price <= 0) {                                                                                         // 6
+        return gateResult(ev, 'NO_SIGNAL [NO_PRICE]', 'אין מחיר תקף', false, minConfidence);
+      }
+      const budget = Math.min(ctx.initialAmount * allocation, projectedCash);                                                   // 7
+      if (budget < 5) {
+        return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $5)`, false, minConfidence);
+      }
+      occupiedSlots++;                                                                                                          // 8
+      projectedCash -= budget;
+      return gateResult(ev, 'SIGNAL SPOT BUY', `אות BUY בביטחון ${ev.confidence.toFixed(1)} >= סף ${minConfidence} — מבצע קנייה`, true, minConfidence, budget);
+    });
+}
+
 export interface ProOrderGenContext {
   positions: SimPosition[];
   pending: PendingOrder[];
@@ -113,21 +221,11 @@ export interface ProOrderGenContext {
   signalsBySymbol: Record<string, ProSignalResult>;
   minConfidence: number;
   executionDelaySec: number;
-  dailyDrawdownPercent: number;
-  weeklyDrawdownPercent: number;
-  cash: number;
-  initialAmount: number;
-  riskLevel: ProRiskLevel;
-  exitCooldown: Record<string, number>;
   priceFor: (symbol: string) => number | undefined;
-  maxPositions: number;
 }
 
 export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
-  const {
-    positions, pending, evaluations, signalsBySymbol, minConfidence, executionDelaySec,
-    dailyDrawdownPercent, weeklyDrawdownPercent, exitCooldown, priceFor, maxPositions, riskLevel
-  } = ctx;
+  const { positions, pending, evaluations, signalsBySymbol, minConfidence, executionDelaySec, priceFor } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -156,33 +254,27 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     } as PendingOrder);
   }
 
-  // §4 gate 2: portfolio circuit breaker blocks NEW entries only.
-  const circuitBreakerTripped = dailyDrawdownPercent >= DAILY_DRAWDOWN_BLOCK_PERCENT || weeklyDrawdownPercent >= WEEKLY_DRAWDOWN_LOCK_PERCENT;
-  if (circuitBreakerTripped) return newOrders;
-
-  let totalPositionCount = positions.length + pending.filter((o) => o.side === 'buy').length;
-  let workingCash = ctx.cash;
-  const allocation = proAllocationPercent(riskLevel);
-
+  // §4's entry gates have ALREADY run — on the evaluations themselves
+  // (applyProEntryGates), which is §4's single source of truth. This loop only
+  // emits what an evaluation approved. The held/pending re-check is
+  // defense-in-depth for runtimes where the evaluation pass and this pass can
+  // straddle a state change (the browser fallback recomputes on a 5s
+  // heartbeat) — not a second gate.
   for (const ev of evaluations) {
-    if (!ev.willExecute || !ev.price) continue;
-    // §4 gate 1: already holding, or an order already exists for this symbol.
+    if (!ev.willExecute || ev.action !== 'buy' || !ev.price) continue;
+    const budget = ev.budgetUsd ?? 0; // §4 gate 7, allocated in the gate pass
+    if (budget < 5) continue;
     if (positions.some((p) => p.symbol === ev.symbol)) continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
-    if (isInEntryCooldown(exitCooldown[ev.symbol])) continue;
-    // §4 gate 4: capacity.
-    if (totalPositionCount >= maxPositions) continue;
-
-    // §4 gate 5 / §6: budget = min(initialAmount × allocation, cash), >= $5.
-    const budget = Math.min(ctx.initialAmount * allocation, workingCash);
-    if (budget < 5) continue;
-
-    totalPositionCount++;
-    workingCash -= budget;
 
     newOrders.push({
       id: uid(`${ev.symbol}-buy`), symbol: ev.symbol, type: 'SPOT', side: 'buy',
       signalPrice: ev.price, quantity: budget / ev.price, budgetUsd: budget, leverage: 1,
+      // §6: entries are delayed MARKET fills — at executeAt the order fills at
+      // the market price of that moment, adverse slippage and a Taker fee
+      // included. (The other engines keep their resting-limit entries; see
+      // selectFillableOrders in simExecution.ts.)
+      fill: 'market',
       reason: ev.reasoning, confidence: ev.confidence,
       executeAt: Date.now() + delayMs, createdAt: Date.now()
     } as PendingOrder);

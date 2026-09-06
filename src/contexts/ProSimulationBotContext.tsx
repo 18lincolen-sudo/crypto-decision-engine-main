@@ -17,7 +17,6 @@ import {
 } from '../hooks/useProSimulationBot';
 import type { SignalEvaluation } from '@cde/engine';
 import { useCryptoData } from '../hooks/useCryptoData';
-import { useFearGreedIndex } from '../hooks/useFearGreedIndex';
 import { useWorkerAuth } from './WorkerAuthContext';
 import type { SimStatus } from './SimulationBotContext';
 import { useApiPolling } from '../hooks/useApiPolling';
@@ -92,7 +91,6 @@ export function ProSimulationBotProvider({ children }: { children: ReactNode }) 
   });
   const [serverSnapshot, setServerSnapshot] = useState<ProSimBotStateResponse['snapshot']>(null);
   const [controlError, setControlError] = useState<string | null>(null);
-  const fearGreedIndex = useFearGreedIndex();
   // True once this bot's own /state has delivered a config. The RUNNING
   // config is a fact and always beats the worker's starting defaults.
   const configFromServer = useRef(false);
@@ -106,8 +104,7 @@ export function ProSimulationBotProvider({ children }: { children: ReactNode }) 
   const localSim = useProSimulationBot({
     config,
     isRunning: isRunning && serverSnapshot === null,
-    cryptoData: cryptoData || [],
-    fearGreedIndex
+    cryptoData: cryptoData || []
   });
 
   const applyServerState = useCallback((st: ProSimBotStateResponse) => {

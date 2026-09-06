@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateLegacyOrders, generateProOrders, generateNewOrders, fillDueOrders } from '@cde/engine/execution';
+import { generateProOrders, generateNewOrders, fillDueOrders, applyProEntryGates, type ProGateContext } from '@cde/engine/execution';
 import { Candle } from '@cde/engine';
 import type { SimPosition, PendingOrder } from '@cde/engine/execution';
 import type { SignalEvaluation } from '@cde/engine';
@@ -17,7 +17,8 @@ import type { SignalEvaluation } from '@cde/engine';
 //      checked against their own stops at all.
 //
 // Both are exercised through the real order-generation entry points — the
-// same reason portfolioGates.integration.test.ts exists.
+// same reason portfolioGates.integration.test.ts exists. (The Legacy engine
+// itself is gone; the surviving Pro engine shares both behaviors.)
 
 const HOUR = 3_600_000;
 const T0 = 1_700_000_000_000;
@@ -89,29 +90,13 @@ const baseCtx = {
 };
 
 describe('an asset already held is never entered a second time', () => {
-  it('legacy: refuses an entry for a symbol with an open position', () => {
-    const orders = generateLegacyOrders({
-      ...baseCtx,
-      positions: [position('la-1', 'LA')],
-      evaluations: [evaluation('LA')]
-    });
-    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(0);
-  });
-
-  it('legacy: still allows the entry once that position is closed', () => {
-    const orders = generateLegacyOrders({
-      ...baseCtx,
-      positions: [],
-      evaluations: [evaluation('LA')]
-    });
-    expect(orders.filter((o) => o.side === 'buy')).toHaveLength(1);
-  });
-
   it('pro: refuses an entry for a symbol with an open position', () => {
     const orders = generateProOrders({
       ...baseCtx,
       positions: [position('la-1', 'LA')],
-      evaluations: [evaluation('LA')]
+      evaluations: [evaluation('LA')],
+      signalsBySymbol: {},
+      minConfidence: 40
     });
     expect(orders.filter((o) => o.side === 'buy')).toHaveLength(0);
   });
@@ -131,27 +116,32 @@ describe('an asset already held is never entered a second time', () => {
 describe('every open lot is checked against its own stop in the same tick', () => {
   // Positions that predate the one-per-symbol gate can still be restored from
   // persisted state, so the exit path has to unwind them all at once rather
-  // than one per tick.
+  // than one per tick. At 80 against a 100 entry every lot is -20% — far past
+  // §5's fixed -4.2% stop — so the exit fires regardless of the live signal.
   const stopped = { ...baseCtx, priceFor: () => 80 };
 
-  it('legacy: queues a separate exit for each lot of the same symbol', () => {
-    const orders = generateLegacyOrders({
+  it('pro: queues a separate exit for each lot of the same symbol', () => {
+    const orders = generateProOrders({
       ...stopped,
       positions: [position('la-1', 'LA'), position('la-2', 'LA'), position('la-3', 'LA')],
-      evaluations: []
+      evaluations: [],
+      signalsBySymbol: {},
+      minConfidence: 40
     });
     const exits = orders.filter((o) => o.side === 'close_long');
     expect(exits).toHaveLength(3);
     expect(new Set(exits.map((o) => o.positionId))).toEqual(new Set(['la-1', 'la-2', 'la-3']));
   });
 
-  it('legacy: does not re-queue a lot whose close is already pending', () => {
+  it('pro: does not re-queue a lot whose close is already pending', () => {
     const alreadyPending = [{ positionId: 'la-1', symbol: 'LA', side: 'close_long' } as unknown as PendingOrder];
-    const orders = generateLegacyOrders({
+    const orders = generateProOrders({
       ...stopped,
       pending: alreadyPending,
       positions: [position('la-1', 'LA'), position('la-2', 'LA')],
-      evaluations: []
+      evaluations: [],
+      signalsBySymbol: {},
+      minConfidence: 40
     });
     const exits = orders.filter((o) => o.side === 'close_long');
     expect(exits.map((o) => o.positionId)).toEqual(['la-2']);
@@ -179,35 +169,33 @@ describe('a close fills against the lot it was issued for', () => {
   });
 });
 
-describe('sizing respects the batch and the single-asset ceiling', () => {
-  it('legacy: a second entry in the same tick is sized off the reduced cash', () => {
-    const orders = generateLegacyOrders({
-      ...baseCtx,
-      cash: 1000,
-      equity: 100_000,   // high enough that the per-asset cap does not bind
-      positions: [],
-      evaluations: [evaluation('LA'), evaluation('BTC')]
-    });
-    const buys = orders.filter((o) => o.side === 'buy');
-    expect(buys).toHaveLength(2);
-    // 15% of 1000, then 15% of the remaining 850 — not 15% of 1000 twice.
-    expect(buys[0].budgetUsd).toBeCloseTo(150, 6);
-    expect(buys[1].budgetUsd).toBeCloseTo(127.5, 6);
+describe('sizing respects the batch: §4 gate 7 allocates against projected cash', () => {
+  const gateCtx = (over: Partial<ProGateContext> = {}): ProGateContext => ({
+    positions: [], pending: [], cash: 10_000, initialAmount: 10_000, maxPositions: 7, riskLevel: 'low', ...over
   });
 
-  it('legacy: entry size is set by the cash budget, not by equity', () => {
-    // Guards against re-introducing a per-asset equity ceiling on opening
-    // entries. One position per symbol already bounds per-asset exposure, and
-    // clamping the opening size as well silently re-tunes every trade in the
-    // book — a strategy change wearing a bugfix's clothes.
-    const orders = generateLegacyOrders({
-      ...baseCtx,
-      cash: 1000,
-      equity: 1000,   // 8% of equity would be $80, well under the $150 budget
-      positions: [],
-      evaluations: [evaluation('LA')]
-    });
-    const buy = orders.find((o) => o.side === 'buy');
-    expect(buy?.budgetUsd).toBeCloseTo(150, 6);
+  it('pro: a later entry in the batch is capped by the projected cash §4 leaves', () => {
+    // low → 15% × 10_000 = 1500 per entry. With 1650 in cash: the first take
+    // gets min(1500, 1650) = 1500 (the allocation caps, not the cash) and the
+    // projected cash drops to 150; the second gets min(1500, 150) = 150 —
+    // sized off the projected cash §4 leaves.
+    const gated = applyProEntryGates([evaluation('LA'), evaluation('BTC')], gateCtx({ cash: 1650 }));
+    expect(gated.find((e) => e.symbol === 'LA')?.budgetUsd).toBeCloseTo(1500, 6);
+    expect(gated.find((e) => e.symbol === 'BTC')?.budgetUsd).toBeCloseTo(150, 6);
+  });
+
+  it('pro: the strongest confidence is allocated first (§4)', () => {
+    const weak = evaluation('LA');
+    weak.confidence = 60;
+    const strong = evaluation('BTC');
+    strong.confidence = 80;
+    const gated = applyProEntryGates([weak, strong], gateCtx({ cash: 200, maxPositions: 1 }));
+    // The batch is walked confidence-descending: BTC (80) takes the one slot,
+    // LA (60) finds none — regardless of the order the caller listed them in.
+    expect(gated[0].symbol).toBe('BTC');
+    expect(gated[0].willExecute).toBe(true);
+    const la = gated.find((e) => e.symbol === 'LA');
+    expect(la?.status).toBe('NO_SIGNAL [NO_SLOTS]');
+    expect(la?.willExecute).toBe(false);
   });
 });

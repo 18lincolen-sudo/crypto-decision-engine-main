@@ -15,13 +15,21 @@ import {
 // fallback stayed at 60, so the UI advertised a threshold two points tighter
 // than the one actually refusing trades.
 
-const BOTS: SimBotId[] = ['intraday', 'legacy', 'pro', 'path'];
+const BOTS: SimBotId[] = ['intraday', 'pro', 'path'];
 
 describe('shared sim defaults', () => {
   it('gives every bot a complete config', () => {
     for (const bot of BOTS) {
       const config = simBotDefaults(bot);
-      expect(config.minConfidenceOverride).toBe(SIM_MIN_CONFIDENCE[bot]);
+      // Pro's floor is §3's FUNCTION of risk level (confidenceDerivedFromRiskLevel):
+      // the shipped default is UNSET (0) so the engine's proMinConfidence() table
+      // governs — pinning one number here would freeze the threshold at whatever
+      // risk level was configured when it was written.
+      if (bot === 'pro') {
+        expect(config.minConfidenceOverride).toBe(0);
+      } else {
+        expect(config.minConfidenceOverride).toBe(SIM_MIN_CONFIDENCE[bot]);
+      }
       expect(config.maxFuturesPositions).toBe(SIM_MAX_FUTURES_POSITIONS[bot]);
       expect(config.initialAmount).toBe(SIM_BASE_DEFAULTS.initialAmount);
       expect(config.maxPositions).toBe(SIM_BASE_DEFAULTS.maxPositions);
@@ -29,11 +37,11 @@ describe('shared sim defaults', () => {
     }
   });
 
-  it('keeps the four floors distinct — they are calibrated per engine', () => {
+  it('keeps the floors distinct — they are calibrated per engine', () => {
     expect(SIM_MIN_CONFIDENCE.intraday).toBe(52);
-    expect(SIM_MIN_CONFIDENCE.legacy).toBe(58);
-    expect(SIM_MIN_CONFIDENCE.pro).toBe(58);
-    // A probability, not a score. Never align this with the other three.
+    // §3's medium value — a display default; see confidenceDerivedFromRiskLevel.
+    expect(SIM_MIN_CONFIDENCE.pro).toBe(40);
+    // A probability, not a score. Never align this with the other two.
     expect(SIM_MIN_CONFIDENCE.path).toBe(33);
   });
 
@@ -71,7 +79,6 @@ describe('no second copy of the defaults survives', () => {
   it('each context builds its default config from the shared module', () => {
     const contexts: Array<[string, SimBotId]> = [
       ['src/contexts/SimulationBotContext.tsx', 'intraday'],
-      ['src/contexts/LegacySimulationBotContext.tsx', 'legacy'],
       ['src/contexts/ProSimulationBotContext.tsx', 'pro'],
       ['src/contexts/PathSimulationBotContext.tsx', 'path']
     ];
@@ -83,11 +90,9 @@ describe('no second copy of the defaults survives', () => {
   it('no hand-typed confidence floor is left in the contexts or hooks', () => {
     const files = [
       'src/contexts/SimulationBotContext.tsx',
-      'src/contexts/LegacySimulationBotContext.tsx',
       'src/contexts/ProSimulationBotContext.tsx',
       'src/contexts/PathSimulationBotContext.tsx',
       'src/hooks/useSimulationBot.ts',
-      'src/hooks/useLegacySimulationBot.ts',
       'src/hooks/useProSimulationBot.ts'
     ];
     for (const file of files) {
@@ -108,11 +113,11 @@ describe('config bootstrap endpoint', () => {
   const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
   const ROUTE = '/api/public/sim-defaults';
 
-  it('the worker serves all four bots plus the env layer it applied', () => {
+  it('the worker serves all three bots plus the env layer it applied', () => {
     const worker = read('server/tradingWorker.ts');
     expect(worker).toContain(ROUTE);
     const handler = worker.slice(worker.indexOf(ROUTE), worker.indexOf(ROUTE) + 1200);
-    for (const config of ['DEFAULT_SIM_CONFIG', 'DEFAULT_LEGACY_SIM_CONFIG', 'DEFAULT_PRO_SIM_CONFIG', 'DEFAULT_PATH_SIM_CONFIG']) {
+    for (const config of ['DEFAULT_SIM_CONFIG', 'DEFAULT_PRO_SIM_CONFIG', 'DEFAULT_PATH_SIM_CONFIG']) {
       expect(handler).toContain(config);
     }
     expect(handler).toContain('envOverrides');
@@ -136,7 +141,6 @@ describe('config bootstrap endpoint', () => {
   it('every context adopts its own bot’s defaults', () => {
     const contexts: Array<[string, SimBotId]> = [
       ['src/contexts/SimulationBotContext.tsx', 'intraday'],
-      ['src/contexts/LegacySimulationBotContext.tsx', 'legacy'],
       ['src/contexts/ProSimulationBotContext.tsx', 'pro'],
       ['src/contexts/PathSimulationBotContext.tsx', 'path']
     ];
@@ -152,7 +156,6 @@ describe('config bootstrap endpoint', () => {
     expect(hook).toContain('hasServerConfigRef.current');
     for (const file of [
       'src/contexts/SimulationBotContext.tsx',
-      'src/contexts/LegacySimulationBotContext.tsx',
       'src/contexts/ProSimulationBotContext.tsx',
       'src/contexts/PathSimulationBotContext.tsx'
     ]) {

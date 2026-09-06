@@ -14,8 +14,8 @@ import {
 } from '@cde/engine/execution';
 import { TIMEFRAME_SPECS } from '@cde/engine/market-data';
 
-// Four bots, enumerated by hand in the route table, the auth exempt list, the
-// stores, the tick loops and eight portfolio aggregations. Every one of those
+// Three bots, enumerated by hand in the route table, the auth exempt list, the
+// stores, the tick loops and the portfolio aggregations. Every one of those
 // lists was forgotten at least once. These tests hold the registry to being the
 // single definition, so forgetting is a failing test rather than a bot that
 // silently never runs.
@@ -23,16 +23,16 @@ import { TIMEFRAME_SPECS } from '@cde/engine/market-data';
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
 describe('the registry covers every bot', () => {
-  it('lists all four, in the order the page renders them', () => {
-    expect(SIM_BOT_IDS).toEqual(['intraday', 'legacy', 'pro', 'path']);
-    expect(SIM_BOT_SPECS).toHaveLength(4);
+  it('lists all three, in the order the page renders them', () => {
+    expect(SIM_BOT_IDS).toEqual(['intraday', 'pro', 'path']);
+    expect(SIM_BOT_SPECS).toHaveLength(3);
   });
 
   it('gives each bot a unique route prefix and store key', () => {
     const prefixes = SIM_BOT_SPECS.map((s) => s.routePrefix);
     const keys = SIM_BOT_SPECS.map((s) => s.storeKey);
-    expect(new Set(prefixes).size).toBe(4);
-    expect(new Set(keys).size).toBe(4);
+    expect(new Set(prefixes).size).toBe(3);
+    expect(new Set(keys).size).toBe(3);
   });
 
   it('never collides with the real trading bot’s namespace', () => {
@@ -53,7 +53,7 @@ describe('Test A — routing parity: every sim bot is reachable without a token'
   // UI showed a card that never moved.
   it('exposes every ui-facing prefix', () => {
     expect(UI_FACING_SIM_PREFIXES).toContain('/api/path-sim');
-    expect(UI_FACING_SIM_PREFIXES).toHaveLength(4);
+    expect(UI_FACING_SIM_PREFIXES).toHaveLength(3);
   });
 
   it('the worker derives its exempt list instead of retyping the prefixes', () => {
@@ -87,7 +87,6 @@ describe('Test B — scale parity: a score floor never lands on a probability bo
   // setting.
   it('labels each bot with what its confidence number means', () => {
     expect(SIM_BOTS.intraday.confidenceScale).toBe('score');
-    expect(SIM_BOTS.legacy.confidenceScale).toBe('score');
     expect(SIM_BOTS.pro.confidenceScale).toBe('score');
     expect(SIM_BOTS.path.confidenceScale).toBe('probability');
   });
@@ -95,7 +94,6 @@ describe('Test B — scale parity: a score floor never lands on a probability bo
   it('applies BOT_MIN_CONFIDENCE to the score bots only', () => {
     const env = { minConfidence: 60 };
     expect(simBotDefaults('intraday', env).minConfidenceOverride).toBe(60);
-    expect(simBotDefaults('legacy', env).minConfidenceOverride).toBe(60);
     expect(simBotDefaults('pro', env).minConfidenceOverride).toBe(60);
     // The regression: this was 60, and 60 is unreachable on a probability scale.
     expect(simBotDefaults('path', env).minConfidenceOverride).toBe(33);
@@ -107,14 +105,17 @@ describe('Test B — scale parity: a score floor never lands on a probability bo
   });
 
   it('leaves the score bots untouched by the path knob', () => {
-    const config = simBotDefaults('legacy', { pathMinConfidence: 40 });
-    expect(config.minConfidenceOverride).toBe(58);
+    const config = simBotDefaults('intraday', { pathMinConfidence: 40 });
+    expect(config.minConfidenceOverride).toBe(52);
   });
 
   it('with no environment, returns the compile-time base unchanged', () => {
     for (const id of SIM_BOT_IDS) {
       const config = simBotDefaults(id);
-      expect(config.minConfidenceOverride).toBe(SIM_BOTS[id].minConfidence);
+      // Pro's base is UNSET (0 — confidenceDerivedFromRiskLevel) so the engine's
+      // proMinConfidence() table governs; every other bot carries its floor.
+      const expected = id === 'pro' ? 0 : SIM_BOTS[id].minConfidence;
+      expect(config.minConfidenceOverride).toBe(expected);
       expect(config.maxPositions).toBe(SIM_BASE_DEFAULTS.maxPositions);
       expect(config.maxFuturesPositions).toBe(SIM_BOTS[id].maxFuturesPositions);
     }

@@ -189,62 +189,6 @@ export async function setSimConfig(config: SimBotConfig, configuredBaseUrl?: str
   return (await res.json()) as SimBotStateResponse;
 }
 
-// ── Shared LEGACY Simulation Bot API (public, no admin token) ─────────────────
-// Same shared-viewer model as the block above, running server/legacySimEngine.ts
-// (original alg.md algorithm). Fully server-driven — no leader election, so
-// there's no claim/push counterpart to mirror from the sim functions above.
-
-export interface LegacySimBotStateResponse {
-  running: boolean;
-  config: SimBotConfig;
-  snapshot: SimBotSnapshot | null;
-  updatedAt: number;
-}
-
-export async function getLegacySimState(configuredBaseUrl?: string): Promise<LegacySimBotStateResponse> {
-  const base = resolveBaseUrl(configuredBaseUrl);
-  if (!base) throw new Error('כתובת Worker לא הוגדרה');
-  const res = await fetch(`${base}/api/legacy-sim/state`);
-  if (!res.ok) throw new Error(`Failed to fetch legacy sim state: ${res.status} ${res.statusText}`);
-  return (await res.json()) as LegacySimBotStateResponse;
-}
-
-export async function startLegacySim(configuredBaseUrl?: string): Promise<LegacySimBotStateResponse> {
-  const base = resolveBaseUrl(configuredBaseUrl);
-  if (!base) throw new Error('כתובת Worker לא הוגדרה');
-  const res = await fetch(`${base}/api/legacy-sim/start`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Failed to start legacy sim: ${res.status} ${res.statusText}`);
-  return (await res.json()) as LegacySimBotStateResponse;
-}
-
-export async function stopLegacySim(configuredBaseUrl?: string): Promise<LegacySimBotStateResponse> {
-  const base = resolveBaseUrl(configuredBaseUrl);
-  if (!base) throw new Error('כתובת Worker לא הוגדרה');
-  const res = await fetch(`${base}/api/legacy-sim/stop`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Failed to stop legacy sim: ${res.status} ${res.statusText}`);
-  return (await res.json()) as LegacySimBotStateResponse;
-}
-
-export async function resetLegacySim(configuredBaseUrl?: string): Promise<LegacySimBotStateResponse> {
-  const base = resolveBaseUrl(configuredBaseUrl);
-  if (!base) throw new Error('כתובת Worker לא הוגדרה');
-  const res = await fetch(`${base}/api/legacy-sim/reset`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Failed to reset legacy sim: ${res.status} ${res.statusText}`);
-  return (await res.json()) as LegacySimBotStateResponse;
-}
-
-export async function setLegacySimConfig(config: SimBotConfig, configuredBaseUrl?: string): Promise<LegacySimBotStateResponse> {
-  const base = resolveBaseUrl(configuredBaseUrl);
-  if (!base) throw new Error('כתובת Worker לא הוגדרה');
-  const res = await fetch(`${base}/api/legacy-sim/config`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config })
-  });
-  if (!res.ok) throw new Error(`Failed to set legacy sim config: ${res.status} ${res.statusText}`);
-  return (await res.json()) as LegacySimBotStateResponse;
-}
-
 // ── Shared "Bot Pro" API (public, no admin token) ──────────────────────────
 // Same shared-viewer model as the two blocks above, running
 // server/proSimEngine.ts (a literal alg.md implementation). Fully

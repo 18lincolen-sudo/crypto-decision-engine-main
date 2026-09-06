@@ -37,10 +37,11 @@ export {
 export type { SimBotId, SimBotSpec, ConfidenceScale, SimEnvOverrides } from './services/simDefaults';
 
 // ── Order generation per engine ──────────────────────────────────────────────
-export type { ProOrderGenContext } from './services/proSimExecution';
+export type { ProOrderGenContext, ProGateContext } from './services/proSimExecution';
 export {
   MIN_PRO_CANDLES,
   buildProEvaluation,
+  applyProEntryGates,
   generateProOrders
 } from './services/proSimExecution';
 

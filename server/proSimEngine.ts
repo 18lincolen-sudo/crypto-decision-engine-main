@@ -2,10 +2,11 @@
 // the algorithm in alg.md (weighted-indicator confidence engine, fixed-percent
 // TP/SL, risk-level-driven threshold and allocation).
 //
-// This calls the algorithm directly (buildProEvaluation / generateProOrders),
-// the same way the Path engine does — there is no DecisionEngine pipeline
-// stage here, because alg.md's flow (§10) has no stages to pipeline: one
-// weighted score per symbol, one threshold check, one fixed exit rule.
+// This calls the algorithm directly (buildProEvaluation → applyProEntryGates →
+// generateProOrders), the same way the Path engine does — there is no
+// DecisionEngine pipeline stage here, because alg.md's flow (§10) has no stages
+// to pipeline: one weighted score per symbol, one gate sequence, one fixed
+// exit rule.
 
 import {
   createGenericSimEngine,
@@ -15,6 +16,7 @@ import {
 } from './simEngineFactory';
 import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 import {
+  applyProEntryGates,
   generateProOrders,
   buildProEvaluation,
   MIN_PRO_CANDLES
@@ -59,10 +61,21 @@ const proStrategy: SimEngineStrategy = {
       const candles = input.candlesBySymbol[symbol];
       if (!candles || candles.length < MIN_PRO_CANDLES) continue;
 
-      results.push(buildProEvaluation(symbol, candles, currentPrice, priceChange24h, input.fearGreedIndex, riskLevel, minConfidenceOverride));
+      results.push(buildProEvaluation(symbol, candles, currentPrice, priceChange24h, riskLevel, minConfidenceOverride));
     }
 
-    return results;
+    // §4 — the state gates (queued / held / slots / price / budget), evaluated
+    // ONCE here so the SignalEvaluation the panel renders is the SAME object
+    // the executor trades on, allocated strongest-confidence-first.
+    return applyProEntryGates(results, {
+      positions: input.positions,
+      pending: input.pending,
+      cash: input.cash,
+      initialAmount: input.initialAmount,
+      maxPositions: input.maxPositions,
+      riskLevel,
+      minConfidenceOverride
+    });
   },
 
   generateOrders(input: StrategyTickInput, evaluations: SignalEvaluation[]) {
@@ -82,7 +95,7 @@ const proStrategy: SimEngineStrategy = {
       const candles = input.candlesBySymbol[pos.symbol];
       if (!candles || candles.length < MIN_PRO_CANDLES) continue;
       const crypto = input.cryptoData.find((c) => c.symbol.toUpperCase() === pos.symbol);
-      signalsBySymbol[pos.symbol] = computeProSignal(candles, crypto?.price_change_percentage_24h || 0, input.fearGreedIndex);
+      signalsBySymbol[pos.symbol] = computeProSignal(candles, crypto?.price_change_percentage_24h || 0);
     }
 
     return generateProOrders({
@@ -92,14 +105,7 @@ const proStrategy: SimEngineStrategy = {
       signalsBySymbol,
       minConfidence,
       executionDelaySec: input.config.executionDelaySec,
-      dailyDrawdownPercent: input.dailyDrawdownPercent,
-      weeklyDrawdownPercent: input.weeklyDrawdownPercent,
-      cash: input.cash,
-      initialAmount: input.initialAmount,
-      riskLevel,
-      exitCooldown: input.exitCooldown,
-      priceFor: input.priceFor,
-      maxPositions: input.maxPositions
+      priceFor: input.priceFor
     });
   }
 };

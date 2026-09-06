@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runPortfolioBacktest, type SlConfig } from '../../server/backtestRunner';
+import { runPortfolioBacktest } from '../../server/backtestRunner';
 import type { Candle } from '@cde/engine';
 
 // The A/B harness could not run Intraday at all, so every intraday change
@@ -8,9 +8,13 @@ import type { Candle } from '@cde/engine';
 // snapshot does not produce a thin Intraday result, it produces a zero-trade
 // result that is indistinguishable from "this strategy never fires".
 //
-// That silent zero is the failure mode worth a test.
+// That silent zero is the failure mode worth a test: the runner REFUSES an
+// H1-only snapshot loudly instead of reporting zero trades.
+//
+// (This file also used to keep Legacy and Pro on the H1-only path so their runs
+// stayed comparable. Both engines are gone; the runner's EngineType is
+// 'intraday' alone.)
 
-const SL: SlConfig = { minStop: 1.5, maxStop: 4.0, softTrendBase: 60 };
 const T0 = Date.UTC(2025, 0, 1);
 
 function series(n: number, stepMs: number): Candle[] {
@@ -33,12 +37,12 @@ function series(n: number, stepMs: number): Candle[] {
 describe('intraday backtest parity', () => {
   it('refuses an H1-only snapshot instead of reporting zero trades', async () => {
     const h1Only = [{ symbol: 'BTCUSDT', candles: series(300, 3_600_000) }];
-    await expect(runPortfolioBacktest(h1Only, SL, 'intraday')).rejects.toThrow(/15M and 5M/);
+    await expect(runPortfolioBacktest(h1Only, 'intraday')).rejects.toThrow(/15M and 5M/);
   });
 
   it('names the command that produces the snapshot it needs', async () => {
     const h1Only = [{ symbol: 'BTCUSDT', candles: series(300, 3_600_000) }];
-    await expect(runPortfolioBacktest(h1Only, SL, 'intraday')).rejects.toThrow(/snapshot-mtf/);
+    await expect(runPortfolioBacktest(h1Only, 'intraday')).rejects.toThrow(/snapshot-mtf/);
   });
 
   it('names every symbol that is missing series, not just the first', async () => {
@@ -47,15 +51,7 @@ describe('intraday backtest parity', () => {
       { symbol: 'ETHUSDT', candles: series(300, 3_600_000) },
       { symbol: 'SOLUSDT', candles: series(300, 3_600_000) }
     ];
-    await expect(runPortfolioBacktest(histories, SL, 'intraday')).rejects.toThrow(/ETHUSDT, SOLUSDT/);
-  });
-
-  it('leaves legacy and pro on the H1-only path — their runs stay comparable', async () => {
-    const h1Only = [{ symbol: 'BTCUSDT', candles: series(300, 3_600_000) }];
-    // No throw: the added series are optional, so every snapshot recorded before
-    // intraday existed is still a valid input for these two.
-    await expect(runPortfolioBacktest(h1Only, SL, 'legacy')).resolves.toBeTruthy();
-    await expect(runPortfolioBacktest(h1Only, SL, 'pro')).resolves.toBeTruthy();
+    await expect(runPortfolioBacktest(histories, 'intraday')).rejects.toThrow(/ETHUSDT, SOLUSDT/);
   });
 
   it('runs intraday when all three series are present', async () => {
@@ -65,7 +61,7 @@ describe('intraday backtest parity', () => {
       m15: series(400, 900_000),
       m5: series(700, 300_000)
     }];
-    const result = await runPortfolioBacktest(histories, SL, 'intraday');
+    const result = await runPortfolioBacktest(histories, 'intraday');
     // Synthetic random-walk data need not produce trades; what matters is that
     // the run completes and reports, rather than throwing or hanging.
     expect(result.totalTrades).toBeGreaterThanOrEqual(0);

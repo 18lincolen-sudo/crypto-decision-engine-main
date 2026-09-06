@@ -12,7 +12,7 @@
  *
  * WHAT ALG.MD SPECIFIES EXACTLY, and is followed literally:
  *   - The 8-indicator weight table (§2): RSI 15, MA 15, MACD 18, BB 12,
- *     Stochastic 8, Volume Profile 15, Sentiment 10, 24h-change 12.
+ *     Stochastic 8, Volume Profile 15, Volume Trend 10, 24h-change 12.
  *   - The scoring formula (§2): weighted = weight × (confidence/100), summed
  *     into buyScore / sellScore / holdScore per indicator's vote; totalWeight
  *     accumulates every indicator that was evaluated.
@@ -29,8 +29,8 @@
  * WHAT ALG.MD NAMES BUT DOES NOT DEFINE, and where this file necessarily makes
  * a choice — each is flagged at its definition below, not silently invented:
  *   - Per-indicator BUY/SELL/HOLD bands (RSI 25/35/65/75, Stochastic 25/75,
- *     Bollinger position, sentiment 20/35/70/80, momentum ±3%/±8%). These are
- *     NOT re-derived here: they are the exact bands already used by this
+ *     Bollinger position, volume-trend confirmation, momentum ±3%/±8%). These
+ *     are NOT re-derived here: they are the exact bands already used by this
  *     repo's `utils/smartRecommendationEngine.ts`, which independently
  *     implements the identical dominance/margin/coverage formula against a
  *     nearly-identical indicator set. Reusing a band that already exists in
@@ -46,11 +46,14 @@
  *     not the "volume vs. its 20-bar average" heuristic the old Legacy engine
  *     called by the same English name. They are different techniques; this
  *     one matches what §2 literally names.
- *   - Sentiment direction: implemented as the conventional contrarian reading
- *     (extreme fear → buy pressure, extreme greed → sell pressure). §2 lists
- *     Sentiment as an input weighted 10 without stating a direction; the
- *     contrarian convention is the standard reading of a Fear & Greed index
- *     and is what smartRecommendationEngine.ts already does.
+ *   - Volume Trend direction (§2's weight-10 indicator, named in §1's
+ *     indicator list): computed with the codebase's own primitive
+ *     (`analyzeVolumeTrend`) and voted with smartRecommendationEngine.ts's
+ *     analyzeVolume bands — that function is this repo's only precedent for
+ *     turning a volume trend into a directional vote. Where it emits nothing,
+ *     this file votes HOLD: §2 requires every indicator to cast a vote
+ *     (totalWeight accumulates every evaluated indicator), the same
+ *     always-vote convention every other vote in this file follows.
  *   - On a HOLD-outcome tie between BUY and SELL, and on a tie between HOLD
  *     and a directional bucket, this file resolves to the SAFER outcome
  *     (HOLD wins draws). §2 does not name a tie-break.
@@ -65,6 +68,7 @@
 import type { Candle } from './tradeEngine';
 import { formatDynamicPrice } from './tradeEngine';
 import {
+  analyzeVolumeTrend,
   calculateRSI,
   calculateMovingAverage,
   calculateBollingerBands,
@@ -94,7 +98,7 @@ export const PRO_INDICATOR_WEIGHTS = {
   BOLLINGER: 12,
   STOCHASTIC: 8,
   VOLUME_PROFILE: 15,
-  SENTIMENT: 10,
+  VOLUME_TREND: 10,
   MOMENTUM_24H: 12
 } as const;
 
@@ -189,15 +193,35 @@ function voteVolumeProfile(vp: ReturnType<typeof calculateVolumeProfile>, signal
   else pushVote(signals, 'Volume Profile', w, 'HOLD', 65, `מחיר בתוך אזור הערך (POC $${formatDynamicPrice(vp.poc)})`);
 }
 
-// Sentiment (Fear & Greed 0-100) — contrarian reading; same bands as
-// smartRecommendationEngine.ts's analyzeMarketSentiment.
-function voteSentiment(fearGreedIndex: number, signals: ProIndicatorSignal[]): void {
-  const w = PRO_INDICATOR_WEIGHTS.SENTIMENT;
-  if (fearGreedIndex <= 20) pushVote(signals, 'Sentiment (F&G)', w, 'BUY', 85, `פחד קיצוני בשוק (${fearGreedIndex}) — הזדמנות קנייה`);
-  else if (fearGreedIndex <= 35) pushVote(signals, 'Sentiment (F&G)', w, 'BUY', 70, `פחד בשוק (${fearGreedIndex})`);
-  else if (fearGreedIndex >= 80) pushVote(signals, 'Sentiment (F&G)', w, 'SELL', 80, `חמדנות קיצונית (${fearGreedIndex})`);
-  else if (fearGreedIndex >= 70) pushVote(signals, 'Sentiment (F&G)', w, 'SELL', 65, `חמדנות בשוק (${fearGreedIndex})`);
-  else pushVote(signals, 'Sentiment (F&G)', w, 'HOLD', 60, `סנטימנט ניטרלי (${fearGreedIndex})`);
+// Volume Trend (מגמת נפח) — §2's weight-10 indicator, named in §1's list.
+// Direction comes from the codebase's own primitive (analyzeVolumeTrend:
+// recent vs. prior volume averages); the vote bands are
+// smartRecommendationEngine.ts's analyzeVolume, this repo's only precedent
+// for turning a volume trend into a directional vote. That function emits
+// NOTHING outside its three bands; §2 requires every indicator to vote
+// (totalWeight accumulates every evaluated indicator), so the uncovered
+// cases vote HOLD — the same always-vote convention every other vote in
+// this file follows.
+function voteVolumeTrend(
+  volumeTrend: 'increasing' | 'decreasing' | 'stable',
+  priceChange24h: number,
+  signals: ProIndicatorSignal[]
+): void {
+  const w = PRO_INDICATOR_WEIGHTS.VOLUME_TREND;
+  if (volumeTrend === 'increasing' && priceChange24h > 0) {
+    pushVote(signals, 'מגמת נפח', w, 'BUY', 75, 'נפח עולה עם מחירים עולים — אישור מגמה');
+  } else if (volumeTrend === 'increasing' && priceChange24h < -2) {
+    pushVote(signals, 'מגמת נפח', w, 'SELL', 70, 'נפח עולה עם מחירים יורדים — לחץ מכירות');
+  } else if (volumeTrend === 'decreasing' && Math.abs(priceChange24h) > 3) {
+    pushVote(signals, 'מגמת נפח', w, 'HOLD', 60, 'נפח נמוך — מגמה לא מאושרת');
+  } else {
+    pushVote(signals, 'מגמת נפח', w, 'HOLD', 55,
+      volumeTrend === 'increasing'
+        ? 'נפח עולה ללא כיוון מחיר ברור'
+        : volumeTrend === 'decreasing'
+          ? 'נפח יורד — ללא אישוש כיווני'
+          : 'מגמת נפח יציבה — ללא אישוש כיווני');
+  }
 }
 
 // 24h price change (momentum) — same ±3%/±8% bands as
@@ -235,8 +259,7 @@ export interface ProSignalResult {
  */
 export function computeProSignal(
   candles: Candle[],
-  priceChange24h: number,
-  fearGreedIndex: number = 50
+  priceChange24h: number
 ): ProSignalResult {
   const prices = candles.map((c) => c.close);
   const volumes = candles.map((c) => c.volume);
@@ -253,6 +276,7 @@ export function computeProSignal(
     candles.map((c) => c.low),
     prices
   );
+  const volumeTrend = analyzeVolumeTrend(volumes);
 
   const signals: ProIndicatorSignal[] = [];
   voteRsi(rsi, signals);
@@ -261,7 +285,7 @@ export function computeProSignal(
   voteBollinger(bb, currentPrice, signals);
   voteStochastic(stochastic, signals);
   voteVolumeProfile(vp, signals);
-  voteSentiment(fearGreedIndex, signals);
+  voteVolumeTrend(volumeTrend, priceChange24h, signals);
   voteMomentum24h(priceChange24h, signals);
 
   // §2's scoring: weighted = weight × (confidence/100), routed to whichever
@@ -303,7 +327,7 @@ export function computeProSignal(
     totalWeight,
     confidence,
     signals,
-    indicators: { rsi, ma20, volumeTrend: 'stable', bollingerBands: bb, volumeProfile: vp, macd, stochastic }
+    indicators: { rsi, ma20, volumeTrend, bollingerBands: bb, volumeProfile: vp, macd, stochastic }
   };
 }
 

@@ -23,6 +23,7 @@ import { getUniverseMarketData } from '@cde/engine/market-data';
 import { toBaseAsset } from '@cde/engine/market-data';
 import { fillDueOrders, selectFillableOrders } from '@cde/engine/execution';
 import {
+  applyProEntryGates,
   generateProOrders,
   buildProEvaluation,
   MIN_PRO_CANDLES,
@@ -56,7 +57,6 @@ interface Params {
   config: SimBotConfig;
   isRunning: boolean;
   cryptoData?: CryptoData[];
-  fearGreedIndex?: number;
   initialSnapshot?: HydratableSnapshot | null;
   persist?: (state: PersistedSimState) => void;
 }
@@ -87,7 +87,7 @@ const loadPersisted = (): PersistedSimState | null => {
   }
 };
 
-export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIndex = 50, initialSnapshot, persist }: Params) {
+export function useProSimulationBot({ config, isRunning, cryptoData, initialSnapshot, persist }: Params) {
   const [saved] = useState<HydratableSnapshot | PersistedSimState | null>(() => initialSnapshot ?? loadPersisted());
   const [cash, setCash] = useState(saved?.cash ?? config.initialAmount);
   const [positions, setPositions] = useState<SimPosition[]>(saved?.positions ?? []);
@@ -250,9 +250,12 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
   const minConfidence = proMinConfidence(riskLevel, minConfidenceOverride);
 
   // ═══════════════════════════════════════════════════════
-  // Evaluation — alg.md §2/§4, one weighted score per symbol
+  // Evaluation — alg.md §2 signals, then §4's gates on top.
+  // The signal pass is heavy (indicator math per symbol) and keyed on market
+  // data; the gate pass is cheap and re-runs whenever any state a gate reads
+  // changes, so the panel always reflects the gates' CURRENT verdict.
   // ═══════════════════════════════════════════════════════
-  const evaluations = useMemo<SignalEvaluation[]>(() => {
+  const rawEvaluations = useMemo<SignalEvaluation[]>(() => {
     if (!cryptoData?.length) return [];
 
     return cryptoData.map((crypto) => {
@@ -262,9 +265,21 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       const priceChange24h = crypto.price_change_percentage_24h || 0;
       const candles = candlesBySymbol[baseAsset];
 
-      return buildProEvaluation(baseAsset, candles ?? [], currentPrice, priceChange24h, fearGreedIndex, riskLevel, minConfidenceOverride);
+      return buildProEvaluation(baseAsset, candles ?? [], currentPrice, priceChange24h, riskLevel, minConfidenceOverride);
     });
-  }, [cryptoData, candlesBySymbol, fearGreedIndex, riskLevel, minConfidenceOverride]);
+  }, [cryptoData, candlesBySymbol, riskLevel, minConfidenceOverride]);
+
+  const evaluations = useMemo<SignalEvaluation[]>(() => {
+    return applyProEntryGates(rawEvaluations, {
+      positions,
+      pending,
+      cash,
+      initialAmount: config.initialAmount,
+      maxPositions: config.maxPositions || 7,
+      riskLevel,
+      minConfidenceOverride
+    });
+  }, [rawEvaluations, positions, pending, cash, config.initialAmount, config.maxPositions, riskLevel, minConfidenceOverride]);
 
   // Per-held-symbol current signal, for the exit check (§4's "flip to SELL").
   const signalsBySymbol = useMemo<Record<string, ProSignalResult>>(() => {
@@ -273,10 +288,10 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       const candles = candlesBySymbol[pos.symbol];
       if (!candles || candles.length < MIN_PRO_CANDLES) continue;
       const crypto = cryptoData?.find((c) => toBaseAsset(c.symbol.toUpperCase()) === pos.symbol);
-      map[pos.symbol] = computeProSignal(candles, crypto?.price_change_percentage_24h || 0, fearGreedIndex);
+      map[pos.symbol] = computeProSignal(candles, crypto?.price_change_percentage_24h || 0);
     }
     return map;
-  }, [positions, candlesBySymbol, cryptoData, fearGreedIndex]);
+  }, [positions, candlesBySymbol, cryptoData]);
 
   // ═══════════════════════════════════════════════════════
   // 1. Order Generator & Exit Engine Tick
@@ -291,14 +306,7 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
       signalsBySymbol,
       minConfidence,
       executionDelaySec: config.executionDelaySec,
-      dailyDrawdownPercent,
-      weeklyDrawdownPercent,
-      cash: cashRef.current,
-      initialAmount: config.initialAmount,
-      riskLevel,
-      exitCooldown: exitCooldownRef.current,
-      priceFor: priceForRef.current,
-      maxPositions: config.maxPositions || 7
+      priceFor: priceForRef.current
     });
 
     if (newOrders.length) setPending((prev) => [...prev, ...newOrders]);
@@ -336,7 +344,9 @@ export function useProSimulationBot({ config, isRunning, cryptoData, fearGreedIn
         const currentHour = Math.floor(now / (60 * 60 * 1000));
         if (currentHour > lastHour) {
           const next = [...prev, { timestamp: timeStr, at: now, portfolio: equityNow }];
-          return next.length > 168 ? next.slice(-168) : next;
+          // §8: the hourly buffer holds 720 points ≈ 30 days (same cap as the
+          // server engine) — it is what the 7D/30D range metrics read from.
+          return next.length > 720 ? next.slice(-720) : next;
         }
         return prev;
       });

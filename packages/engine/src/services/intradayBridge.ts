@@ -72,6 +72,11 @@ export interface SignalEvaluation {
    *  sized from free cash instead, so a backtest result described a different
    *  position size than the engine it was supposed to validate. */
   betSizeUsd?: number;
+  /** Pro (§4): the budget the gate pass actually allocated to this entry —
+   *  min(initialAmount × allocation(riskLevel), projected cash at its turn in
+   *  the confidence-descending batch). The order generator emits exactly this;
+   *  recomputing it there would mean a second walk of the same allocation. */
+  budgetUsd?: number;
   stopLoss?: number;
   takeProfit1?: number;
   takeProfit2?: number;

@@ -41,17 +41,15 @@ function positions(count: number, type = 'SPOT') {
   return Array.from({ length: count }, () => ({ type }));
 }
 
-/** The four engines, in the page's order, with per-engine overrides. */
-function fourBots(over: {
+/** The three engines, in the page's order, with per-engine overrides. */
+function threeBots(over: {
   intraday?: Partial<AggregatableContext>;
-  legacy?: Partial<AggregatableContext>;
   pro?: Partial<AggregatableContext>;
   path?: Partial<AggregatableContext>;
   pathAvailable?: boolean;
 } = {}): AggregatedBot[] {
   return [
     toAggregated('חדש', ctx(over.intraday)),
-    toAggregated('מקורי', ctx(over.legacy)),
     toAggregated('פרו', ctx(over.pro)),
     toAggregated('נתיב 4H', ctx(over.path), over.pathAvailable ?? true)
   ];
@@ -59,61 +57,59 @@ function fourBots(over: {
 
 describe('Test 1 — risk meter sees Path on its own', () => {
   it('reports leveraged exposure when ONLY Path holds it', () => {
-    const risk = combineRisk(fourBots({ path: { totalLeveragedExposureUsd: 1_500, equity: 10_000 } }));
+    const risk = combineRisk(threeBots({ path: { totalLeveragedExposureUsd: 1_500, equity: 10_000 } }));
     // The regression: this was 0, because Path was not in the sum.
     expect(risk.totalLeveragedExposureUsd).toBe(1_500);
   });
 
   it('reports invested capital and equity when ONLY Path has them', () => {
-    const risk = combineRisk(fourBots({ path: { equity: 12_000, positionsValue: 4_000 } }));
+    const risk = combineRisk(threeBots({ path: { equity: 12_000, positionsValue: 4_000 } }));
     expect(risk.portfolioValue).toBe(12_000);
     expect(risk.totalInvestedUsd).toBe(4_000);
   });
 });
 
-describe('Test 2 — combined positions count all four engines', () => {
-  it('sums 1 + 2 + 3 + 4 to 10, not 6', () => {
-    const risk = combineRisk(fourBots({
+describe('Test 2 — combined positions count all three engines', () => {
+  it('sums 1 + 3 + 4 to 8, not 4', () => {
+    const risk = combineRisk(threeBots({
       intraday: { positions: positions(1) },
-      legacy: { positions: positions(2) },
       pro: { positions: positions(3) },
       path: { positions: positions(4) }
     }));
-    expect(risk.openPositionsCount).toBe(10);
+    expect(risk.openPositionsCount).toBe(8);
   });
 
   it('counts a paused engine’s positions — exposure is not conditional on running', () => {
-    const risk = combineRisk(fourBots({
+    const risk = combineRisk(threeBots({
       intraday: { positions: positions(2), isRunning: false },
       path: { positions: positions(3), isRunning: false }
     }));
     expect(risk.openPositionsCount).toBe(5);
   });
 
-  it('counts futures separately across all four', () => {
-    const risk = combineRisk(fourBots({
-      legacy: { positions: [...positions(1, 'FUTURES'), ...positions(2, 'SPOT')] },
+  it('counts futures separately across all three', () => {
+    const risk = combineRisk(threeBots({
+      pro: { positions: [...positions(1, 'FUTURES'), ...positions(2, 'SPOT')] },
       path: { positions: positions(2, 'FUTURES') }
     }));
     expect(risk.openFuturesCount).toBe(3);
     expect(risk.openPositionsCount).toBe(5);
   });
 
-  it('sums the position and futures capacity of all four', () => {
-    const risk = combineRisk(fourBots({
+  it('sums the position and futures capacity of all three', () => {
+    const risk = combineRisk(threeBots({
       intraday: { config: { maxPositions: 7, maxFuturesPositions: 2 } },
-      legacy: { config: { maxPositions: 7, maxFuturesPositions: 2 } },
-      pro: { config: { maxPositions: 7, maxFuturesPositions: 2 } },
+      pro: { config: { maxPositions: 7, maxFuturesPositions: 0 } },
       path: { config: { maxPositions: 5, maxFuturesPositions: 0 } }
     }));
-    expect(risk.maxPositions).toBe(26);
-    expect(risk.maxFutures).toBe(6);
+    expect(risk.maxPositions).toBe(19);
+    expect(risk.maxFutures).toBe(2);
   });
 });
 
 describe('combined drawdown', () => {
   it('takes the worst engine, including Path, and does not sum', () => {
-    const risk = combineRisk(fourBots({
+    const risk = combineRisk(threeBots({
       intraday: { dailyDrawdownPercent: 2, weeklyDrawdownPercent: 3 },
       path: { dailyDrawdownPercent: 6, weeklyDrawdownPercent: 11 }
     }));
@@ -125,7 +121,7 @@ describe('combined drawdown', () => {
 describe('§23 — no silent zero for a missing engine', () => {
   it('excludes an unavailable engine from every figure and names it', () => {
     // The unreachable-worker snapshot: placeholder equity, zero exposure.
-    const risk = combineRisk(fourBots({
+    const risk = combineRisk(threeBots({
       intraday: { equity: 10_000, positionsValue: 5_000 },
       path: { equity: 10_000, positionsValue: 0, positions: [] },
       pathAvailable: false
@@ -137,40 +133,38 @@ describe('§23 — no silent zero for a missing engine', () => {
     expect(risk.unavailableEngines).toEqual(['נתיב 4H']);
   });
 
-  it('reports an empty exclusion list when all four are readable', () => {
-    expect(combineRisk(fourBots()).unavailableEngines).toEqual([]);
+  it('reports an empty exclusion list when all three are readable', () => {
+    expect(combineRisk(threeBots()).unavailableEngines).toEqual([]);
   });
 });
 
 describe('Tests 3, 4, 5 — group actions reach every engine', () => {
   for (const action of ['start', 'pause', 'resetAll'] as const) {
-    it(`${action} produces one call per engine, all four`, async () => {
+    it(`${action} produces one call per engine, all three`, async () => {
       const called: string[] = [];
       const spy = (label: string) => async () => { called.push(label); };
       const bots: AggregatedBot[] = [
         toAggregated('חדש', ctx({ [action]: spy('חדש') })),
-        toAggregated('מקורי', ctx({ [action]: spy('מקורי') })),
         toAggregated('פרו', ctx({ [action]: spy('פרו') })),
         toAggregated('נתיב 4H', ctx({ [action]: spy('נתיב 4H') }))
       ];
       const actions = groupAction(bots, action);
-      expect(actions).toHaveLength(4);
+      expect(actions).toHaveLength(3);
       await Promise.allSettled(actions.map((run) => run()));
-      expect(called).toEqual(['חדש', 'מקורי', 'פרו', 'נתיב 4H']);
+      expect(called).toEqual(['חדש', 'פרו', 'נתיב 4H']);
     });
   }
 
-  it('an engine that throws does not stop the other three', async () => {
+  it('an engine that throws does not stop the other two', async () => {
     const called: string[] = [];
     const bots: AggregatedBot[] = [
       toAggregated('חדש', ctx({ resetAll: async () => { called.push('חדש'); } })),
-      toAggregated('מקורי', ctx({ resetAll: async () => { throw new Error('worker down'); } })),
-      toAggregated('פרו', ctx({ resetAll: async () => { called.push('פרו'); } })),
+      toAggregated('פרו', ctx({ resetAll: async () => { throw new Error('worker down'); } })),
       toAggregated('נתיב 4H', ctx({ resetAll: async () => { called.push('נתיב 4H'); } }))
     ];
     const results = await Promise.allSettled(groupAction(bots, 'resetAll').map((run) => run()));
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
-    expect(called).toEqual(['חדש', 'פרו', 'נתיב 4H']);
+    expect(called).toEqual(['חדש', 'נתיב 4H']);
   });
 
   it('Reset All is not Clear Cache: the group action list touches no storage key', () => {
@@ -200,14 +194,14 @@ describe('Test 6 — Clear Cache covers Path', () => {
   });
 });
 
-describe('Test 11 — the page does not claim three engines', () => {
+describe('Test 11 — the page names its three engines consistently', () => {
   const page = readFileSync(join(process.cwd(), 'src/pages/SimulationBot.tsx'), 'utf8');
 
-  it('says four everywhere it used to say three', () => {
-    expect(page).not.toContain('שלושה אלגוריתמים');
-    expect(page).not.toContain('שלושת המנועים');
-    expect(page).toContain('ארבעה אלגוריתמים');
-    expect(page).toContain('ארבעת המנועים');
+  it('says three everywhere, never the old four', () => {
+    expect(page).toContain('שלושה אלגוריתמים');
+    expect(page).toContain('שלושת המנועים');
+    expect(page).not.toContain('ארבעה אלגוריתמים');
+    expect(page).not.toContain('ארבעת המנועים');
   });
 
   it('names the Path engine in the header description', () => {
@@ -215,11 +209,13 @@ describe('Test 11 — the page does not claim three engines', () => {
   });
 
   it('prints no hand-typed threshold: the numbers come from the engines', () => {
-    expect(page).toContain('LEGACY_SPOT_BASE_THRESHOLD');
-    expect(page).toContain('LEGACY_FUTURES_BASE_THRESHOLD');
-    expect(page).toContain('PRO_SPOT_BASE_THRESHOLD');
-    expect(page).toContain('PRO_FUTURES_BASE_THRESHOLD');
-    // The literals that used to sit in the subtitles.
+    // Pro's floor is §3's risk-level table — the panel imports the table rather
+    // than restating a single number.
+    expect(page).toContain('PRO_CONFIDENCE_BY_RISK');
+    expect(page).toContain('PRO_ALLOCATION_BY_RISK');
+    expect(page).toContain('PRO_STOP_LOSS_PERCENT');
+    expect(page).toContain('PRO_TAKE_PROFIT_PERCENT');
+    // The literals that used to sit in the legacy/pro subtitles.
     expect(page).not.toContain('Spot 58');
     expect(page).not.toContain('Futures 70%');
     expect(page).not.toContain('Spot 60% / Futures 72%');

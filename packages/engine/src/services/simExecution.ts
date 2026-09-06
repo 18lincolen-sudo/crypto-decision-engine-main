@@ -157,6 +157,13 @@ export interface PendingOrder {
   signalPrice: number;
   quantity: number;
   budgetUsd?: number;
+  /** How this ENTRY fills once its execution delay elapses. 'limit' (the
+   *  default, and what every engine except Pro uses) waits for the live price
+   *  to cross the order's own signalPrice and fills at limit-or-better with a
+   *  maker fee. 'market' (alg.md §6, Pro) fires at executeAt at the market
+   *  price of that moment — adverse slippage and a Taker fee, always against
+   *  the bot. EXIT orders are market-style regardless of this flag. */
+  fill?: 'market' | 'limit';
   leverage?: number;
   stopLoss?: number;
   takeProfit1?: number;
@@ -634,7 +641,10 @@ export function selectFillableOrders(pending: PendingOrder[], now: number, price
   const expired: PendingOrder[] = [];
   for (const o of pending) {
     if (now < o.executeAt) continue;
-    if (EXIT_ORDER_SIDES.has(o.side)) {
+    // EXIT orders — and §6's delayed MARKET entries (Pro) — fire the moment
+    // their execution delay elapses, no price condition. Everything else is a
+    // resting LIMIT entry (see below).
+    if (EXIT_ORDER_SIDES.has(o.side) || o.fill === 'market') {
       due.push(o);
       continue;
     }
@@ -705,16 +715,18 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
   for (const order of due) {
     const market = priceFor(order.symbol) ?? order.signalPrice;
     const isEntryOrder = order.side === 'buy' || order.side === 'long' || order.side === 'short';
-    // ENTRY orders are real resting LIMIT orders (see selectFillableOrders —
-    // they only reach `due` once price has actually crossed the limit), so
-    // they fill at their own limit price or BETTER, exactly like a real
-    // exchange limit fill — never at "live price + adverse slippage", which
-    // previously let a "Limit BUY @ $1.3680" fill at $1.3756. EXIT orders
-    // (SL/TP/trailing/time-stop) stay market-style: urgent, fills at live
-    // price with slippage, matching how the real bot's SL/TP brackets fire.
+    // ENTRY orders default to real resting LIMIT orders (see
+    // selectFillableOrders — they only reach `due` once price has actually
+    // crossed the limit), so they fill at their own limit price or BETTER,
+    // exactly like a real exchange limit fill — never at "live price + adverse
+    // slippage", which previously let a "Limit BUY @ $1.3680" fill at $1.3756.
+    // EXIT orders (SL/TP/trailing/time-stop) and §6's delayed MARKET entries
+    // (Pro) stay market-style: they fill at the live price with slippage —
+    // alg.md §6: "המילוי מחושב לפי מחיר השוק באותו רגע... תמיד לרעת הבוט".
+    const entryIsLimit = isEntryOrder && order.fill !== 'market';
     const sideForSlippage = order.side === 'buy' || order.side === 'long' ? 'BUY' : 'SELL';
     const isLongSide = order.side === 'buy' || order.side === 'long';
-    const { fillPrice, slippagePercent } = isEntryOrder
+    const { fillPrice, slippagePercent } = entryIsLimit
       ? { fillPrice: isLongSide ? Math.min(market, order.signalPrice) : Math.max(market, order.signalPrice), slippagePercent: 0 }
       : simulateSlippage(market, sideForSlippage, costs.slippagePercent);
     const delayMs = Date.now() - order.createdAt;
@@ -729,8 +741,9 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       // Limit-entry fills are Maker-type (the order only fills at or better
       // than its own limit price — see selectFillableOrders): charging Taker
       // here inflated entry costs 2.75-5x and contradicted evaluateCostEdge,
-      // which already models Maker entry cost (§25).
-      const fee = calculateTradingFee(notional, order.type, false, costs.feePercent);
+      // which already models Maker entry cost (§25). §6's MARKET entries
+      // (Pro) cross the book by construction — Taker, "עמלת Taker בכל צד".
+      const fee = calculateTradingFee(notional, order.type, !entryIsLimit, costs.feePercent);
       const totalCost = budget + fee;
       if (totalCost > workingCash) continue;
       const quantity = notional / fillPrice;
