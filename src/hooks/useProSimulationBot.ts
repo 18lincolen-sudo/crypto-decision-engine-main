@@ -306,7 +306,8 @@ export function useProSimulationBot({ config, isRunning, cryptoData, initialSnap
       signalsBySymbol,
       minConfidence,
       executionDelaySec: config.executionDelaySec,
-      priceFor: priceForRef.current
+      priceFor: priceForRef.current,
+      limitEntries: config.proLimitEntries === true
     });
 
     if (newOrders.length) setPending((prev) => [...prev, ...newOrders]);

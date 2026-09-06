@@ -105,7 +105,8 @@ const proStrategy: SimEngineStrategy = {
       signalsBySymbol,
       minConfidence,
       executionDelaySec: input.config.executionDelaySec,
-      priceFor: input.priceFor
+      priceFor: input.priceFor,
+      limitEntries: input.config.proLimitEntries === true
     });
   }
 };

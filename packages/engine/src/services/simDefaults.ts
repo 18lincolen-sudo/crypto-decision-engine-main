@@ -110,9 +110,10 @@ export const SIM_BOTS: Record<SimBotId, SimBotSpec> = {
     storeKey: 'pro-sim-state',
     uiFacing: true,
     confidenceScale: 'score',
-    // alg.md §3's medium-risk value — display default only, see
-    // confidenceDerivedFromRiskLevel.
-    minConfidence: 40,
+    // Operator's flat entry bar (70): the bot enters a BUY once the overall
+    // confidence crosses it, regardless of risk level. PRO_CONFIDENCE_BY_RISK
+    // stays exported as §3's reference table.
+    minConfidence: 70,
     confidenceDerivedFromRiskLevel: true,
     maxFuturesPositions: 0
   },

@@ -366,6 +366,29 @@ export default function SimulationEngineColumn({
                 <label className="text-sm text-muted-foreground mb-2 block">החלקה בסיסית / Slippage (%)</label>
                 <Input type="number" step="0.01" value={botConfig.slippagePercent} onChange={(e) => setBotConfig({ ...botConfig, slippagePercent: Math.max(0, Number(e.target.value)) })} />
               </div>
+              <div>
+                <label className="text-sm text-muted-foreground mb-2 block">סף ביטחון כניסה (%) — הבוט קונה כשהביטחון הכולל עובר אותו</label>
+                <Input
+                  type="number"
+                  step="1"
+                  min={0}
+                  max={100}
+                  value={botConfig.minConfidenceOverride ?? ''}
+                  placeholder="אוטומטי — 70"
+                  onChange={(e) => setBotConfig({ ...botConfig, minConfidenceOverride: e.target.value === '' ? 0 : Math.max(0, Math.min(100, Number(e.target.value))) })}
+                />
+              </div>
+              <div className="flex items-center gap-3 pt-6">
+                <input
+                  id={`${title}-limit-entries`}
+                  type="checkbox"
+                  checked={botConfig.proLimitEntries === true}
+                  onChange={(e) => setBotConfig({ ...botConfig, proLimitEntries: e.target.checked })}
+                />
+                <label htmlFor={`${title}-limit-entries`} className="text-sm text-muted-foreground cursor-pointer">
+                  כניסה לפי שער (לימיט) — הבוט ממתין שהשוק יגיע למחיר האות ורק אז קונה
+                </label>
+              </div>
             </div>
           </DialogContent>
         </Dialog>
@@ -398,6 +421,32 @@ export default function SimulationEngineColumn({
               </Button>
             </div>
           </div>
+          {/* Why the bot is (not) buying — a one-line diagnosis of the live
+              evaluation batch, so "high confidence but no entry" answers
+              itself instead of needing log spelunking. */}
+          {(() => {
+            const books = evaluations.filter((ev) => ev.willExecute && ev.action === 'buy').length;
+            const queued = evaluations.filter((ev) => ev.status.includes('ORDER_QUEUED')).length;
+            const held = evaluations.filter((ev) => ev.status.includes('ALREADY_HELD')).length;
+            const below = evaluations.filter((ev) => ev.status.includes('BELOW_THRESHOLD')).length;
+            const noSlots = evaluations.filter((ev) => ev.status.includes('NO_SLOTS')).length;
+            const noBudget = evaluations.filter((ev) => ev.status.includes('NO_BUDGET')).length;
+            const waiting = evaluations.filter((ev) => ev.status.includes('NO_DIRECTION') || ev.action === 'hold').length;
+            const reasons: string[] = [];
+            if (queued) reasons.push(`🕐 ${queued} פקודות בתור`);
+            if (held) reasons.push(`🔒 ${held} כבר מוחזק`);
+            if (noSlots) reasons.push(`🎯 ${noSlots} אין סלוט פנוי`);
+            if (noBudget) reasons.push(`💵 ${noBudget} אין תקציב`);
+            if (below) reasons.push(`📉 ${below} מתחת לסף`);
+            if (waiting) reasons.push(`⏳ ${waiting} ללא כיוון BUY חד`);
+            return (
+              <div className="mt-2 text-[11px] font-mono text-muted-foreground border-t border-border/30 pt-2">
+                <span className="text-green-400">✅ {books} מוכן לקנייה</span>
+                {reasons.length > 0 && <span> · {reasons.join(' · ')}</span>}
+                {reasons.length === 0 && books === 0 && <span>· ממתין לאותות…</span>}
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 

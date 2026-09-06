@@ -222,10 +222,16 @@ export interface ProOrderGenContext {
   minConfidence: number;
   executionDelaySec: number;
   priceFor: (symbol: string) => number | undefined;
+  /** §6 execution mode. When true, entries rest as LIMIT orders at the signal
+   *  price — the bot waits until the market reaches it (or a better price) and
+   *  only then buys (Fills are Maker, and slippage is zero). When false
+   *  (default, per alg.md §6) entries fire at executeAt as adverse-slippage
+   *  MARKET fills. */
+  limitEntries?: boolean;
 }
 
 export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
-  const { positions, pending, evaluations, signalsBySymbol, minConfidence, executionDelaySec, priceFor } = ctx;
+  const { positions, pending, evaluations, signalsBySymbol, minConfidence, executionDelaySec, priceFor, limitEntries } = ctx;
   const delayMs = Math.max(0, executionDelaySec) * 1000;
   const newOrders: PendingOrder[] = [];
 
@@ -270,11 +276,13 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
     newOrders.push({
       id: uid(`${ev.symbol}-buy`), symbol: ev.symbol, type: 'SPOT', side: 'buy',
       signalPrice: ev.price, quantity: budget / ev.price, budgetUsd: budget, leverage: 1,
-      // §6: entries are delayed MARKET fills — at executeAt the order fills at
-      // the market price of that moment, adverse slippage and a Taker fee
-      // included. (The other engines keep their resting-limit entries; see
-      // selectFillableOrders in simExecution.ts.)
-      fill: 'market',
+      // §6 default: delayed MARKET fills — at executeAt the order fills at the
+      // market price of that moment, adverse slippage and a Taker fee included.
+      // With `limitEntries` on, the order rests as a LIMIT at the signal price
+      // instead: the bot waits until the market reaches that price (or better,
+      // i.e. lower for a buy) and only then buys — "יחשב מתי להיכנס, יגיע לשער
+      // וירכוש". Fills are Maker (lower fee) and carry no slippage.
+      fill: limitEntries ? 'limit' : 'market',
       reason: ev.reasoning, confidence: ev.confidence,
       executeAt: Date.now() + delayMs, createdAt: Date.now()
     } as PendingOrder);

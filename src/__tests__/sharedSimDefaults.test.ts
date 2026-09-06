@@ -39,8 +39,9 @@ describe('shared sim defaults', () => {
 
   it('keeps the floors distinct — they are calibrated per engine', () => {
     expect(SIM_MIN_CONFIDENCE.intraday).toBe(52);
-    // §3's medium value — a display default; see confidenceDerivedFromRiskLevel.
-    expect(SIM_MIN_CONFIDENCE.pro).toBe(40);
+    // Pro's operator flat bar: 70 — the bot enters a BUY above it (per-risk
+    // §3 values remain exported as reference only).
+    expect(SIM_MIN_CONFIDENCE.pro).toBe(70);
     // A probability, not a score. Never align this with the other two.
     expect(SIM_MIN_CONFIDENCE.path).toBe(33);
   });

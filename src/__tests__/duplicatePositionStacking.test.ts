@@ -186,16 +186,17 @@ describe('sizing respects the batch: §4 gate 7 allocates against projected cash
 
   it('pro: the strongest confidence is allocated first (§4)', () => {
     const weak = evaluation('LA');
-    weak.confidence = 60;
+    weak.confidence = 60; // below the 70 entry bar
     const strong = evaluation('BTC');
     strong.confidence = 80;
     const gated = applyProEntryGates([weak, strong], gateCtx({ cash: 200, maxPositions: 1 }));
-    // The batch is walked confidence-descending: BTC (80) takes the one slot,
-    // LA (60) finds none — regardless of the order the caller listed them in.
+    // The batch is walked confidence-descending: BTC (80) clears the bar and
+    // takes the one slot; LA (60) is refused at the threshold — regardless of
+    // the order the caller listed them in.
     expect(gated[0].symbol).toBe('BTC');
     expect(gated[0].willExecute).toBe(true);
     const la = gated.find((e) => e.symbol === 'LA');
-    expect(la?.status).toBe('NO_SIGNAL [NO_SLOTS]');
+    expect(la?.status).toBe('NO_SIGNAL [BELOW_THRESHOLD]');
     expect(la?.willExecute).toBe(false);
   });
 });

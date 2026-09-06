@@ -14,9 +14,9 @@ import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContex
 // Thresholds are READ from the engines that own them, never restated here. A
 // number typed into JSX is a second definition, and the moment the engine moves
 // the panel starts describing a bot that no longer exists.
-// Pro's floor is §3's FUNCTION of risk level, so the whole table is shown —
-// pinning one number would freeze the panel at whichever level was current.
-import { PRO_CONFIDENCE_BY_RISK, PRO_ALLOCATION_BY_RISK, PRO_STOP_LOSS_PERCENT, PRO_TAKE_PROFIT_PERCENT } from '@cde/engine/analysis';
+// Pro's entry bar is the operator's flat default (70) — an override in the
+// settings overrides it; the risk table stays exported as reference.
+import { PRO_ALLOCATION_BY_RISK, PRO_DEFAULT_ENTRY_CONFIDENCE, PRO_STOP_LOSS_PERCENT, PRO_TAKE_PROFIT_PERCENT } from '@cde/engine/analysis';
 import { SIM_CACHE_KEYS, toAggregated, combineRisk, groupAction, type AggregatedBot } from '../lib/botAggregation';
 
 const SimulationBotPage = () => {
@@ -307,7 +307,7 @@ const SimulationBotPage = () => {
 
           <SimulationEngineColumn
             title="בוט פרו · alg.md"
-            subtitle={`מימוש מדויק של ASSETS/alg.md · סף ביטחון מטבלת §3 (נמוך ${PRO_CONFIDENCE_BY_RISK.low} / בינוני ${PRO_CONFIDENCE_BY_RISK.medium} / גבוה ${PRO_CONFIDENCE_BY_RISK.high}) · הקצאה ${(PRO_ALLOCATION_BY_RISK.medium * 100).toFixed(0)}% · יציאות SL ${PRO_STOP_LOSS_PERCENT}% / TP ${PRO_TAKE_PROFIT_PERCENT}%`}
+            subtitle={`מימוש מדויק של ASSETS/alg.md · הבוט קונה כשהביטחון הכולל עובר ${PRO_DEFAULT_ENTRY_CONFIDENCE}% · הקצאה ${(PRO_ALLOCATION_BY_RISK.medium * 100).toFixed(0)}% · SL ${PRO_STOP_LOSS_PERCENT}% / TP ${PRO_TAKE_PROFIT_PERCENT}%`}
             accentClass="text-amber-400"
             cryptoData={cryptoData}
             cash={pro.cash}

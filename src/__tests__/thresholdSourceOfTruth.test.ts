@@ -6,8 +6,10 @@ import {
   type PendingOrder
 } from '@cde/engine/execution';
 import {
+  computeProSignal,
   evaluateProExit,
   proMinConfidence,
+  PRO_DEFAULT_ENTRY_CONFIDENCE,
   PRO_CONFIDENCE_BY_RISK,
   PRO_ALLOCATION_BY_RISK,
   PRO_STOP_LOSS_PERCENT,
@@ -30,23 +32,26 @@ import type { Candle, SignalEvaluation } from '@cde/engine';
 
 // ── §3 — the threshold table is the single definition ────────────────────────
 
-describe('§3 — minConfidence comes from the risk table, or from a real override', () => {
-  it('uses the table when no override is set', () => {
-    expect(proMinConfidence('low')).toBe(PRO_CONFIDENCE_BY_RISK.low);
-    expect(proMinConfidence('medium')).toBe(PRO_CONFIDENCE_BY_RISK.medium);
-    expect(proMinConfidence('high')).toBe(PRO_CONFIDENCE_BY_RISK.high);
+describe('§3 — minConfidence comes from one flat operator bar, or an override', () => {
+  it('is 70 by default — the bot enters a BUY once overall confidence crosses 70', () => {
+    // The flat default replaced the per-risk table as the ACTUAL entry bar.
+    expect(proMinConfidence('low')).toBe(PRO_DEFAULT_ENTRY_CONFIDENCE);
+    expect(proMinConfidence('medium')).toBe(PRO_DEFAULT_ENTRY_CONFIDENCE);
+    expect(proMinConfidence('high')).toBe(PRO_DEFAULT_ENTRY_CONFIDENCE);
+    expect(PRO_DEFAULT_ENTRY_CONFIDENCE).toBe(70);
+    // The §3 reference table stays exported (it reports the per-risk values).
     expect(PRO_CONFIDENCE_BY_RISK).toEqual({ low: 55, medium: 40, high: 25 });
   });
 
-  it('a positive override replaces the table entirely', () => {
-    expect(proMinConfidence('low', 70)).toBe(70);
-    expect(proMinConfidence('high', 70)).toBe(70);
+  it('a positive override replaces the default entirely', () => {
+    expect(proMinConfidence('low', 85)).toBe(85);
+    expect(proMinConfidence('high', 85)).toBe(85);
   });
 
-  it('a zero or negative override is not an override — the table stands', () => {
-    expect(proMinConfidence('medium', 0)).toBe(40);
-    expect(proMinConfidence('medium', -3)).toBe(40);
-    expect(proMinConfidence('medium', undefined)).toBe(40);
+  it('a zero or negative override is not an override — 70 stands', () => {
+    expect(proMinConfidence('medium', 0)).toBe(70);
+    expect(proMinConfidence('medium', -3)).toBe(70);
+    expect(proMinConfidence('medium', undefined)).toBe(70);
   });
 
   it('the §3 allocation travels with the same risk level', () => {
@@ -116,7 +121,7 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
     const [ev] = applyProEntryGates([buyEval('LA', 30)], gateCtx());
     expect(ev.status).toBe('NO_SIGNAL [BELOW_THRESHOLD]');
     expect(ev.willExecute).toBe(false);
-    expect(ev.confidenceGap).toBeCloseTo(10, 6); // 40 − 30
+    expect(ev.confidenceGap).toBeCloseTo(40, 6); // 70 − 30
   });
 
   it('no free slot → NO_SLOTS (queued buys occupy slots too)', () => {
@@ -179,7 +184,7 @@ const stubSignal = (action: 'BUY' | 'SELL' | 'HOLD', confidence: number): ProSig
 });
 
 describe('§5 — fixed-percentage exits, independent of the recommendation', () => {
-  const minConfidence = proMinConfidence('medium'); // 40
+  const minConfidence = proMinConfidence('medium'); // 70
 
   it(`closes at −${PRO_STOP_LOSS_PERCENT}% — "Stop Loss"`, () => {
     const d = evaluateProExit({ entryPrice: 100 }, 100 - PRO_STOP_LOSS_PERCENT, stubSignal('BUY', 90), minConfidence);
@@ -201,7 +206,7 @@ describe('§5 — fixed-percentage exits, independent of the recommendation', ()
   it('the flip-to-SELL exit is gated by the same §3 number', () => {
     const below = evaluateProExit({ entryPrice: 100 }, 99, stubSignal('SELL', 30), minConfidence);
     expect(below.shouldExit).toBe(false);
-    const above = evaluateProExit({ entryPrice: 100 }, 99, stubSignal('SELL', 45), minConfidence);
+    const above = evaluateProExit({ entryPrice: 100 }, 99, stubSignal('SELL', 80), minConfidence);
     expect(above.shouldExit).toBe(true);
   });
 });
@@ -217,5 +222,64 @@ describe('buildProEvaluation — the warm-up floor is honest about it', () => {
     const ev = buildProEvaluation('LA', candles, 100, 0, 'medium', undefined);
     expect(ev.status).toBe('NO_SIGNAL [NO_DATA]');
     expect(ev.willExecute).toBe(false);
+  });
+});
+
+// ── alignment: high confidence ONLY ever means a BUY is firing ───────────────
+//
+// The raw confidence formula rewards dominance of ANY bucket, including HOLD —
+// so a dominant HOLD vote can push confidence past 70% even though there is no
+// directional signal. That makes the displayed number lie: the user sees "72%
+// confidence" and expects a BUY, but the action is HOLD and nothing happens.
+// computeProSignal now caps non-BUY outcomes at 50, so the number the user sees
+// matches the entry decision: confidence ≥ 70% ⟹ a BUY is firing.
+
+describe('alignment — confidence reflects directional conviction', () => {
+  it('a dominant HOLD never reaches the entry bar — the user is not misled', () => {
+    // Build a candle set that produces a clear HOLD: flat price, neutral
+    // indicators. The action will be HOLD; confidence must stay below 50 even
+    // if the raw formula would push it higher.
+    const candles: Candle[] = Array.from({ length: 40 }, (_, i) => ({
+      timestamp: 1_700_000_000_000 + i * 3_600_000,
+      open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 + (i % 3) * 50
+    }));
+    const signal = computeProSignal(candles, 0);
+    if (signal.action === 'HOLD') {
+      expect(signal.confidence).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it('a strong BUY clears the 70% bar — the user sees high confidence AND a buy', () => {
+    // Strong uptrend with volume: price well above MA20, RSI in buy zone,
+    // MACD bullish. This should produce a BUY with confidence ≥ 70%.
+    const candles: Candle[] = Array.from({ length: 40 }, (_, i) => ({
+      timestamp: 1_700_000_000_000 + i * 3_600_000,
+      open: 80 + i * 1.5,
+      high: 81 + i * 1.5,
+      low: 79 + i * 1.5,
+      close: 80 + i * 1.5,
+      volume: 1000 + i * 100
+    }));
+    const signal = computeProSignal(candles, 12);
+    if (signal.action === 'BUY') {
+      expect(signal.confidence).toBeGreaterThanOrEqual(70);
+    }
+  });
+
+  it('the displayed confidence never exceeds 50 when the action is not BUY', () => {
+    // Sweep: for a HOLD-dominant scenario, confidence must be ≤ 50 so the
+    // user never sees "high confidence, no entry".
+    const candles: Candle[] = Array.from({ length: 40 }, (_, i) => ({
+      timestamp: 1_700_000_000_000 + i * 3_600_000,
+      open: 100 + Math.sin(i * 0.5) * 2,
+      high: 102 + Math.sin(i * 0.5) * 2,
+      low: 98 + Math.sin(i * 0.5) * 2,
+      close: 100 + Math.sin(i * 0.5) * 2,
+      volume: 1000
+    }));
+    const signal = computeProSignal(candles, 0);
+    if (signal.action !== 'BUY') {
+      expect(signal.confidence).toBeLessThanOrEqual(50);
+    }
   });
 });

@@ -205,6 +205,10 @@ export interface SimBotConfig {
   slippagePercent: number;
   executionDelaySec: number;
   minConfidenceOverride?: number;
+  /** Bot Pro only: when true, entries rest as LIMIT orders at the signal price
+   *  instead of firing as delayed MARKET fills (§6). The bot waits until the
+   *  market reaches the price and then buys — fill is Maker, no slippage. */
+  proLimitEntries?: boolean;
   positionPercent?: number;
 }
 

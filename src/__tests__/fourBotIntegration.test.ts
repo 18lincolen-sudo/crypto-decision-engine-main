@@ -209,9 +209,9 @@ describe('Test 11 — the page names its three engines consistently', () => {
   });
 
   it('prints no hand-typed threshold: the numbers come from the engines', () => {
-    // Pro's floor is §3's risk-level table — the panel imports the table rather
-    // than restating a single number.
-    expect(page).toContain('PRO_CONFIDENCE_BY_RISK');
+    // Pro's entry bar is the operator's flat 70 default — the panel imports it
+    // rather than restating it.
+    expect(page).toContain('PRO_DEFAULT_ENTRY_CONFIDENCE');
     expect(page).toContain('PRO_ALLOCATION_BY_RISK');
     expect(page).toContain('PRO_STOP_LOSS_PERCENT');
     expect(page).toContain('PRO_TAKE_PROFIT_PERCENT');

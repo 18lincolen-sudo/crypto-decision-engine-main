@@ -317,7 +317,16 @@ export function computeProSignal(
   // §2 does not state a clamp; confidence is reported as a percentage
   // everywhere downstream, so it is bounded to [0,100] rather than left to
   // exceed that range on an edge case.
-  const confidence = Number(Math.max(0, Math.min(100, rawConfidence)).toFixed(1));
+  //
+  // Alignment fix: the formula above rewards dominance of ANY bucket, including
+  // HOLD — so a dominant HOLD vote can push confidence past 70% even though
+  // there is no directional signal to act on. That makes the displayed number
+  // lie: the user sees "72% confidence" and expects a BUY, but the action is
+  // HOLD and nothing happens. Cap non-BUY outcomes at the formula's neutral
+  // baseline (50) so high confidence ONLY ever accompanies a directional vote —
+  // "confidence ≥ 70% ⟹ a BUY is firing" holds true, and the number the user
+  // sees matches the entry decision.
+  const confidence = Number(Math.max(0, Math.min(100, action === 'BUY' ? rawConfidence : Math.min(rawConfidence, 50))).toFixed(1));
 
   return {
     action,
@@ -344,9 +353,21 @@ export type ProRiskLevel = 'low' | 'medium' | 'high';
 export const PRO_CONFIDENCE_BY_RISK: Record<ProRiskLevel, number> = { low: 55, medium: 40, high: 25 };
 export const PRO_ALLOCATION_BY_RISK: Record<ProRiskLevel, number> = { low: 0.15, medium: 0.25, high: 0.40 };
 
-/** §3: `minConfidenceOverride > 0 ? minConfidenceOverride : CONFIDENCE_BY_RISK[riskLevel]`. */
+/**
+ * The flat default entry threshold for the Pro bot.
+ *
+ * §3's table (PRO_CONFIDENCE_BY_RISK) remains exported as the reference, but
+ * the operator-set behaviour is a single flat bar: the bot enters a BUY the
+ * moment its overall confidence crosses this number, whichever risk level is
+ * configured. An explicit `minConfidenceOverride > 0` (panel / env) replaces
+ * it. This is what "כשהביטחון הכולל עובר 70% — כניסה" means here.
+ */
+export const PRO_DEFAULT_ENTRY_CONFIDENCE = 70;
+
+/** §3: `minConfidenceOverride > 0 ? minConfidenceOverride : 70`. */
 export function proMinConfidence(riskLevel: ProRiskLevel, override?: number): number {
-  return typeof override === 'number' && override > 0 ? override : PRO_CONFIDENCE_BY_RISK[riskLevel];
+  void riskLevel; // the flat operator default applies across risk levels
+  return typeof override === 'number' && override > 0 ? override : PRO_DEFAULT_ENTRY_CONFIDENCE;
 }
 
 /** §3/§6: allocation is a function of risk level alone — there is no override
