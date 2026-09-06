@@ -87,6 +87,28 @@ const proStrategy: SimEngineStrategy = {
     // §3's own table when no override is set, not a flat display default.
     const minConfidence = proMinConfidence(riskLevel, minConfidenceOverride);
 
+    // Circuit breaker: stop opening new positions if daily/weekly drawdown exceeded
+    if (input.dailyDrawdownPercent >= 8 || input.weeklyDrawdownPercent >= 15) {
+      // Still run exits on open positions (risk management continues)
+      const signalsBySymbol: Record<string, ProSignalResult> = {};
+      for (const pos of input.positions) {
+        const candles = input.candlesBySymbol[pos.symbol];
+        if (!candles || candles.length < MIN_PRO_CANDLES) continue;
+        const crypto = input.cryptoData.find((c) => c.symbol.toUpperCase() === pos.symbol);
+        signalsBySymbol[pos.symbol] = computeProSignal(candles, crypto?.price_change_percentage_24h || 0);
+      }
+      return generateProOrders({
+        positions: input.positions,
+        pending: input.pending,
+        evaluations: [], // Don't process new buy signals, only exits
+        signalsBySymbol,
+        minConfidence,
+        executionDelaySec: input.config.executionDelaySec,
+        priceFor: input.priceFor,
+        limitEntries: input.config.proLimitEntries === true
+      });
+    }
+
     // The exit check (§5's fixed %, §4's flip-to-SELL) needs each held
     // symbol's CURRENT signal, independent of whether that symbol currently
     // clears the entry threshold — a losing position must still see its own

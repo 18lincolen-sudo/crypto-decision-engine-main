@@ -170,6 +170,13 @@ export function generatePathOrders(ctx: PathOrderGenContext): PendingOrder[] {
       .map((o) => ({ symbol: o.symbol, direction: toPositionDirection(o.side) }))
   ];
 
+  // Circuit breaker: stop opening new positions if daily/weekly drawdown exceeded
+  const dailyDrawdownLimit = 8;
+  const weeklyDrawdownLimit = 15;
+  if (ctx.dailyDrawdownPercent >= dailyDrawdownLimit || ctx.weeklyDrawdownPercent >= weeklyDrawdownLimit) {
+    return newOrders; // Only exits, no new entries
+  }
+
   for (const ev of evaluations) {
     if (!ev.willExecute || !ev.price) continue;
     if (positions.some((p) => p.symbol === ev.symbol)) continue;
