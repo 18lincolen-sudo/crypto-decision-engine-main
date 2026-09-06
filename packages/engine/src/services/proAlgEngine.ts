@@ -66,7 +66,7 @@
  */
 
 import type { Candle } from './tradeEngine';
-import { formatDynamicPrice } from './tradeEngine';
+import { formatDynamicPrice, roundToPriceScale } from './tradeEngine';
 import {
   analyzeVolumeTrend,
   calculateRSI,
@@ -395,8 +395,14 @@ export function calculateOptimalEntryPrice(signal: ProSignalResult, currentPrice
   const weightedPrice = supportLevels.reduce((sum, s) => sum + s.price * s.weight, 0) / totalWeight;
 
   // Cap at current price (we don't want to buy above market on entry)
-  // and floor at 90% of current price (don't wait for too big a drop)
-  return Number(Math.min(currentPrice, Math.max(currentPrice * 0.90, weightedPrice)).toFixed(2));
+  // and floor at 90% of current price (don't wait for too big a drop).
+  // Rounded to the asset's own price scale (roundToPriceScale), not a flat 2
+  // decimals — see its doc comment for the SKR case that flat rounding broke:
+  // a $0.02 coin has no meaningful "cents", so .toFixed(2) collapsed the
+  // support-weighted level to whichever of {0.01, 0.02, 0.03} it landed
+  // nearest, on the wrong side of the market often enough that the resting
+  // LIMIT order never crossed.
+  return roundToPriceScale(Math.min(currentPrice, Math.max(currentPrice * 0.90, weightedPrice)));
 }
 
 // ── §3 — risk-level thresholds ───────────────────────────────────────────────

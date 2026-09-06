@@ -422,4 +422,31 @@ describe('§6 — optimal entry price from support levels', () => {
     expect(optimal).toBeLessThan(currentPrice);
     expect(optimal).toBeGreaterThanOrEqual(currentPrice * 0.90);
   });
+
+  it('a sub-cent asset gets sub-cent precision, not rounded to the nearest cent', () => {
+    // Observed live: a $0.02 coin (SKR) computed an optimal entry that rounded
+    // to a flat 0.02 — one of at most three representable values at that
+    // price scale — and sat on the wrong side of the market at 0.0205,
+    // unable to ever cross. roundToPriceScale gives a sub-$0.01 price 6
+    // decimals (matching formatDynamicPrice's own band), so a real support
+    // level like 0.019850 survives instead of collapsing to 0.02.
+    const signal = mockSignal({
+      indicators: {
+        rsi: 35,
+        ma20: 0.0195,
+        volumeTrend: 'increasing',
+        bollingerBands: { upper: 0.022, middle: 0.02, lower: 0.0185, position: 'between' },
+        volumeProfile: { poc: 0.0198, valueAreaHigh: 0.021, valueAreaLow: 0.0192, position: 'in_value_area' },
+        macd: { macd: 0.0001, signal: 0.00005, histogram: 0.00005, trend: 'bullish' },
+        stochastic: { k: 30, d: 25, signal: 'neutral' }
+      }
+    });
+    const currentPrice = 0.0205;
+    const optimal = calculateOptimalEntryPrice(signal, currentPrice);
+
+    expect(optimal).toBeLessThan(currentPrice);
+    expect(optimal).toBeGreaterThanOrEqual(currentPrice * 0.90);
+    // The old flat toFixed(2) would have forced this to 0.02 exactly.
+    expect(optimal).not.toBe(0.02);
+  });
 });

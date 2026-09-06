@@ -81,6 +81,27 @@ export function formatDynamicPrice(price: number): string {
   return price.toFixed(10);
 }
 
+/**
+ * The numeric counterpart to formatDynamicPrice, for a price that gets USED
+ * (a LIMIT order's own trigger level), not just displayed.
+ *
+ * A flat `.toFixed(2)` applied to a sub-$1 asset rounds to the nearest cent —
+ * for a $0.02 coin that is the entire price, so "optimal entry" collapses to
+ * one of maybe three representable values (0.01, 0.02, 0.03) regardless of
+ * where support actually sits. Observed live: a Pro limit BUY on SKR sat at
+ * signalPrice 0.02 while the market traded at 0.0205 — a level the rounding
+ * put on the wrong side of the true weighted support, so the order could
+ * never fill on the pullback it was meant to catch. Same scale bands as
+ * formatDynamicPrice, so a price's precision agrees between what the UI
+ * shows and what the order book actually holds.
+ */
+export function roundToPriceScale(price: number): number {
+  if (price === 0 || !Number.isFinite(price)) return 0;
+  const abs = Math.abs(price);
+  const decimals = abs >= 1000 ? 2 : abs >= 1 ? 4 : abs >= 0.01 ? 6 : abs >= 0.0001 ? 8 : 10;
+  return Number(price.toFixed(decimals));
+}
+
 // ═══════════════════════════════════════════════════════
 // TECHNICAL INDICATOR UTILITIES (Clean Math)
 // ═══════════════════════════════════════════════════════
