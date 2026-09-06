@@ -29,6 +29,7 @@ import {
   type ProSignalResult,
   type ProRiskLevel
 } from './proAlgEngine';
+import { PER_ASSET_EXPOSURE_CAP_PERCENT } from './intradayParams';
 import type { Candle } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import type { SimPosition, PendingOrder } from './simExecution';
@@ -119,9 +120,15 @@ export function buildProEvaluation(
 // cash go to the strongest signals first ("ההמלצות ממוינות לפי ביטחון יורד,
 // כך שהסלוטים והמזומן מוקצים קודם לאותות החזקים ביותר").
 //
-// Deliberately ABSENT — §4 does not have them, and §9 assigns them to the
-// REAL bot only: the per-symbol entry cooldown and the daily/weekly drawdown
-// circuit breaker.
+// §4 itself has no per-symbol entry cooldown or drawdown circuit breaker — §9
+// originally assigned both to the REAL bot only, and this file matched that.
+// The circuit breaker is now applied anyway (in server/proSimEngine.ts, ahead
+// of this gate pass): the four bots share one equity-protection floor, and
+// simulating past it while the REAL bot would have stopped made Pro's results
+// incomparable to the others precisely when the comparison mattered most. The
+// entry cooldown remains genuinely absent — §4 gates re-entry on price/slots/
+// confidence only, and that difference from the other three bots is by design,
+// not an oversight.
 
 export interface ProGateContext {
   positions: SimPosition[];
@@ -225,7 +232,16 @@ export function applyProEntryGates(
       // allocation that cash couldn't cover would create an order the fill
       // step refuses — "ready to buy" with no purchase.
       const confidenceAllocation = ev.confidence > 80 ? 0.15 : 0.10;
-      const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash);                                        // 7
+      // Per-asset concentration cap, shared with Intraday's futures sizing and
+      // Path's entry budget (PER_ASSET_EXPOSURE_CAP_PERCENT). The
+      // confidence allocation above (10-15%) was written before that cap
+      // existed and sits above it, so a single high-confidence Pro entry could
+      // commit more of the portfolio to one asset than Intraday itself is
+      // allowed to. No existing-exposure term is needed here: gate 3 above
+      // already refuses a symbol that is currently held, so this is always a
+      // fresh position's entire exposure to that asset.
+      const perAssetCap = ctx.equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
+      const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash, perAssetCap);                            // 7
       if (budget < 5) {
         return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $5)`, false, minConfidence);
       }

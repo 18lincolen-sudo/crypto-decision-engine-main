@@ -195,6 +195,20 @@ export interface IntradayParams {
 export const DAILY_DRAWDOWN_BLOCK_PERCENT = 8;
 export const WEEKLY_DRAWDOWN_LOCK_PERCENT = 15;
 
+/**
+ * Max exposure to a single asset, in percent of equity.
+ *
+ * Originally lived only inside buildRiskPlan's FUTURES branch (intradayRisk.ts)
+ * — Intraday's own SPOT trades and the Pro/Path bots (both spot-only) had no
+ * equivalent, each instead bounding a single position by a per-trade budget
+ * rule that has nothing to do with concentration (Pro: 10-15% of
+ * initialAmount by confidence; Path: a Kelly fraction capped by
+ * positionPercent, ~10%) — both above this figure. One number, shared by all
+ * three engines' entry sizing, so "how much of one asset can this portfolio
+ * hold" means the same thing everywhere the question is asked.
+ */
+export const PER_ASSET_EXPOSURE_CAP_PERCENT = 8;
+
 export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   adxTrendMin: 25,
   adxRangeMax: 20,

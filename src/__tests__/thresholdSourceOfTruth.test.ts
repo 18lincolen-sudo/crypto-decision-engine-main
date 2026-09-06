@@ -55,18 +55,19 @@ describe('§3 — minConfidence comes from one flat operator bar, or an override
     expect(proMinConfidence('medium', undefined)).toBe(70);
   });
 
-  it('allocation is confidence-based: >70% → 10%, >80% → 15%', () => {
-    // 70% confidence (at the bar) → 10% allocation
+  it('allocation is confidence-based: >70% → 10%, >80% → 15% — both capped at the 8% per-asset ceiling', () => {
+    // Equity 10,000 → the confidence allocation (10% = 1000, 15% = 1500) would
+    // exceed the shared 8%-of-equity per-asset cap (800), so it wins here —
+    // see the dedicated per-asset-cap describe block below for the case where
+    // the allocation is the smaller of the two.
     const [ev70] = applyProEntryGates([buyEval('LA', 70)], gateCtx());
-    expect(ev70.budgetUsd).toBeCloseTo(1000, 6); // 10% of 10,000
+    expect(ev70.budgetUsd).toBeCloseTo(800, 6);
 
-    // 80% confidence (at the bar) → 10% allocation (not >80)
     const [ev80] = applyProEntryGates([buyEval('LA', 80)], gateCtx());
-    expect(ev80.budgetUsd).toBeCloseTo(1000, 6); // 10% of 10,000
+    expect(ev80.budgetUsd).toBeCloseTo(800, 6);
 
-    // 81% confidence (>80) → 15% allocation
     const [ev81] = applyProEntryGates([buyEval('LA', 81)], gateCtx());
-    expect(ev81.budgetUsd).toBeCloseTo(1500, 6); // 15% of 10,000
+    expect(ev81.budgetUsd).toBeCloseTo(800, 6);
   });
 });
 
@@ -170,19 +171,37 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
   });
 
   it('every gate passed → willExecute, "מבצע קנייה", and the allocated budget', () => {
-    // confidence 80 → 10% allocation → 1000
+    // confidence 80 → 10% of 10,000 = 1000, but the 8%-of-equity per-asset cap
+    // (800) is tighter and wins.
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx());
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(1000, 6); // confidence 80 → 10%
+    expect(ev.budgetUsd).toBeCloseTo(800, 6);
   });
 
-  it('high confidence (>80%) gets 15% allocation', () => {
-    // confidence 85 → 15% allocation → 1500
+  it('high confidence (>80%) gets 15% allocation, still bounded by the per-asset cap', () => {
+    // confidence 85 → 15% of 10,000 = 1500, capped to 800 (8% of equity).
     const [ev] = applyProEntryGates([buyEval('LA', 85)], gateCtx());
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(1500, 6); // confidence 85 → 15%
+    expect(ev.budgetUsd).toBeCloseTo(800, 6);
+  });
+
+  it('the confidence allocation wins when it is tighter than the per-asset cap', () => {
+    // initialAmount 1,000 but equity 100,000 (e.g. mostly held in other
+    // positions' unrealized gains): 15% of 1,000 = 150 is well under 8% of
+    // 100,000 = 8,000, so the smaller confidence allocation governs.
+    const [ev] = applyProEntryGates([buyEval('LA', 85)], gateCtx({ initialAmount: 1000, equity: 100_000, cash: 100_000 }));
+    expect(ev.budgetUsd).toBeCloseTo(150, 6);
+  });
+
+  it('the per-asset cap rejects nothing on its own — it only trims the size', () => {
+    // A cap that only ever clamps, never refuses outright, matches how
+    // Intraday's own per-asset check treats a FRESH (never-held) symbol: the
+    // rejection path only fires when existing exposure already saturates it,
+    // which cannot happen here since a held symbol is refused earlier (gate 3).
+    const [ev] = applyProEntryGates([buyEval('LA', 95)], gateCtx({ equity: 1 }));
+    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]'); // trimmed to $0.08 — below the $5 floor, not a per-asset rejection
   });
 });
 

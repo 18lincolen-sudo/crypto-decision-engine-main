@@ -79,7 +79,8 @@ export {
 // what is shared is the threshold, never the measurement.
 export {
   DAILY_DRAWDOWN_BLOCK_PERCENT,
-  WEEKLY_DRAWDOWN_LOCK_PERCENT
+  WEEKLY_DRAWDOWN_LOCK_PERCENT,
+  PER_ASSET_EXPOSURE_CAP_PERCENT
 } from './services/intradayParams';
 
 // ── Adaptive risk sizing (win/loss streaks, drawdown, Kelly-style sizing) ────

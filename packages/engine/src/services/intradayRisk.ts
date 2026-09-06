@@ -7,7 +7,7 @@
 
 import { BYBIT_FEES } from './tradeEngine';
 import { clamp } from './intradayIndicators';
-import { DEFAULT_INTRADAY_PARAMS, Direction, IntradayParams, SetupType } from './intradayParams';
+import { DEFAULT_INTRADAY_PARAMS, Direction, IntradayParams, SetupType, PER_ASSET_EXPOSURE_CAP_PERCENT } from './intradayParams';
 
 export interface CostAnalysis {
   entryFeePercent: number;
@@ -322,12 +322,12 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     // high-confidence signal did not merely bypass the limit, it never had its
     // size trimmed to fit under it either.
     if (input.symbol && input.existingExposureByAsset) {
-      const maxPerAssetExposure = input.equity * 0.08;
+      const maxPerAssetExposure = input.equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
       const currentAssetExposure = input.existingExposureByAsset[input.symbol] ?? 0;
       const perAssetCap = maxPerAssetExposure - currentAssetExposure;
       if (perAssetCap <= 0) {
         return rejected(
-          `אקספוזר על נכס זה כבר חורג ממגבלת נכס בודד (${maxPerAssetExposure.toFixed(0)}$ = 8% מהתיק)`
+          `אקספוזר על נכס זה כבר חורג ממגבלת נכס בודד (${maxPerAssetExposure.toFixed(0)}$ = ${PER_ASSET_EXPOSURE_CAP_PERCENT}% מהתיק)`
         );
       }
       if (notionalUsd > perAssetCap) {
