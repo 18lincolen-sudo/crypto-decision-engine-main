@@ -943,9 +943,24 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
     const key = cacheKey(bybitSymbol, tf);
     const cached = tfCache.get(key);
     const expectedLastClose = Math.floor(now / spec.ms) * spec.ms - spec.ms;
+    // A cache below targetCandles is never "fresh enough" on timestamp alone —
+    // this gate used to accept ANY cache whose lastTimestamp already covered
+    // the most recently closed bar, with no length check at all. That is
+    // exactly the shape a rehydrated-short cache has: its last known candle
+    // IS current (nothing new has closed since), so it passed here forever
+    // and never reached the delta/full-fetch code below where the actual
+    // below-target backfill logic lives. 1h and 15m — whose bars close slowly
+    // enough that "last candle is still current" is true almost immediately
+    // after a restart — got stuck at whatever length they were rehydrated
+    // with; 5m, rolling over every 5 minutes, aged out of this gate on its
+    // own and reached the backfill logic within minutes. Requiring target
+    // length (or a recent backfill attempt, so a genuinely short-history
+    // symbol doesn't refetch every tick forever) closes that gap for all
+    // three timeframes alike.
     const cacheFresh =
       !!cached &&
       !opts.force &&
+      (cached.candles.length >= spec.targetCandles || now - (cached.backfilledAt ?? 0) < BACKFILL_RETRY_MS) &&
       (now - cached.fetchedAt < spec.refreshMs || cached.lastTimestamp >= expectedLastClose);
 
     if (cacheFresh && cached) {
@@ -969,12 +984,20 @@ export async function getMultiTimeframeData(symbol: string, opts: GetMarketDataO
         if (persistentCached?.length) {
           const lastTimestamp = persistentCached[persistentCached.length - 1].timestamp;
           const isFresh = lastTimestamp >= expectedLastClose || (now - lastTimestamp) < spec.refreshMs;
-          if (isFresh && persistentCached.length >= spec.minCandles) {
+          // Same rule as the in-memory gate above: minCandles is the floor a
+          // timeframe is still usable at, not what the most demanding consumer
+          // (Path, at 1h) needs. Accepting a short-but-recent snapshot here
+          // re-adopted exactly the truncated series the in-memory cache had
+          // just been rehydrated with, and warmed tfCache with the same short
+          // length — a second copy of the bug above, in a cache this one
+          // doesn't even track backfilledAt for. A short result now falls
+          // through to the network fetch below instead, which does.
+          if (isFresh && persistentCached.length >= spec.targetCandles) {
             candles[tf] = persistentCached;
             sources[tf] = 'cache';
             telemetry[tf] = { received: persistentCached.length, closed: persistentCached.length, valid: persistentCached.length, required: spec.minCandles, source: 'cache' };
             // Also warm the in-memory cache
-            tfCache.set(key, { candles: persistentCached, source: 'cache', fetchedAt: now, lastTimestamp });
+            tfCache.set(key, { candles: persistentCached, source: 'cache', fetchedAt: now, lastTimestamp, backfilledAt: now });
             continue;
           }
         }
