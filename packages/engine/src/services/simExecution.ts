@@ -574,13 +574,23 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
     if (correlationCandles) correlationBook.push({ symbol: toBase(ev.symbol), direction: evDirection });
 
+    // The resting order's own level: entry.entryPrice's maker discount when
+    // the engine computed one (surfaced as optimalEntryPrice — see
+    // convertToSignalEvaluation / toSignalEvaluation), else the live price.
+    // Below, fillDueOrders treats any entry order without `fill:'market'` as
+    // a genuine resting LIMIT (crossed only once price reaches this level or
+    // better) — exactly what the real bot places on the exchange
+    // (tradingWorker.ts: `orderType:'Limit', price: entry.entryPrice`).
+    // Sizing off ev.price here while resting the order at a different level
+    // would size for a fill that never happens at that price.
+    const entryPrice = ev.optimalEntryPrice ?? ev.price;
     newOrders.push({
       id: uid(`${ev.symbol}-${orderSide}`),
       symbol: ev.symbol,
       type: ev.tradeType as 'SPOT' | 'FUTURES',
       side: orderSide,
-      signalPrice: ev.price,
-      quantity: (budget * (ev.leverage || 1)) / ev.price,
+      signalPrice: entryPrice,
+      quantity: (budget * (ev.leverage || 1)) / entryPrice,
       budgetUsd: budget,
       leverage: ev.leverage || 1,
       stopLoss: ev.stopLoss,

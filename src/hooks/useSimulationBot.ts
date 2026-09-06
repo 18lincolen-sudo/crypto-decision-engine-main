@@ -43,7 +43,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
   const raw = result.raw as unknown as {
     regime?: { regime: string; bias: string; adx: number; atrPercent: number; volatility: string; futuresAllowed: boolean };
     setup?: { setupType: string; setupScore: number; direction: string; strong: boolean };
-    entry?: { entryScore: number; confirmed: boolean; trigger: string };
+    entry?: { entryScore: number; confirmed: boolean; trigger: string; entryPrice?: number };
     funnel?: { regimePassed: boolean; setupCandidates: number; entryCandidates: number; approved: boolean };
     metrics?: { setupScore: number; entryScore: number; edgeRatio: number; netRewardRisk: number };
   } | undefined;
@@ -61,6 +61,18 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     atrPercent: rawRegime.atrPercent,
     supertrend: { value: 0, direction: 'BULL' as const }
   } : undefined;
+
+  // See the identical fix (and its full rationale) in server/simEngine.ts's
+  // convertToSignalEvaluation: the real bot rests a LIMIT order at
+  // entry.entryPrice (confirmEntry5M's maker discount), never at the raw
+  // live price. This browser engine had the same gap — `price` (live, for
+  // display) was also handed to generateNewOrders as the order's own resting
+  // level, so a LONG could only fill on the reversal that invalidates the
+  // setup it was taken for, not the continuation it was betting on.
+  // `optimalEntryPrice` is the field the shared order generator actually
+  // rests entries at — reused from Pro's own (differently-intentioned) limit
+  // price rather than adding a second field with one meaning.
+  const entryPrice = isSignal ? raw?.entry?.entryPrice : undefined;
 
   return {
     symbol: result.symbol,
@@ -82,6 +94,7 @@ function toSignalEvaluation(result: DecisionResult, currentPrice: number, priceC
     takeProfit1: result.riskPlan?.takeProfit1,
     takeProfit2: result.riskPlan?.takeProfit2,
     takeProfit: result.riskPlan?.takeProfit,
+    optimalEntryPrice: typeof entryPrice === 'number' && entryPrice > 0 ? entryPrice : undefined,
     decision: result.raw as never
   };
 }

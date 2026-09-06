@@ -148,6 +148,45 @@ describe('every open lot is checked against its own stop in the same tick', () =
   });
 });
 
+describe('intraday rests its entry at the maker discount, not the live price', () => {
+  // Regression: the real bot places a genuine resting LIMIT order at
+  // entry.entryPrice (confirmEntry5M's small discount below market —
+  // intradayEntry.ts; tradingWorker.ts:876 uses it for the actual exchange
+  // order). Both simulations instead handed the order generator `ev.price`
+  // (the live price, for the panel) as the order's own resting level — so a
+  // LONG could only fill once price fell back to or BELOW where it was at
+  // signal time: the reversal that invalidates a momentum/pullback setup,
+  // not the continuation it was taken for. optimalEntryPrice is the field
+  // that carries the intended resting level through to the order.
+  it('rests the order at optimalEntryPrice, not at the live display price', () => {
+    const ev = { ...evaluation('LA'), price: 100, optimalEntryPrice: 98.5 };
+    const orders = generateNewOrders({
+      ...baseCtx,
+      positions: [],
+      evaluations: [ev],
+      buildCandlesForSymbol: (s: string) => candlesBySymbol[s] ?? [],
+      computeAtr5: () => 1
+    });
+    const buy = orders.find((o) => o.side === 'buy');
+    expect(buy?.signalPrice).toBe(98.5);
+    // Sized off the level it will actually fill at, not the live price —
+    // otherwise budgetUsd and quantity*fillPrice disagree.
+    expect(buy?.quantity).toBeCloseTo((buy!.budgetUsd ?? 0) / 98.5, 6);
+  });
+
+  it('falls back to the live price when the engine computed no discount', () => {
+    const ev = { ...evaluation('LA'), price: 100, optimalEntryPrice: undefined };
+    const orders = generateNewOrders({
+      ...baseCtx,
+      positions: [],
+      evaluations: [ev],
+      buildCandlesForSymbol: (s: string) => candlesBySymbol[s] ?? [],
+      computeAtr5: () => 1
+    });
+    expect(orders.find((o) => o.side === 'buy')?.signalPrice).toBe(100);
+  });
+});
+
 describe('a close fills against the lot it was issued for', () => {
   it('uses positionId rather than the first position sharing the symbol', () => {
     const first = { ...position('la-1', 'LA'), entryPrice: 100, avgPrice: 100, quantity: 1 };

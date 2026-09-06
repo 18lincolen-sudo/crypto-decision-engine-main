@@ -223,6 +223,18 @@ export function generatePathOrders(ctx: PathOrderGenContext): PendingOrder[] {
       quantity: budget / ev.price,
       budgetUsd: budget,
       leverage: 1,
+      // Market, not a resting limit: evaluatePathDecision sets entryPrice to
+      // input.livePrice itself (pathEngine.ts) — a "trade now, at this
+      // price" value, not a discount below it the way Pro's
+      // calculateOptimalEntryPrice is. Left unmarked, fillDueOrders defaults
+      // any entry order to LIMIT (crossed only once price falls back to
+      // signalPrice or below — simExecution.ts:730), which would hold this
+      // order open waiting for the SAME reversal that invalidates the specific
+      // 15-minute slot the bucket's statistics armed it for (evaluatePathDecision's
+      // OUT_OF_WINDOW gate only allows a signal during that one slot in the
+      // first place — a fill minutes later, after price has reversed, is not
+      // a late version of the same trade).
+      fill: 'market',
       stopLoss: ev.stopLoss,
       takeProfit: ev.takeProfit,
       takeProfit1: ev.takeProfit,

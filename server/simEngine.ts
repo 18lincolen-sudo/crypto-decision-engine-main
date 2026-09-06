@@ -197,6 +197,21 @@ function convertToSignalEvaluation(
     });
   }
 
+  // The real bot places a genuine resting LIMIT order at entry.entryPrice —
+  // confirmEntry5M's small maker discount below market (intradayEntry.ts),
+  // never at the raw live price (tradingWorker.ts:876: `d.entry?.entryPrice
+  // ?? risk.stopLoss`). This simulation used to hand `price` (the live
+  // price, for display) to the order generator too, so its entry order
+  // rested at today's live tick instead of the intended discount — a LONG
+  // could then only fill once price fell BACK to or below where it was at
+  // signal time, which is the reversal case for a momentum/pullback setup
+  // betting on continuation, not the continuation case itself. `price`
+  // still carries the live price for the panel; `optimalEntryPrice` is the
+  // level generateNewOrders (simExecution.ts) actually rests the order at —
+  // same field Pro already uses for its own (differently-intentioned) limit
+  // price, reused here rather than adding a second field with one meaning.
+  const entryPrice = isSignal ? (result.raw as { entry?: { entryPrice?: number } } | undefined)?.entry?.entryPrice : undefined;
+
   return {
     symbol: result.symbol,
     action: action as 'buy' | 'sell' | 'hold',
@@ -216,6 +231,7 @@ function convertToSignalEvaluation(
     takeProfit1: result.riskPlan?.takeProfit1,
     takeProfit2: result.riskPlan?.takeProfit2,
     takeProfit: result.riskPlan?.takeProfit,
+    optimalEntryPrice: typeof entryPrice === 'number' && entryPrice > 0 ? entryPrice : undefined,
     decision: result.raw as never
   };
 }
