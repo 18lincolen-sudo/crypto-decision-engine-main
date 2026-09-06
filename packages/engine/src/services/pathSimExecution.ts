@@ -29,6 +29,7 @@ import {
   DEFAULT_CORRELATION_THRESHOLD,
   DEFAULT_MAX_CORRELATED
 } from './correlation';
+import { DAILY_DRAWDOWN_BLOCK_PERCENT, WEEKLY_DRAWDOWN_LOCK_PERCENT } from './intradayParams';
 import { PATH_MAX_HOLD_MS, PATH_TIME_STOP_MS } from './pathEngine';
 import { pathKellyFraction } from './pathEngine';
 import type { PathBucket } from './pathStudy';
@@ -170,10 +171,16 @@ export function generatePathOrders(ctx: PathOrderGenContext): PendingOrder[] {
       .map((o) => ({ symbol: o.symbol, direction: toPositionDirection(o.side) }))
   ];
 
-  // Circuit breaker: stop opening new positions if daily/weekly drawdown exceeded
-  const dailyDrawdownLimit = 8;
-  const weeklyDrawdownLimit = 15;
-  if (ctx.dailyDrawdownPercent >= dailyDrawdownLimit || ctx.weeklyDrawdownPercent >= weeklyDrawdownLimit) {
+  // Circuit breaker: stop opening new positions if daily/weekly drawdown exceeded.
+  //
+  // ctx.dailyDrawdownPercent / weeklyDrawdownPercent are measured by THIS bot's
+  // own engine instance against its OWN equity curve (server/simEngineFactory.ts
+  // drawdowns()). Only the two thresholds are shared with the other bots; the
+  // measurement is never pooled, so a Pro or Intraday loss cannot halt Path.
+  if (
+    ctx.dailyDrawdownPercent >= DAILY_DRAWDOWN_BLOCK_PERCENT ||
+    ctx.weeklyDrawdownPercent >= WEEKLY_DRAWDOWN_LOCK_PERCENT
+  ) {
     return newOrders; // Only exits, no new entries
   }
 

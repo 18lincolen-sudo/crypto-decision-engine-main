@@ -73,6 +73,15 @@ export {
   fillDueOrders
 } from './services/simExecution';
 
+// ── Drawdown circuit-breaker thresholds ─────────────────────────────────────
+// Re-exported from intradayParams so the server-side bot engines read the SAME
+// two numbers the engine does. Each bot applies them to its OWN equity curve;
+// what is shared is the threshold, never the measurement.
+export {
+  DAILY_DRAWDOWN_BLOCK_PERCENT,
+  WEEKLY_DRAWDOWN_LOCK_PERCENT
+} from './services/intradayParams';
+
 // ── Adaptive risk sizing (win/loss streaks, drawdown, Kelly-style sizing) ────
 export type { ClosedTradeRecord, PerformanceWindow, AdaptiveRiskInput } from './services/adaptiveRisk';
 export {

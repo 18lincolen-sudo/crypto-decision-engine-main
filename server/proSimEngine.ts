@@ -19,7 +19,9 @@ import {
   applyProEntryGates,
   generateProOrders,
   buildProEvaluation,
-  MIN_PRO_CANDLES
+  MIN_PRO_CANDLES,
+  DAILY_DRAWDOWN_BLOCK_PERCENT,
+  WEEKLY_DRAWDOWN_LOCK_PERCENT
 } from '@cde/engine/execution';
 import { computeProSignal, proMinConfidence, type ProSignalResult, type ProRiskLevel } from '@cde/engine/analysis';
 import { SignalEvaluation } from '@cde/engine';
@@ -87,27 +89,18 @@ const proStrategy: SimEngineStrategy = {
     // §3's own table when no override is set, not a flat display default.
     const minConfidence = proMinConfidence(riskLevel, minConfidenceOverride);
 
-    // Circuit breaker: stop opening new positions if daily/weekly drawdown exceeded
-    if (input.dailyDrawdownPercent >= 8 || input.weeklyDrawdownPercent >= 15) {
-      // Still run exits on open positions (risk management continues)
-      const signalsBySymbol: Record<string, ProSignalResult> = {};
-      for (const pos of input.positions) {
-        const candles = input.candlesBySymbol[pos.symbol];
-        if (!candles || candles.length < MIN_PRO_CANDLES) continue;
-        const crypto = input.cryptoData.find((c) => c.symbol.toUpperCase() === pos.symbol);
-        signalsBySymbol[pos.symbol] = computeProSignal(candles, crypto?.price_change_percentage_24h || 0);
-      }
-      return generateProOrders({
-        positions: input.positions,
-        pending: input.pending,
-        evaluations: [], // Don't process new buy signals, only exits
-        signalsBySymbol,
-        minConfidence,
-        executionDelaySec: input.config.executionDelaySec,
-        priceFor: input.priceFor,
-        limitEntries: input.config.proLimitEntries === true
-      });
-    }
+    // Circuit breaker: stop opening new positions once THIS bot's own drawdown
+    // crosses the shared thresholds.
+    //
+    // input.dailyDrawdownPercent / weeklyDrawdownPercent come from this bot's own
+    // engine instance (server/simEngineFactory.ts drawdowns()), measured against
+    // its own equity curve and its own initialAmount. Pro, Intraday and Path each
+    // run a separate createGenericSimEngine closure with separate state and a
+    // separate KV store, so the only thing the three share here is the threshold
+    // constant — a loss in one bot can never halt another.
+    const breakerTripped =
+      input.dailyDrawdownPercent >= DAILY_DRAWDOWN_BLOCK_PERCENT ||
+      input.weeklyDrawdownPercent >= WEEKLY_DRAWDOWN_LOCK_PERCENT;
 
     // The exit check (§5's fixed %, §4's flip-to-SELL) needs each held
     // symbol's CURRENT signal, independent of whether that symbol currently
@@ -124,7 +117,9 @@ const proStrategy: SimEngineStrategy = {
     return generateProOrders({
       positions: input.positions,
       pending: input.pending,
-      evaluations,
+      // Breaker tripped → exits only. Open positions keep their full exit logic
+      // (stops, targets, flip-to-SELL); only new entries are withheld.
+      evaluations: breakerTripped ? [] : evaluations,
       signalsBySymbol,
       minConfidence,
       executionDelaySec: input.config.executionDelaySec,
