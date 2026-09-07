@@ -269,15 +269,14 @@ describe('sizing comes from the bucket, capped by the operator', () => {
   });
 
   it('never exceeds the operator ceiling, however good the bucket looks', () => {
-    // Kelly wants 5% of a $100k equity = $5,000; positionPercent caps at 10%
-    // of $1,000 cash = $100.
+    // 10% of 100k equity = 10,000; operator ceiling (positionPercent=10, $1k cash) = 100.
     const budget = pathEntryBudget(bucket(0.45, 2), 100_000, 1000, 10, 'medium');
     expect(budget).toBeCloseTo(100, 6);
   });
 
   it('sizes from equity when the ceiling is not binding', () => {
     const budget = pathEntryBudget(bucket(0.36, 2), 10_000, 100_000, 10, 'medium');
-    expect(budget).toBeCloseTo(200, 6);  // 2% of 10k equity
+    expect(budget).toBeCloseTo(1000, 6);  // 10% of 10k equity
   });
 
   it('returns nothing without a bucket — no bucket, no measured bet', () => {

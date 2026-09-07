@@ -63,6 +63,10 @@ export interface ProSimulationBotContextValue {
   weeklyDrawdownPercent: number;
   candleCount: number;
   config: SimBotConfig;
+  /** Capital the current run opened with. Authoritative when synced with the
+   *  server; falls back to the local config's initialAmount for the offline
+   *  fallback engine. */
+  initialAmount: number;
   setConfig: (c: SimBotConfig) => void;
   status: SimStatus;
   isRunning: boolean;
@@ -217,6 +221,8 @@ export function ProSimulationBotProvider({ children }: { children: ReactNode }) 
 
   const activeSource = useServer && serverSnapshot ? serverSnapshot : localSim;
 
+  const activeInitialAmount = (activeSource as { initialAmount?: number }).initialAmount ?? config.initialAmount;
+
   const value: ProSimulationBotContextValue = {
     cash: activeSource.cash ?? 10000,
     positions: (activeSource.positions ?? []) as SimPosition[],
@@ -240,6 +246,7 @@ export function ProSimulationBotProvider({ children }: { children: ReactNode }) 
     dailyDrawdownPercent: activeSource.dailyDrawdownPercent ?? 0,
     weeklyDrawdownPercent: activeSource.weeklyDrawdownPercent ?? 0,
     candleCount: activeSource.candleCount ?? 0,
+    initialAmount: activeInitialAmount,
     config,
     setConfig,
     status,

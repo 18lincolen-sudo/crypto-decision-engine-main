@@ -9,7 +9,7 @@
 // `SimEngineStrategy` that plugs its own evaluation/order-generation
 // functions — from simExecution.ts / proSimExecution.ts /
 // pathSimExecution.ts — into this shared loop.
-import { formatDynamicPrice } from '@cde/engine/execution';
+import { formatDynamicPrice, validateExposureModel, POSITION_TARGET_PCT, MAX_TOTAL_EXPOSURE_PERCENT, SIM_BASE_DEFAULTS } from '@cde/engine/execution';
 import type { Candle } from '@cde/engine';
 import { getAggregatedPrices } from '@cde/engine/market-data';
 import type { CryptoData } from '@cde/engine';
@@ -32,6 +32,7 @@ import {
 export type { SimPosition, SimTrade, SimPoint, PendingOrder, SimBotConfig };
 
 export interface SimSnapshot {
+  runId: string;
   cash: number;
   /** Capital the CURRENT run started with. Carried in the snapshot because it
    *  is the denominator of every P&L figure the UI shows, and it cannot be
@@ -52,6 +53,39 @@ export interface SimSnapshot {
    *  then starts accruing from the next tick rather than billing a backlog. */
   lastFundingAppliedAt?: number;
   lastEvaluation?: string;
+}
+
+/** A finished run, captured at reset() before the engine's state is wiped
+ *  (§9/#4). Persisted to the archive KV store by the worker so BacktestResults
+ *  can show historical trades that a "Reset All Bots" would otherwise destroy.
+ *  A "Clear Cache + Server" wipe deletes these; a plain reset does not. */
+export interface ArchivedRun {
+  runId: string;
+  botId?: string;
+  initialAmount: number;
+  finalEquity: number;
+  totalPnl: number;
+  totalPnlPercent: number;
+  finalCash: number;
+  /** Closed + open trade log of the run (same shape the live snapshot carries). */
+  trades: SimTrade[];
+  /** Positions still open at reset, marked to market. */
+  openPositions: Array<{
+    symbol: string;
+    type: 'SPOT' | 'FUTURES';
+    side: string;
+    quantity: number;
+    entryPrice: number;
+    mark: number;
+    pnl: number;
+    reason: string;
+  }>;
+  tradeCount: number;
+  feeTotal: number;
+  slippageTotal: number;
+  fundingTotal: number;
+  startedAt?: number;
+  archivedAt: number;
 }
 
 const TICK_MS = 4000;
@@ -179,6 +213,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
   let candleRefreshAt = 0;
   let candleRefreshing = false;
   let initialAmount = 10000;
+  let runId: string | null = null;
 
   // Positions/orders always carry the SUFFIXED symbol ("LITUSDT", from the MTF
   // snapshot), but cryptoData/lastPrices are keyed by the BARE ticker symbol
@@ -212,12 +247,12 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       const pnl = p.side === 'LONG'
         ? (live - p.entryPrice) * p.quantity
         : (p.entryPrice - live) * p.quantity;
-      // Report mark-to-market value honestly: margin + PnL, allowing negative
-      // equity shocks below the margin floor. Clamping to 0 here masked an
-      // underwater position's true damage from the drawdown/circuit-breaker
-      // logic, which is exactly what must see it first.
+      // Report mark-to-market value honestly: margin + PnL. An underwater
+      // futures position must show a negative contribution so drawdown and
+      // circuit-breaker logic see the true equity — clamping to 0 here masked
+      // that damage and let those safety nets miss a real loss.
       const value = p.marginUsd + pnl;
-      return sum + (value >= 0 ? value : 0);
+      return sum + value;
     }, 0);
   }
 
@@ -334,7 +369,20 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
   // one is set, the strategy's own default otherwise.
   let activeMinConfidence = strategy.minConfidence;
 
+  // Last-seen config, retained so hydrate() can validate on server restart.
+  let lastConfig: SimBotConfig | null = null;
+
+  function validateConfig(config: SimBotConfig): void {
+    validateExposureModel({
+      maxPositions: config.maxPositions ?? SIM_BASE_DEFAULTS.maxPositions,
+      positionTargetPct: POSITION_TARGET_PCT,
+      totalExposureCapPct: MAX_TOTAL_EXPOSURE_PERCENT / 100
+    });
+  }
+
   async function tick(config: SimBotConfig, fearGreed = 50) {
+    lastConfig = config;
+    validateConfig(config);
     const tickStartedAt = Date.now();
     activeMinConfidence = typeof config.minConfidenceOverride === 'number' && config.minConfidenceOverride > 0
       ? config.minConfidenceOverride
@@ -425,7 +473,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       priceFor,
       toBase: (s: string) => toBaseAsset(s),
       computeAtr5,
-      maxPositions: config.maxPositions || 7,
+       maxPositions: config.maxPositions ?? 2, // 2 × 10% = 20% = totalExposureCap
       maxFuturesPositions: config.maxFuturesPositions || 2
     };
 
@@ -446,7 +494,8 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     if (due.length) {
       const result = fillDueOrders(due, cash, positions, priceFor, formatDynamicPrice, {
         feePercent: config.feePercent,
-        slippagePercent: config.slippagePercent
+        slippagePercent: config.slippagePercent,
+        equity: eq
       });
       const dueIds = new Set(due.map((o) => o.id));
       pending = pending.filter((o) => !dueIds.has(o.id));
@@ -504,6 +553,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     const wins = closedTrades.filter((t) => (t.pnl ?? 0) > 0).length;
     const winRate = closedTrades.length ? (wins / closedTrades.length) * 100 : 0;
     return {
+      runId: runId ?? `run-${Date.now()}`,
       cash,
       initialAmount,
       positions,
@@ -558,6 +608,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
 
   function hydrate(snapshot: SimSnapshot) {
     if (!snapshot || typeof snapshot.cash !== 'number') return;
+    if (lastConfig) validateConfig(lastConfig);
     cash = snapshot.cash;
     positions = snapshot.positions ?? [];
     trades = snapshot.trades ?? [];
@@ -567,19 +618,62 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     totalFees = snapshot.totalFees ?? 0;
     totalSlippageCost = snapshot.totalSlippageCost ?? 0;
     totalFunding = snapshot.totalFunding ?? 0;
-    // Deliberately NOT restored: start accruing funding from the next tick
-    // rather than billing the gap since the snapshot was written.
     lastFundingAppliedAt = 0;
     lastEvaluation = snapshot.lastEvaluation ?? '';
-    // Restore the run's OWN starting capital. Reading snapshot.cash here reset
-    // the P&L baseline to whatever the balance happened to be at restart, so
-    // every deploy silently zeroed the bot's reported profit.
     initialAmount = snapshot.initialAmount || snapshot.cash || 10000;
+    // Restore the run's identity so the new snapshot carries the same runId
+    // until the next reset (§9/#4).
+    runId = snapshot.runId ?? null;
   }
 
-  function reset(config: SimBotConfig) {
+  function reset(config: SimBotConfig): ArchivedRun | null {
+    lastConfig = config;
+    validateConfig(config);
+    // §9/#4: Archive the run before wiping state. We capture mark-to-market
+    // positions and a snapshot of the final equity so the archive reflects the
+    // actual economic position, not the stale cash figure. The worker persists
+    // the returned object to the archive KV store (Firestore) so a plain
+    // "Reset All Bots" keeps the history for BacktestResults; only a
+    // "Clear Cache + Server" wipe deletes it.
+    let archived: ArchivedRun | null = null;
+    if (positions.length > 0 || trades.length > 0) {
+      const finalEquity = equity();
+      archived = {
+        runId: runId ?? `run-${Date.now()}`,
+        initialAmount,
+        finalEquity,
+        totalPnl: finalEquity - initialAmount,
+        totalPnlPercent: initialAmount > 0 ? ((finalEquity - initialAmount) / initialAmount) * 100 : 0,
+        finalCash: cash,
+        trades: [...trades],
+        openPositions: positions.map((p) => ({
+          symbol: p.symbol,
+          type: p.type,
+          side: p.side,
+          quantity: p.quantity,
+          entryPrice: p.entryPrice,
+          mark: priceFor(p.symbol) ?? p.currentPrice,
+          pnl: p.type === 'SPOT'
+            ? ((priceFor(p.symbol) ?? p.currentPrice) - p.entryPrice) * p.quantity
+            : p.side === 'LONG'
+            ? ((priceFor(p.symbol) ?? p.currentPrice) - p.entryPrice) * p.quantity * (p.leverage || 1)
+            : (p.entryPrice - (priceFor(p.symbol) ?? p.currentPrice)) * p.quantity * (p.leverage || 1),
+          reason: p.reason
+        })),
+        tradeCount: trades.length,
+        feeTotal: totalFees,
+        slippageTotal: totalSlippageCost,
+        fundingTotal: totalFunding,
+        startedAt: history[0]?.at,
+        archivedAt: Date.now()
+      };
+      console.log(`[archive] run ${archived.runId} | equity $${archived.finalEquity.toFixed(2)} | P&L ${archived.totalPnl >= 0 ? '+' : ''}${archived.totalPnl.toFixed(2)} (${archived.totalPnlPercent >= 0 ? '+' : ''}${archived.totalPnlPercent.toFixed(2)}%) | ${archived.tradeCount} trades`);
+    }
+
     cash = config.initialAmount;
     initialAmount = config.initialAmount;
+    // Start a fresh run — new runId so the snapshot marks this as a different session.
+    runId = `run-${Date.now()}`;
     positions = [];
     trades = [];
     history = [];
@@ -591,6 +685,7 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     lastFundingAppliedAt = 0;
     lastEvaluation = '';
     lastEvaluations = [];
+    return archived;
   }
 
   /** The capital the current run opened with — lets a caller detect that a

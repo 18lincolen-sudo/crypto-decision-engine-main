@@ -214,26 +214,20 @@ describe('sizing respects the batch: §4 gate 7 allocates against projected cash
   });
 
   it('pro: a later entry in the batch is capped by the projected cash §4 leaves', () => {
-    // confidence 70 → 10% × 10_000 = 1000 per entry. Cash is 1650 but equity is
-    // kept large (100,000) so the 8%-of-equity per-asset cap (8000) stays out
-    // of the way and this test isolates the cash-projection behavior it names:
-    // the first take gets min(1000, 1650, 8000) = 1000 (the allocation caps,
-    // not the cash) and the projected cash drops to 650; the second gets
-    // min(1000, 650, 8000) = 650 — sized off the projected cash §4 leaves.
-    const gated = applyProEntryGates([evaluation('LA'), evaluation('BTC')], gateCtx({ cash: 1650, equity: 100_000 }));
+    // 10% × 10_000 equity = 1000 per entry. Cash is 1650.
+    // First take gets min(1000, 1650, 1000) = 1000, projected cash drops to 650;
+    // second gets min(1000, 650, 1000) = 650.
+    const gated = applyProEntryGates([evaluation('LA'), evaluation('BTC')], gateCtx({ cash: 1650, equity: 10_000 }));
     expect(gated.find((e) => e.symbol === 'LA')?.budgetUsd).toBeCloseTo(1000, 6);
     expect(gated.find((e) => e.symbol === 'BTC')?.budgetUsd).toBeCloseTo(650, 6);
   });
 
   it('pro: the per-asset cap trims each entry when equity itself is the binding constraint', () => {
-    // Same batch, but now cash is plentiful and equity is what's tight: the
-    // 8%-of-equity cap (132) is smaller than both the confidence allocation
-    // (1000) and the projected cash, so it governs BOTH entries — the cap is
-    // read off ctx.equity directly and is not itself projected down within a
-    // batch the way cash is.
+    // Cash is plentiful, equity is tight: 10% × 1650 = 165 per entry.
+    // The cap is read off ctx.equity directly and is not itself projected down.
     const gated = applyProEntryGates([evaluation('LA'), evaluation('BTC')], gateCtx({ cash: 10_000, equity: 1650 }));
-    expect(gated.find((e) => e.symbol === 'LA')?.budgetUsd).toBeCloseTo(132, 6);
-    expect(gated.find((e) => e.symbol === 'BTC')?.budgetUsd).toBeCloseTo(132, 6);
+    expect(gated.find((e) => e.symbol === 'LA')?.budgetUsd).toBeCloseTo(165, 6);
+    expect(gated.find((e) => e.symbol === 'BTC')?.budgetUsd).toBeCloseTo(165, 6);
   });
 
   it('pro: the strongest confidence is allocated first (§4)', () => {

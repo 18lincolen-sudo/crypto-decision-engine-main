@@ -20,6 +20,7 @@ import { Candle, calculateEMA } from './tradeEngine';
 import { aggregateToH4 } from './pathEngine';
 import { barOpenFor, BAR_MS } from './pathStudy';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
+import { POSITION_TARGET_PCT } from './intradayParams';
 
 // ── Parameters (all configurable — no auto-optimisation) ────────────────────
 
@@ -32,19 +33,25 @@ export interface Prev4hRangeParams {
   /** ...and <= this (else the move is already made; a late breakout is a bad
    *  entry). */
   maxRangePct: number;
-  /** TP distance from entry = range * this. With SL at the range midpoint
-   *  (R = range/2) a value of 1.0 gives ~2:1 reward:risk. */
+  /** TP distance from entry = range * this. Actual R:R depends on breakout
+    *  distance: at d=0 RR=2.0, at d=0.5*range RR=0.5. The old comment claiming
+    *  "~2:1" was only true for a perfect touch of H/L. */
   tpRangeMult: number;
   /** Risk budget for the position, as a fraction of equity. */
   riskPerTrade: number;
+  /** Target notional as a fraction of equity (e.g. 0.10 = 10%).
+   *  Single source of truth for position sizing. */
+  positionTargetPct: number;
   /** Confidence SCORE (0-100) required to open. Not a probability. */
   minConfidence: number;
   /** Minimum fully-closed 4H bars before the bot will evaluate a symbol. */
   minH4Bars: number;
   /** Don't chase: the break must be at most `range × this` past H/L. Beyond
-   *  that the move is already made and the stop (at `mid`) is too far to size
-   *  a sane position — the bot abstains (`ENTRY_TOO_EXTENDED`). */
+    *  that the move is already made and the stop (at `mid`) is too far to size
+    *  a sane position — the bot abstains (`ENTRY_TOO_EXTENDED`). */
   maxExtensionRangeMult: number;
+  /** Minimum gross risk:reward ratio required to enter. */
+  minRR: number;
 }
 
 export const DEFAULT_PREV4H_RANGE_PARAMS: Prev4hRangeParams = {
@@ -53,9 +60,11 @@ export const DEFAULT_PREV4H_RANGE_PARAMS: Prev4hRangeParams = {
   maxRangePct: 0.08,
   tpRangeMult: 1.0,
   riskPerTrade: 0.005,
+  positionTargetPct: POSITION_TARGET_PCT,
   minConfidence: 55,
   minH4Bars: 24,
-  maxExtensionRangeMult: 0.5
+  maxExtensionRangeMult: 0.5,
+  minRR: 1.2
 };
 
 /** 4H bars needed (params default) → H1 candles needed to build them. */
@@ -79,7 +88,8 @@ export type Prev4hRangeReason =
   | 'RANGE_TOO_WIDE'
   | 'NO_BREAKOUT'        // price still inside [L, H]
   | 'ENTRY_TOO_EXTENDED' // broke out but price already ran too far past H/L
-  | 'CONFIDENCE_BELOW_MIN';
+  | 'CONFIDENCE_BELOW_MIN'
+  | 'RR_BELOW_MIN';      // actual R:R below threshold
 
 export interface Prev4hRangePlan {
   direction: 'LONG' | 'SHORT';
@@ -100,6 +110,7 @@ export interface Prev4hRangePlan {
   stopLoss: number;
   takeProfit: number;
   riskPerUnit: number;
+  actualRR: number;
   confidence: number;
   components: { breakout: number; trend: number; range: number };
 }
@@ -214,6 +225,15 @@ export function evaluatePrev4hRange(input: Prev4hRangeInput): SignalEvaluation {
   const riskPerUnit = Math.abs(entryRef - stopLoss);
   const takeProfit = isLong ? H + range * p.tpRangeMult : L - range * p.tpRangeMult;
 
+  // Gross R:R from actual levels (not the misleading ~2:1 claim).
+  const grossReward = Math.abs(takeProfit - entryRef);
+  const grossRisk = Math.abs(entryRef - stopLoss);
+  const actualRR = grossRisk > 0 ? grossReward / grossRisk : 0;
+
+  if (actualRR < p.minRR) {
+    return base('ARMED', 'RR_BELOW_MIN', debug, { confidence: 0 });
+  }
+
   // Confidence SCORE 0-100.
   const breakout = clamp01(breakoutDist / (range * 0.5)) * 30;
   const trendStrength = clamp01(Math.abs(ema - emaPrev) / (emaPrev * 0.01)) * 20;
@@ -239,6 +259,7 @@ export function evaluatePrev4hRange(input: Prev4hRangeInput): SignalEvaluation {
     stopLoss,
     takeProfit,
     riskPerUnit,
+    actualRR,
     confidence,
     components: { breakout, trend: trendStrength, range: Math.max(0, rangeScore) }
   };
@@ -246,7 +267,7 @@ export function evaluatePrev4hRange(input: Prev4hRangeInput): SignalEvaluation {
   const factors: DecisionFactor[] = [
     ...debug,
     { label: 'ציון ביטחון', value: `${confidence}/100 (סף ${p.minConfidence})`, impact: confidence >= p.minConfidence ? 'positive' : 'neutral',
-      note: `פריצה ${plan.components.breakout.toFixed(0)} · מגמה ${plan.components.trend.toFixed(0)} · טווח ${plan.components.range.toFixed(0)}` }
+      note: `פריצה ${plan.components.breakout.toFixed(0)} · מגמה ${plan.components.trend.toFixed(0)} · טווח ${plan.components.range.toFixed(0)} · RR ${actualRR.toFixed(2)} (סף ${p.minRR})` }
   ];
 
   if (confidence < p.minConfidence) {

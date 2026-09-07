@@ -59,7 +59,11 @@ export interface SignalEvaluation {
   priceChange24h: number;
   reasoning: string;
   status: string;
-  willExecute: boolean;
+   willExecute: boolean;
+   /** §16: the strategy-level decision BEFORE state-based execution gates
+    *  (held / queued / slots). willExecute is the final execution choice after
+    *  both layers; strategyDecision is the raw signal threshold check. */
+   strategyDecision?: boolean;
   factors: DecisionFactor[];
   confidenceGap: number;
   riskLevel?: 'low' | 'medium' | 'high';
@@ -242,9 +246,11 @@ export function mapDecisionToSignalEvaluation(
     });
   }
   if (d.cost) {
+    // Same entry/SL/TP1 as the risk plan (asserted in the engine — DATA_MISMATCH
+    // otherwise), so gross R:R = reward%/risk% and net = (reward%-cost%)/risk%.
     factors.push({
       label: 'עלות/שוליים (Cost/Edge)',
-      value: `R:R נטו ${d.cost.netRewardRisk} | edge ${d.cost.edgeRatio}`,
+      value: `R:R ${d.cost.grossRewardRisk} → נטו ${d.cost.netRewardRisk} | סיכון ${d.cost.riskPercent}% / רווח ${d.cost.rewardPercent}% / עלות ${d.cost.totalCostPercent}%`,
       impact: d.cost.approved ? 'positive' : 'negative',
       note: d.cost.reason
     });
@@ -252,9 +258,9 @@ export function mapDecisionToSignalEvaluation(
   if (d.risk && d.risk.approved) {
     factors.push({
       label: 'ניהול סיכונים (SL/TP/מינוף)',
-      value: `SL ${d.risk.stopLoss} TP1 ${d.risk.takeProfit1} ${d.risk.leverage}x risk ${d.risk.riskPercentUsed}%`,
+      value: `ENTRY ${d.risk.entryPrice} SL ${d.risk.stopLoss} TP1 ${d.risk.takeProfit1} ${d.risk.leverage}x risk ${d.risk.riskPercentUsed}%`,
       impact: 'positive',
-      note: `כמות ${d.risk.quantity}`
+      note: `כמות ${d.risk.quantity} · R:R ${d.risk.grossRewardRisk}`
     });
   }
   factors.push({
@@ -444,6 +450,9 @@ const METRIC_CONFIG: Record<string, { label: string; higherIsBetter: boolean; th
   entryScore: { label: 'Entry Score', higherIsBetter: true, threshold: 50 },
   edgeRatio: { label: 'Edge Ratio', higherIsBetter: true, threshold: 1 },
   netRewardRisk: { label: 'Net R/R', higherIsBetter: true, threshold: 0 },
+  grossRewardRisk: { label: 'Gross R/R', higherIsBetter: true, threshold: 1 },
+  stopLossDistancePercent: { label: 'SL מרחק %', higherIsBetter: false, threshold: 5 },
+  rewardDistancePercent: { label: 'TP1 מרחק %', higherIsBetter: true, threshold: 0 },
   riskPercent: { label: 'Risk %', higherIsBetter: false, threshold: 50 },
   atrPercentile: { label: 'ATR Percentile', higherIsBetter: false, threshold: 70 },
   adx: { label: 'ADX', higherIsBetter: true, threshold: 25 },

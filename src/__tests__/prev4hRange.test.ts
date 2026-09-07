@@ -52,7 +52,8 @@ describe('evaluatePrev4hRange — signal', () => {
 
   // prev 4H bar of h1Series(108,100,0.3): H=132.3, L=131.0, mid=131.65, range=1.3.
   // A LONG breakout must sit in (132.3, 132.3 + range·0.5 = 132.95].
-  const BREAKOUT_LONG = 132.6;
+  // RR at d=0: 2.0; at d=0.5*range: 0.5. minRR=1.2 requires d <= 0.236.
+  const BREAKOUT_LONG = 132.53;
 
   it('fires a LONG SPOT SIGNAL on a breakout above the prev-4H high in an EMA20 uptrend', () => {
     const h1 = h1Series(N, 100, 0.3);
@@ -128,7 +129,7 @@ describe('evaluatePrev4hRange — signal', () => {
 
   it('confidence stays within 0-100', () => {
     const h1 = h1Series(N, 100, 0.3);
-    const ev = evaluatePrev4hRange({ symbol: 'RNG', h1, currentPrice: 132.9, now: nowInNextWindow(N) });
+    const ev = evaluatePrev4hRange({ symbol: 'RNG', h1, currentPrice: 132.53, now: nowInNextWindow(N) });
     expect(ev.confidence).toBeGreaterThan(0);
     expect(ev.confidence).toBeLessThanOrEqual(100);
   });

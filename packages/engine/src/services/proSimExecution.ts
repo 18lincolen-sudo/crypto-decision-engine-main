@@ -30,7 +30,7 @@ import {
   type ProSignalResult,
   type ProRiskLevel
 } from './proAlgEngine';
-import { PER_ASSET_EXPOSURE_CAP_PERCENT } from './intradayParams';
+import { PER_ASSET_EXPOSURE_CAP_PERCENT, POSITION_TARGET_PCT } from './intradayParams';
 import type { Candle } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import type { SimPosition, PendingOrder } from './simExecution';
@@ -103,6 +103,7 @@ export function buildProEvaluation(
     reasoning,
     status: willExecute ? 'SIGNAL SPOT BUY' : `NO_SIGNAL [${signal.action === 'HOLD' ? 'NO_DIRECTION' : signal.action === 'SELL' ? 'SPOT_SELL_UNSUPPORTED' : 'BELOW_THRESHOLD'}]`,
     willExecute,
+    strategyDecision: willExecute, // §16: raw signal threshold check, before state gates
     factors,
     confidenceGap: Math.max(0, minConfidence - signal.confidence),
     riskLevel,
@@ -227,41 +228,19 @@ export function applyProEntryGates(
       if (!ev.price || ev.price <= 0) {                                                                                         // 6
         return gateResult(ev, 'NO_SIGNAL [NO_PRICE]', 'אין מחיר תקף', false, minConfidence);
       }
-      // Allocation is confidence-dependent: >70% → 10%, >80% → 15% of the
-      // spendable cash (proAllocationPercent — see its doc comment for why
-      // this replaced §3's risk-level allocation table). This prevents a
-      // single position from consuming most of the portfolio — high
-      // confidence gets a larger slice, but never the whole pie. Allocated
-      // against CASH (not equity): an equity-based allocation that cash
-      // couldn't cover would create an order the fill step refuses —
-      // "ready to buy" with no purchase.
-      const confidenceAllocation = proAllocationPercent(ev.confidence);
-      // Per-asset concentration cap, shared with Intraday's futures sizing and
-      // Path's entry budget (PER_ASSET_EXPOSURE_CAP_PERCENT). The
-      // confidence allocation above (10-15%) was written before that cap
-      // existed and sits above it, so a single high-confidence Pro entry could
-      // commit more of the portfolio to one asset than Intraday itself is
-      // allowed to. No existing-exposure term is needed here: gate 3 above
-      // already refuses a symbol that is currently held, so this is always a
-      // fresh position's entire exposure to that asset.
+      // Allocation is confidence-independent under the 10% position-target
+      // model. Every new position targets 10% of current equity, regardless of
+      // confidence score. Confidence is used for entry gating only.
       const perAssetCap = ctx.equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
-      const rawBudget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash, perAssetCap);                          // 7
-      // Operator floor: the sim bots never open a position below
-      // MIN_SIM_ENTRY_USD. Rather than reject a small allocation, round it UP to
-      // the floor whenever the free cash can cover it (this can exceed the
-      // 8%-per-asset cap on a small account — an accepted trade-off for the
-      // "$100 minimum, always" rule). Only refuse when even $100 has no cash
-      // behind it.
-      const canBump = projectedCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD;
-      const budget = rawBudget >= MIN_SIM_ENTRY_USD
-        ? rawBudget
-        : canBump ? MIN_SIM_ENTRY_USD : rawBudget;
-      if (budget < MIN_SIM_ENTRY_USD) {
-        return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין מספיק מזומן פנוי ($${projectedCash.toFixed(2)} < $${MIN_SIM_ENTRY_USD})`, false, minConfidence);
+      const targetNotional = ctx.equity * POSITION_TARGET_PCT;
+      const rawBudget = Math.min(targetNotional, projectedCash, perAssetCap);
+      // Skip if target is below exchange minimum — no overshoot.
+      if (rawBudget < MIN_SIM_ENTRY_USD) {
+        return gateResult(ev, 'NO_SIGNAL [MIN_ORDER_EXCEEDS_POSITION_TARGET]', `יעד ${rawBudget.toFixed(2)}$ מתחת למינימום ${MIN_SIM_ENTRY_USD}$`, false, minConfidence);
       }
       occupiedSlots++;                                                                                                          // 8
-      projectedCash -= budget;
-      return gateResult(ev, 'SIGNAL SPOT BUY', `אות BUY בביטחון ${ev.confidence.toFixed(1)} >= סף ${minConfidence} — מבצע קנייה`, true, minConfidence, budget);
+      projectedCash -= rawBudget;
+      return gateResult(ev, 'SIGNAL SPOT BUY', `אות BUY בביטחון ${ev.confidence.toFixed(1)} >= סף ${minConfidence} — מבצע קנייה`, true, minConfidence, rawBudget);
     });
 }
 

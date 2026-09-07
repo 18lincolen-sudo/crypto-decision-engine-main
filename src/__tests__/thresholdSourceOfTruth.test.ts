@@ -58,37 +58,29 @@ describe('§3 — minConfidence comes from one flat operator bar, or an override
     expect(proMinConfidence('medium', undefined)).toBe(70);
   });
 
-  it('allocation is confidence-based: >70% → 10%, >80% → 15% — both capped at the 8% per-asset ceiling', () => {
-    // Equity 10,000 → the confidence allocation (10% = 1000, 15% = 1500) would
-    // exceed the shared 8%-of-equity per-asset cap (800), so it wins here —
-    // see the dedicated per-asset-cap describe block below for the case where
-    // the allocation is the smaller of the two.
+  it('allocation is fixed at 10% of equity, regardless of confidence', () => {
+    // Equity 10,000 → target = 10% = 1000. Per-asset cap is also 10%, so
+    // the cap no longer binds — the position is exactly the target.
     const [ev70] = applyProEntryGates([buyEval('LA', 70)], gateCtx());
-    expect(ev70.budgetUsd).toBeCloseTo(800, 6);
+    expect(ev70.budgetUsd).toBeCloseTo(1000, 6);
 
     const [ev80] = applyProEntryGates([buyEval('LA', 80)], gateCtx());
-    expect(ev80.budgetUsd).toBeCloseTo(800, 6);
+    expect(ev80.budgetUsd).toBeCloseTo(1000, 6);
 
     const [ev81] = applyProEntryGates([buyEval('LA', 81)], gateCtx());
-    expect(ev81.budgetUsd).toBeCloseTo(800, 6);
+    expect(ev81.budgetUsd).toBeCloseTo(1000, 6);
   });
 
-  it('proAllocationPercent is the ONE allocation rule — the old risk-level table (15/25/40%) was dead code', () => {
-    // §3 also specifies a risk-level allocation table; it was exported
-    // (PRO_ALLOCATION_BY_RISK / proAllocationPercent(riskLevel)) but
-    // applyProEntryGates never read it — confidence-based sizing is the only
-    // one that has ever actually run. It is now the only one that exists.
+  it('proAllocationPercent always returns 10% — confidence no longer affects allocation', () => {
     expect(proAllocationPercent(70)).toBe(PRO_ALLOCATION_DEFAULT_PERCENT);
-    expect(proAllocationPercent(PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD)).toBe(PRO_ALLOCATION_DEFAULT_PERCENT); // not > threshold
-    expect(proAllocationPercent(PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD + 1)).toBe(PRO_ALLOCATION_HIGH_PERCENT);
+    expect(proAllocationPercent(PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD)).toBe(PRO_ALLOCATION_DEFAULT_PERCENT);
+    expect(proAllocationPercent(PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD + 1)).toBe(PRO_ALLOCATION_DEFAULT_PERCENT);
 
-    // Isolated from the per-asset cap (large equity) so the allocation rule
-    // itself is what the assertion is measuring.
     const roomyCtx = gateCtx({ initialAmount: 10_000, equity: 1_000_000, cash: 1_000_000 });
     const [ev70] = applyProEntryGates([buyEval('LA', 70)], roomyCtx);
-    expect(ev70.budgetUsd).toBeCloseTo(10_000 * PRO_ALLOCATION_DEFAULT_PERCENT, 6);
+    expect(ev70.budgetUsd).toBeCloseTo(1_000_000 * PRO_ALLOCATION_DEFAULT_PERCENT, 6);
     const [ev85] = applyProEntryGates([buyEval('BTC', 85)], roomyCtx);
-    expect(ev85.budgetUsd).toBeCloseTo(10_000 * PRO_ALLOCATION_HIGH_PERCENT, 6);
+    expect(ev85.budgetUsd).toBeCloseTo(1_000_000 * PRO_ALLOCATION_DEFAULT_PERCENT, 6);
   });
 });
 
@@ -168,15 +160,13 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
     expect(ev.status).toBe('NO_SIGNAL [NO_SLOTS]');
   });
 
-  it('equity below the $100 sim floor → NO_BUDGET', () => {
+  it('equity below the $100 sim floor → MIN_ORDER_EXCEEDS_POSITION_TARGET', () => {
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 4, equity: 4 }));
-    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
+    expect(ev.status).toBe('NO_SIGNAL [MIN_ORDER_EXCEEDS_POSITION_TARGET]');
   });
 
   it('budget is allocated against CASH, not equity (cash-based sizing)', () => {
-    // $150 cash but $10,000 equity → budget = min(1000, 150) = 150, capped at
-    // available cash rather than sized off the much larger equity. 150 clears
-    // the $100 sim floor, so it is a real SIGNAL sized to the cash on hand.
+    // $150 cash but $10,000 equity → target = 10% × 10k = 1000, but cash caps at 150.
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 150, equity: 10_000 }));
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
@@ -184,54 +174,46 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
   });
 
   it('low cash below the $100 sim floor refuses even with healthy equity', () => {
-    // $50 cash and only $50 equity → cannot round up to $100 → NO_BUDGET.
+    // $50 cash and only $50 equity → target = 10% × 50 = 5, below MIN_SIM_ENTRY_USD.
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 50 }));
-    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
+    expect(ev.status).toBe('NO_SIGNAL [MIN_ORDER_EXCEEDS_POSITION_TARGET]');
     expect(ev.willExecute).toBe(false);
   });
 
-  it('rounds a small allocation UP to the $100 sim floor when cash and equity allow', () => {
-    // initialAmount $500 → 10% allocation = $50, below MIN_SIM_ENTRY_USD. With
-    // $10k cash and equity behind it, the gate bumps the entry to exactly $100
-    // rather than refusing it ("$100 minimum, always").
+  it('target reaches $100 when equity supports it — no overshoot below target', () => {
+    // initialAmount $500 → 10% of 10,000 equity = 1000, well above the $100 floor.
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ initialAmount: 500, cash: 10_000, equity: 10_000 }));
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(100, 6);
+    expect(ev.budgetUsd).toBeCloseTo(1000, 6);
   });
 
   it('every gate passed → willExecute, "מבצע קנייה", and the allocated budget', () => {
-    // confidence 80 → 10% of 10,000 = 1000, but the 8%-of-equity per-asset cap
-    // (800) is tighter and wins.
+    // 10% of 10,000 equity = 1000, per-asset cap is also 10% = 1000.
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx());
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(800, 6);
+    expect(ev.budgetUsd).toBeCloseTo(1000, 6);
   });
 
-  it('high confidence (>80%) gets 15% allocation, still bounded by the per-asset cap', () => {
-    // confidence 85 → 15% of 10,000 = 1500, capped to 800 (8% of equity).
+  it('confidence no longer affects allocation — always 10% of equity', () => {
+    // confidence 85 used to give 15%; now it is the same 10% target.
     const [ev] = applyProEntryGates([buyEval('LA', 85)], gateCtx());
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(800, 6);
+    expect(ev.budgetUsd).toBeCloseTo(1000, 6);
   });
 
-  it('the confidence allocation wins when it is tighter than the per-asset cap', () => {
-    // initialAmount 1,000 but equity 100,000 (e.g. mostly held in other
-    // positions' unrealized gains): 15% of 1,000 = 150 is well under 8% of
-    // 100,000 = 8,000, so the smaller confidence allocation governs.
+  it('allocation is 10% of equity, not initialAmount', () => {
+    // equity 100,000 → target = 10,000. Cash is sufficient.
     const [ev] = applyProEntryGates([buyEval('LA', 85)], gateCtx({ initialAmount: 1000, equity: 100_000, cash: 100_000 }));
-    expect(ev.budgetUsd).toBeCloseTo(150, 6);
+    expect(ev.budgetUsd).toBeCloseTo(10_000, 6);
   });
 
-  it('the per-asset cap rejects nothing on its own — it only trims the size', () => {
-    // A cap that only ever clamps, never refuses outright, matches how
-    // Intraday's own per-asset check treats a FRESH (never-held) symbol: the
-    // rejection path only fires when existing exposure already saturates it,
-    // which cannot happen here since a held symbol is refused earlier (gate 3).
+  it('the per-asset cap trims to 10% — below the sim floor it becomes MIN_ORDER_EXCEEDS_POSITION_TARGET', () => {
+    // 10% of 1 = 0.1, below the $100 sim floor → skip.
     const [ev] = applyProEntryGates([buyEval('LA', 95)], gateCtx({ equity: 1 }));
-    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]'); // trimmed to $0.08 — below the $100 sim floor, not a per-asset rejection
+    expect(ev.status).toBe('NO_SIGNAL [MIN_ORDER_EXCEEDS_POSITION_TARGET]');
   });
 });
 

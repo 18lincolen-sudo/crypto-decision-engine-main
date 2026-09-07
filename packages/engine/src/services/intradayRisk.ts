@@ -10,17 +10,33 @@ import { clamp } from './intradayIndicators';
 import { DEFAULT_INTRADAY_PARAMS, Direction, IntradayParams, SetupType, PER_ASSET_EXPOSURE_CAP_PERCENT } from './intradayParams';
 
 export interface CostAnalysis {
+  // ── The exact levels this analysis was computed on ────────────────────────
+  // Echoed back verbatim so a caller can assert they are identical to the risk
+  // plan's levels (the single source of truth). If these ever differ from what
+  // the order will use, every number below describes a trade that will not
+  // happen — the "shadow levels" bug.
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+
   entryFeePercent: number;
   exitFeePercent: number;
   spreadPercent: number;
   slippagePercent: number;
   totalCostPercent: number;
+  /** rewardPercent = |takeProfit1 - entryPrice| / entryPrice * 100.
+   *  Kept under the old name `expectedMovePercent` too (identical value) for
+   *  the §25 cost gate that reads it. */
+  rewardPercent: number;
+  /** Alias of rewardPercent — the §25 gate and existing telemetry read this. */
   expectedMovePercent: number;
+  /** riskPercent = |entryPrice - stopLoss| / entryPrice * 100. */
   riskPercent: number;
-  /** expectedMove / totalCost */
+  /** rewardPercent / totalCostPercent */
   edgeRatio: number;
-  /** (expectedMove - totalCost) / risk */
+  /** (rewardPercent - totalCostPercent) / riskPercent */
   netRewardRisk: number;
+  /** rewardPercent / riskPercent */
   grossRewardRisk: number;
   approved: boolean;
   reason: string;
@@ -45,6 +61,10 @@ export interface CostInput {
 
 export function evaluateCostEdge(input: CostInput): CostAnalysis {
   const params = input.params ?? DEFAULT_INTRADAY_PARAMS;
+  // Echoed verbatim on every return path so the caller can assert these are the
+  // SAME entry / SL / TP1 the risk plan and the order use (single source of
+  // truth). Nothing here derives its own levels.
+  const levels = { entryPrice: input.entryPrice, stopLoss: input.stopLoss, takeProfit1: input.takeProfit1 };
   const fees = input.tradeType === 'SPOT' ? BYBIT_FEES.spot : BYBIT_FEES.futures;
   const entryFeePercent = (input.entryIsLimit === false ? fees.taker : fees.maker) * 100;
   const exitFeePercent = fees.taker * 100; // SL/TP exits cross the book
@@ -80,11 +100,13 @@ export function evaluateCostEdge(input: CostInput): CostAnalysis {
 
   if (spreadPercent > params.maxSpreadPercent) {
     return {
+      ...levels,
       entryFeePercent,
       exitFeePercent,
       spreadPercent,
       slippagePercent,
       totalCostPercent,
+      rewardPercent: Number(expectedMovePercent.toFixed(4)),
       expectedMovePercent: Number(expectedMovePercent.toFixed(4)),
       riskPercent: Number(riskPercent.toFixed(4)),
       edgeRatio: Number(edgeRatio.toFixed(2)),
@@ -98,11 +120,13 @@ export function evaluateCostEdge(input: CostInput): CostAnalysis {
 
   if (spreadPercent > expectedMovePercent * params.maxSpreadShareOfMove) {
     return {
+      ...levels,
       entryFeePercent,
       exitFeePercent,
       spreadPercent,
       slippagePercent,
       totalCostPercent,
+      rewardPercent: Number(expectedMovePercent.toFixed(4)),
       expectedMovePercent: Number(expectedMovePercent.toFixed(4)),
       riskPercent: Number(riskPercent.toFixed(4)),
       edgeRatio: Number(edgeRatio.toFixed(2)),
@@ -125,11 +149,13 @@ export function evaluateCostEdge(input: CostInput): CostAnalysis {
     : `R:R נטו ${netRewardRisk.toFixed(2)} מתחת ל-${params.minRewardRisk} אחרי עלויות — NO TRADE`;
 
   return {
+    ...levels,
     entryFeePercent,
     exitFeePercent,
     spreadPercent,
     slippagePercent,
     totalCostPercent,
+    rewardPercent: Number(expectedMovePercent.toFixed(4)),
     expectedMovePercent: Number(expectedMovePercent.toFixed(4)),
     riskPercent: Number(riskPercent.toFixed(4)),
     edgeRatio: Number(edgeRatio.toFixed(2)),
@@ -142,8 +168,23 @@ export function evaluateCostEdge(input: CostInput): CostAnalysis {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// RISK PLAN — structure + ATR stops, structure + R:R targets, min leverage
+// RISK PLAN — FIXED-percentage SL/TP + risk-first sizing + min leverage
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// The executed stop and target are a FIXED percentage of entry
+// (FIXED_SL_PERCENT / FIXED_TP_PERCENT), NOT a structural level. This is the
+// single source of truth for entry / stopLoss / takeProfit1; the cost analysis
+// and the order generator both read these exact numbers back.
+//
+// `stopReference` / `targetReference` on RiskPlanInput are TELEMETRY ONLY (see
+// their field docs). If the strategy is ever changed back to structural stops,
+// that is a deliberate strategy change — do it in one place, here, and the
+// direction-sanity check below is what will catch a stop on the wrong side.
+
+/** Executed stop distance, as a percentage of entry price. Fixed by strategy. */
+export const FIXED_SL_PERCENT = 1.8;
+/** Executed take-profit distance (TP1), as a percentage of entry price. */
+export const FIXED_TP_PERCENT = 3.0;
 
 export interface RiskPlanInput {
   symbol?: string;
@@ -151,10 +192,15 @@ export interface RiskPlanInput {
   tradeType: 'SPOT' | 'FUTURES';
   setupType: Exclude<SetupType, 'NONE'>;
   entryPrice: number;
-  /** Structural level the stop must sit behind (swing low/high, retest level) */
-  stopReference: number;
-  /** Structural target (recent high/low, VWAP for reversion) — may be null */
-  targetReference: number | null;
+  /** TELEMETRY ONLY — NOT used to compute the executed stop, and optional for
+   *  that reason. The executed SL is a fixed FIXED_SL_PERCENT of entry (see
+   *  buildRiskPlan). This structural swing low/high is carried through to the
+   *  decision log for diagnosis and is read by the setup/entry quality scorers
+   *  upstream; buildRiskPlan itself ignores it for level computation. */
+  stopReference?: number;
+  /** TELEMETRY ONLY — NOT used to compute the executed target. The executed TP1
+   *  is a fixed FIXED_TP_PERCENT of entry (see buildRiskPlan). */
+  targetReference?: number | null;
   atr5: number;
   atr15: number;
   equity: number;
@@ -184,11 +230,21 @@ export interface RiskPlanInput {
 export interface RiskPlan {
   approved: boolean;
   blockReason?: string;
+  /** The entry price these levels were computed from — echoed so the cost
+   *  analysis and the order can be asserted identical to it (single source of
+   *  truth for levels). */
+  entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
   stopDistance: number;
   stopDistancePercent: number;
+  /** |entryPrice - stopLoss| / entryPrice * 100 — the ONE risk % for this trade. */
+  riskPercent: number;
+  /** |takeProfit1 - entryPrice| / entryPrice * 100 — the ONE reward % for this trade. */
+  rewardPercent: number;
+  /** rewardPercent / riskPercent — gross R:R on the executed levels. */
+  grossRewardRisk: number;
   riskUsd: number;
   quantity: number;
   notionalUsd: number;
@@ -201,17 +257,53 @@ export interface RiskPlan {
   positionPercentOfEquity: number;
   riskPercentUsed: number;
   /** The sizing multiplier actually applied to this plan (1 = base sizing). */
-  sizingMultiplier: number;
+   sizingMultiplier: number;
+   /** Which exposure cap was the binding constraint on this plan's notional (§23).
+    *  Empty string or absent means no cap was hit — the full target was used. */
+   bindingConstraint?: 'per_asset' | 'total' | 'cash' | 'min_order';
+}
+
+/**
+ * The ONE place that decides whether entry / SL / TP1 sit on the correct sides
+ * for a direction (§3 step 3). Returns a Hebrew reason string on failure, or
+ * null when the levels are valid. Also rejects a zero / negative stop distance
+ * and a target equal to entry.
+ *
+ * Called by buildRiskPlan (and available to callers / tests). Under the fixed
+ * SL/TP model it should never fail from within buildRiskPlan; it is the guard
+ * that catches a wrong-side level if the model is ever changed or a caller
+ * hand-builds a plan.
+ */
+export function validateLevelDirection(
+  direction: Exclude<Direction, 'NONE'>,
+  entryPrice: number,
+  stopLoss: number,
+  takeProfit1: number
+): string | null {
+  if (!(entryPrice > 0)) return 'מחיר כניסה לא תקין';
+  if (!(Math.abs(entryPrice - stopLoss) > 0)) return 'מרחק סטופ אפס/שלילי';
+  if (direction === 'LONG') {
+    if (stopLoss >= entryPrice) return 'SL חייב להיות מתחת למחיר הכניסה ב-LONG';
+    if (takeProfit1 <= entryPrice) return 'TP1 חייב להיות מעל מחיר הכניסה ב-LONG';
+  } else {
+    if (stopLoss <= entryPrice) return 'SL חייב להיות מעל מחיר הכניסה ב-SHORT';
+    if (takeProfit1 >= entryPrice) return 'TP1 חייב להיות מתחת למחיר הכניסה ב-SHORT';
+  }
+  return null;
 }
 
 const rejected = (reason: string): RiskPlan => ({
   approved: false,
   blockReason: reason,
+  entryPrice: 0,
   stopLoss: 0,
   takeProfit1: 0,
   takeProfit2: 0,
   stopDistance: 0,
   stopDistancePercent: 0,
+  riskPercent: 0,
+  rewardPercent: 0,
+  grossRewardRisk: 0,
   riskUsd: 0,
   quantity: 0,
   notionalUsd: 0,
@@ -223,14 +315,13 @@ const rejected = (reason: string): RiskPlan => ({
   timeStopMs: 0,
   positionPercentOfEquity: 0,
   riskPercentUsed: 0,
-  sizingMultiplier: 1
+  sizingMultiplier: 1,
+  bindingConstraint: undefined
 });
 
 export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
-  const params = input.params ?? DEFAULT_INTRADAY_PARAMS;
-  const s = input.direction === 'LONG' ? 1 : -1;
-  const entry = input.entryPrice;
-  const atr5 = input.atr5 > 0 ? input.atr5 : entry * 0.001;
+   const params = input.params ?? DEFAULT_INTRADAY_PARAMS;
+   const entry = input.entryPrice;
 
   if (!(entry > 0) || !(input.equity > 0)) return rejected('נתוני מחיר/הון לא תקינים');
   if (input.openPositions >= params.maxOpenPositions) return rejected(`מקסימום ${params.maxOpenPositions} פוזיציות פתוחות`);
@@ -238,14 +329,13 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     return rejected(`מקסימום ${params.maxOpenFutures} פוזיציות Futures`);
   }
 
-  const riskPercent = clamp(input.riskPercent ?? params.riskPerTradePercent, 0.05, params.maxRiskPerTradePercent);
-
-  // Fixed SL/TP: 1.8% stop, 3% target — prevents the bot from exiting before
-  // meaningful profit or before a reasonable loss threshold.
-  const fixedSlPercent = 1.8;
-  const fixedTpPercent = 3.0;
-  const slDistance = entry * fixedSlPercent / 100;
-  const tpDistance = entry * fixedTpPercent / 100;
+  // Fixed SL/TP: FIXED_SL_PERCENT stop, FIXED_TP_PERCENT target — one definition
+  // (module scope). Prevents the bot from exiting before meaningful profit or
+  // before a reasonable loss threshold. The legacy riskPerTradePercent input is
+  // accepted for API stability but is NOT used for sizing (§21/N2/N4): sizing
+  // always targets positionTargetPct, and the stop is always FIXED_SL_PERCENT.
+  const slDistance = entry * FIXED_SL_PERCENT / 100;
+  const tpDistance = entry * FIXED_TP_PERCENT / 100;
 
   let stopLoss: number;
   let takeProfit1: number;
@@ -267,52 +357,80 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     takeProfit2 = Math.max(0.00000001, entry - tpDistance * 1.5);
   }
 
-  // Direction check. Under the current fixed-percentage SL model (1.8% of
-  // entry, always positive, applied with a direction-correct sign) this can only
-  // trip if entry or stopDistance is corrupted upstream — entry is validated
-  // > 0 at the top of this function — so it should never legitimately fire today.
-  // It is kept as a hard invariant rather than deleted: if a future change
-  // reintroduces structural (stopReference-based) stops, this is what catches a
-  // stop computed on the wrong side of entry. Which side of entry a stop sits on
-  // is a correctness question, not a risk-appetite one, so it never has a
-  // confidence-based exception — and the old fallback was worse than the
-  // rejection it replaced: a 0.1% stop on a signal the engine had just called
-  // strong is a position sized for a 1.8% stop wearing a stop 18x tighter.
-  if (input.direction === 'LONG' && stopLoss >= entry) {
-    return rejected('SL חייב להיות מתחת למחיר הכניסה ב-LONG');
-  }
-  if (input.direction === 'SHORT' && stopLoss <= entry) {
-    return rejected('SL חייב להיות מעל מחיר הכניסה ב-SHORT');
-  }
+  // Direction check (§3 step 3) — ONE authoritative validator for SL AND TP1
+  // side, zero stop distance, and target==entry. Under the fixed-percentage
+  // model this cannot legitimately fire (SL/TP are entry ± a positive fixed %,
+  // sign-correct); it is the invariant that catches a wrong-side level if the
+  // model is ever changed back to structural stops, or a caller hand-builds one.
+  const dirError = validateLevelDirection(input.direction, entry, stopLoss, takeProfit1);
+  if (dirError) return rejected(dirError);
 
   const rewardRisk1 = Math.abs(takeProfit1 - entry) / stopDistance;
   const rewardRisk2 = Math.abs(takeProfit2 - entry) / stopDistance;
 
-  // ── Size: risk first (§33) ────────────────────────────────────────────────
-  // Adaptive sizing (DecisionEngine path): the multiplier comes from recent
-  // closed-trade performance and only ever de-risks (clamped to [0,1]).
-  // Applied to riskUsd BEFORE the caps/min-order checks — exactly like the
-  // legacy engine applies it to the Kelly bet fraction — so every cap below
-  // stays respected on the already-shrunk size.
-  const sizingMultiplier = clamp(input.sizingMultiplier ?? 1, 0, 1);
-  const riskUsd = (input.equity * riskPercent) / 100 * sizingMultiplier;
-  let quantity = riskUsd / stopDistance;
-  let notionalUsd = quantity * entry;
-  let leverage = 1;
+  // ── Size: target notional first (§NEW) ─────────────────────────────────────
+  // Position sizing is now 10% of equity, independent of stop-loss distance.
+  // SL is used only to measure the resulting dollar risk.
+   const targetNotional = input.equity * params.positionTargetPct;
+   let notionalUsd = targetNotional;
+   let quantity = notionalUsd / entry;
+   let leverage = 1;
+   let bindingConstraint: 'per_asset' | 'total' | 'cash' | 'min_order' | undefined;
 
   if (input.tradeType === 'SPOT') {
+    // SPOT exposure: same 10% per-asset cap as FUTURES (unified model).
+    // `maxSpotNotionalPercent` is the cap expressed in percent-of-equity terms;
+    // the actual per-asset check (against existingExposureByAsset) mirrors the
+    // FUTURES branch below.
     const notionalCap = (input.equity * params.maxSpotNotionalPercent) / 100;
-    if (notionalUsd > notionalCap) {
-      notionalUsd = notionalCap;
-      quantity = notionalUsd / entry;
+    if (input.symbol && input.existingExposureByAsset) {
+      const maxPerAssetExposure = input.equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
+      const currentAssetExposure = input.existingExposureByAsset[input.symbol] ?? 0;
+      const perAssetCap = maxPerAssetExposure - currentAssetExposure;
+      if (perAssetCap <= 0) {
+        return rejected(
+          `אקספוזר על נכס זה כבר חורג ממגבלת נכס בודד (${maxPerAssetExposure.toFixed(0)}$ = ${PER_ASSET_EXPOSURE_CAP_PERCENT}% מהתיק)`
+        );
+      }
+      if (notionalUsd > perAssetCap) {
+        notionalUsd = perAssetCap;
+        quantity = notionalUsd / entry;
+        bindingConstraint = 'per_asset';
+      }
+     }
+     if (notionalUsd > notionalCap) {
+       notionalUsd = notionalCap;
+       quantity = notionalUsd / entry;
+       bindingConstraint = 'cash';
+     }
+
+    // Total SPOT exposure cap (§N7) — mirrors FUTURES's maxLeveragedExposurePercent
+    // check. The per-asset cap prevents concentration; this prevents the aggregate
+    // from exceeding the portfolio ceiling even if maxOpenPositions is raised.
+    const totalSpotExposure = input.existingExposureByAsset
+      ? Object.values(input.existingExposureByAsset).reduce((sum, v) => sum + v, 0)
+      : 0;
+    const totalCap = (input.equity * params.maxLeveragedExposurePercent) / 100;
+    if (totalSpotExposure + notionalUsd > totalCap) {
+      return rejected(
+        `סה״כ חשיפת SPOT ${Math.round(totalSpotExposure + notionalUsd)}$ מעל התקרה ${Math.round(totalCap)}$ (${params.maxLeveragedExposurePercent}% מהתיק)`
+      );
     }
   } else {
+    // FUTURES exposure: three independent caps, all mandatory.
+    // 1. Margin budget: maxMarginPerTradePercent (4%) × maxLeverage (5x) = 20% notional
+    //    cap. This is the "entry gate" cap — not per-asset, not total.
+    // 2. Per-asset concentration: PER_ASSET_EXPOSURE_CAP_PERCENT (10%) — same number
+    //    the Strategy spec applies to every engine. This is the per-asset cap
+    //    for FUTURES, distinct from SPOT's `maxSpotNotionalPercent`.
+    // 3. Total leveraged exposure: maxLeveragedExposurePercent (20%).
     const marginBudget = (input.equity * params.maxMarginPerTradePercent) / 100;
     const notionalCap = marginBudget * params.maxLeverage;
     if (notionalUsd > notionalCap) {
-      notionalUsd = notionalCap;
-      quantity = notionalUsd / entry;
-    }
+       notionalUsd = notionalCap;
+       quantity = notionalUsd / entry;
+       bindingConstraint = 'cash';
+     }
 
     // ── Per-asset exposure cap (§35b) ──────────────────────────────────────────
     // Unconditional. A concentration cap exists precisely for the trade that
@@ -333,6 +451,7 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
       if (notionalUsd > perAssetCap) {
         notionalUsd = perAssetCap;
         quantity = notionalUsd / entry;
+        bindingConstraint = 'per_asset';
       }
     }
 
@@ -348,38 +467,69 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     }
   }
 
-  let marginUsd = input.tradeType === 'FUTURES' ? notionalUsd / leverage : notionalUsd;
+  const marginUsd = input.tradeType === 'FUTURES' ? notionalUsd / leverage : notionalUsd;
   if (marginUsd < params.minOrderUsd) {
-    // Round up to the exchange minimum instead of exempting high-confidence
-    // signals from it — a sub-minimum order is not a smaller trade, it is an
-    // order the exchange rejects. Only reject if flooring would itself breach a
-    // cap already enforced above, which keeps the "don't drop a trade over a
-    // rounding-sized gap" complaint fixed without ever waiving a limit.
-    const scale = params.minOrderUsd / Math.max(marginUsd, 1e-9);
-    const bumpedNotional = notionalUsd * scale;
-    const bumpedMargin = marginUsd * scale;
-    const capUsd = input.tradeType === 'SPOT'
-      ? (input.equity * params.maxSpotNotionalPercent) / 100
-      : (input.equity * params.maxMarginPerTradePercent) / 100;
-    const bumpedFits = input.tradeType === 'SPOT' ? bumpedNotional <= capUsd : bumpedMargin <= capUsd;
-    if (!bumpedFits) {
-      return rejected(`גודל פוזיציה ${marginUsd.toFixed(2)}$ מתחת למינימום ${params.minOrderUsd}$ ואי אפשר להעלות בלי לחרוג ממגבלת התיק`);
-    }
-    notionalUsd = bumpedNotional;
-    quantity = notionalUsd / entry;
-    marginUsd = bumpedMargin;
+    return rejected(`גודל פוזיציה ${marginUsd.toFixed(2)}$ מתחת למינימום ${params.minOrderUsd}$ — MIN_ORDER_EXCEEDS_POSITION_TARGET`);
+  }
+  if (bindingConstraint === undefined && notionalUsd < targetNotional) {
+    bindingConstraint = 'min_order';
   }
 
   const maxHoldMs = params.maxHoldMinutes[input.setupType] * 60_000;
 
+  // ── Diagnostic assertions (§24) — BEFORE return, fail-loud if violated ─────
+  // Position target = positionTargetPct of equity. Below target is OK (trimmed
+  // by caps or cash); above target is a bug.
+  if (notionalUsd > 0 && input.equity > 0) {
+    const actualPct = (notionalUsd / input.equity) * 100;
+    if (actualPct > params.positionTargetPct * 100 + 0.01) {
+      throw new Error(
+        `ASSERTION_FAIL §24: positionPercentOfEquity ${actualPct.toFixed(2)}% ` +
+        `exceeds target ${(params.positionTargetPct * 100).toFixed(2)}% — ` +
+        `cap not enforced correctly`
+      );
+    }
+  }
+  // Per-asset cap must be >= position target: a cap below target silently
+  // shrinks every position below its intended size.
+  const perAssetCapPct = params.maxSpotNotionalPercent;
+  if (perAssetCapPct < params.positionTargetPct * 100) {
+    throw new Error(
+      `ASSERTION_FAIL §24: perAssetCapPct (${perAssetCapPct}%) ` +
+      `< positionTargetPct (${(params.positionTargetPct * 100).toFixed(1)}%)`
+    );
+  }
+
+  // Final levels are fixed now. Derive the ONE risk % / reward % / gross R:R
+  // from them — everything downstream reads these back, nothing recomputes.
+  const finalStopLoss = Number(stopLoss.toFixed(8));
+  const finalTakeProfit1 = Number(takeProfit1.toFixed(8));
+  const riskPct = Math.abs(entry - finalStopLoss) / entry * 100;
+  const rewardPct = Math.abs(finalTakeProfit1 - entry) / entry * 100;
+  const grossRR = rewardPct / riskPct;
+  const actualRiskUsd = notionalUsd * riskPct / 100;
+
+  // R:R consistency: recomputed RR must match what we return.
+  const displayedRR = Number((rewardPct / riskPct).toFixed(4));
+  if (Math.abs(grossRR - displayedRR) > 0.01) {
+    throw new Error(
+      `ASSERTION_FAIL §24: grossRR ${grossRR.toFixed(4)} ≠ displayedRR ${displayedRR} — ` +
+      `floating point drift in risk/reward derivation`
+    );
+  }
+
   return {
     approved: true,
-    stopLoss: Number(stopLoss.toFixed(8)),
-    takeProfit1: Number(takeProfit1.toFixed(8)),
+    entryPrice: entry,
+    stopLoss: finalStopLoss,
+    takeProfit1: finalTakeProfit1,
     takeProfit2: Number(takeProfit2.toFixed(8)),
     stopDistance: Number(stopDistance.toFixed(8)),
     stopDistancePercent: Number(((stopDistance / entry) * 100).toFixed(4)),
-    riskUsd: Number(Math.min(riskUsd, quantity * stopDistance).toFixed(2)),
+    riskPercent: Number(riskPct.toFixed(6)),
+    rewardPercent: Number(rewardPct.toFixed(6)),
+    grossRewardRisk: Number((rewardPct / riskPct).toFixed(4)),
+    riskUsd: Number(actualRiskUsd.toFixed(2)),
     quantity: Number(quantity.toFixed(8)),
     notionalUsd: Number(notionalUsd.toFixed(2)),
     marginUsd: Number(marginUsd.toFixed(2)),
@@ -388,8 +538,11 @@ export function buildRiskPlan(input: RiskPlanInput): RiskPlan {
     rewardRisk2: Number(rewardRisk2.toFixed(2)),
     maxHoldMs,
     timeStopMs: Math.round(maxHoldMs * params.timeStopFraction),
-    positionPercentOfEquity: Number(((marginUsd / input.equity) * 100).toFixed(2)),
-    riskPercentUsed: riskPercent,
-    sizingMultiplier
-  };
+    positionPercentOfEquity: Number(((notionalUsd / input.equity) * 100).toFixed(2)),
+     riskPercentUsed: Number(riskPct.toFixed(6)),
+     sizingMultiplier: typeof input.sizingMultiplier === 'number' && Number.isFinite(input.sizingMultiplier)
+       ? Math.max(0, Math.min(1, input.sizingMultiplier))
+       : 1,
+     bindingConstraint
+   };
 }

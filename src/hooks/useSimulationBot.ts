@@ -357,7 +357,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         const pnl = p.side === 'LONG'
           ? (livePrice - p.entryPrice) * p.quantity
           : (p.entryPrice - livePrice) * p.quantity;
-        return sum + Math.max(0, p.marginUsd + pnl);
+        return sum + p.marginUsd + pnl;
       }
     }, 0);
   }, [positions, priceFor]);
@@ -592,7 +592,7 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
         const pnl = p.side === 'LONG'
           ? (live - p.entryPrice) * p.quantity
           : (p.entryPrice - live) * p.quantity;
-        return sum + Math.max(0, p.marginUsd + pnl);
+        return sum + p.marginUsd + pnl;
       }, 0);
 
       // Minute-resolution portfolio history (720 points = 1 hour of ticks at 5s intervals)
@@ -629,13 +629,16 @@ export function useSimulationBot({ config, isRunning, cryptoData, recommendation
       }
       if (!due.length) return;
 
+      const eqNow = cashRef.current + positionsRef.current.reduce((sum, p) => {
+        const live = priceForRef.current(p.symbol) ?? p.currentPrice;
+        const pnl = p.side === 'LONG' ? (live - p.avgPrice) * p.quantity : (p.avgPrice - live) * p.quantity;
+        return sum + p.marginUsd + pnl;
+      }, 0);
+
       const result = fillDueOrders(due, cashRef.current, positionsRef.current, priceForRef.current, formatDynamicPrice, {
-        // configRef, not config: this effect owns a 1s interval keyed on
-        // isRunning alone, so reading config directly would either restart the
-        // timer on every edit or silently fill at the costs that were set when
-        // the bot started.
         feePercent: configRef.current.feePercent,
-        slippagePercent: configRef.current.slippagePercent
+        slippagePercent: configRef.current.slippagePercent,
+        equity: eqNow
       });
 
       const dueIds = new Set(due.map((o) => o.id));

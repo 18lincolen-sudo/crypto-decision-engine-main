@@ -294,12 +294,15 @@ export function detectMarketRegime(candles: Candle[], currentPrice: number): Mar
   }
 
   // 2. Supertrend(10, 3):
-  // Supertrend below price -> BULL
-  // Supertrend above price -> BEAR
-  const isSupertrendBullish = currentPrice >= supertrend.value;
+  // Uses the Supertrend algorithm's OWN direction field (BULL/BEAR), NOT a
+  // custom price-vs-band comparison. The band-flip direction IS the price-
+  // relative-to-band interpretation — it is computed FROM the close crossing
+  // the band at each step (see calculateSupertrend). Using currentPrice >= value
+  // here would be a second independent definition (§18) that can disagree with
+  // intradayRegime.ts which reads supertrend.direction directly.
   const direction: MarketDirectionType = regime === 'RANGING'
     ? 'NEUTRAL'
-    : (isSupertrendBullish ? 'BULL' : 'BEAR');
+    : supertrend.direction;
 
   // 3. Volatility Regime (ATR%):
   // ATR% < 2% -> LOW
@@ -321,9 +324,9 @@ export function detectMarketRegime(candles: Candle[], currentPrice: number): Mar
     adx,
     atr,
     atrPercent: Number(atrPercent.toFixed(2)),
-    supertrend: {
+     supertrend: {
       value: supertrend.value,
-      direction: isSupertrendBullish ? 'BULL' : 'BEAR'
+      direction: supertrend.direction
     }
   };
 }

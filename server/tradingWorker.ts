@@ -28,6 +28,7 @@ import { createPathSimEngine, PathSimSnapshot } from './pathSimEngine.ts';
 // + M5 timing). Simulation only — never a real-money bot until a separate
 // decision (see bybitSimEngine.ts).
 import { createBybitSimEngine, BybitSimSnapshot } from './bybitSimEngine.ts';
+import type { ArchivedRun } from './simEngineFactory.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, IntradayTradeType as TradeType } from '@cde/engine/analysis';
 import { buildPortfolioRiskStats } from '@cde/engine';
@@ -498,6 +499,33 @@ const pathSimStore = simStoreFor('path');
 const bybitSimStore = simStoreFor('bybit');
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
+// §9/#4 — finished-run archive. A plain "Reset All Bots" appends the run here
+// before wiping the engine; "Clear Cache + Server" deletes it. BacktestResults
+// merges these with the live trades so historical performance survives a reset.
+const archiveStore = createKVStore('bot-archive', join(DATA_DIR, 'bot-archive.json'));
+const MAX_ARCHIVED_RUNS_PER_BOT = 25;
+
+async function appendArchivedRun(botId: string, run: ArchivedRun): Promise<void> {
+  try {
+    const raw = await archiveStore.get(botId);
+    const runs: ArchivedRun[] = raw ? JSON.parse(raw) : [];
+    runs.unshift({ ...run, botId });
+    await archiveStore.set(botId, JSON.stringify(runs.slice(0, MAX_ARCHIVED_RUNS_PER_BOT)));
+    console.log(`[archive] persisted run ${run.runId} for ${botId} (${runs.length} kept)`);
+  } catch (err) {
+    console.warn(`[archive] failed to persist run for ${botId}:`, err);
+  }
+}
+
+async function readArchivedRuns(botId: string): Promise<ArchivedRun[]> {
+  try {
+    const raw = await archiveStore.get(botId);
+    return raw ? (JSON.parse(raw) as ArchivedRun[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_LEADER_TIMEOUT_MS = 8000;
 
@@ -542,20 +570,21 @@ function sanitizeSimConfig(cfg: Record<string, unknown>): Record<string, unknown
  *  changed. A run's P&L, drawdown and sizing are all measured against the
  *  capital it opened with, so retro-fitting a new number onto a run already in
  *  progress produces figures that describe no actual account — which is what
- *  editing that field used to do. Returns true when the run was reset. */
+ *  editing that field used to do. Returns the archived run when a reset
+ *  happened (so the caller can persist it), or null when nothing changed. */
 function applySimConfigPatch<T extends { config: SimBotConfig; snapshot: unknown | null; running: boolean }>(
   state: T,
   defaults: SimBotConfig,
   patch: Record<string, unknown>,
-  engine: { reset: (c: never) => void; getSnapshot: () => unknown; getInitialAmount: () => number }
-): boolean {
+  engine: { reset: (c: never) => ArchivedRun | null; getSnapshot: () => unknown; getInitialAmount: () => number }
+): ArchivedRun | null {
   const before = engine.getInitialAmount();
   state.config = { ...defaults, ...state.config, ...sanitizeSimConfig({ ...patch }) } as SimBotConfig;
   const after = Number(state.config.initialAmount);
-  if (!Number.isFinite(after) || after === before) return false;
-  engine.reset(state.config as never);
+  if (!Number.isFinite(after) || after === before) return null;
+  const archived = engine.reset(state.config as never);
   state.snapshot = engine.getSnapshot();
-  return true;
+  return archived;
 }
 
 /** The deploy-time layer, gathered once and handed to the registry. */
@@ -1333,7 +1362,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   if (req.method === 'POST' && url.pathname === '/api/sim/reset') {
     simState.running = false;
-    simEngine.reset(simState.config);
+    const archived = simEngine.reset(simState.config);
+    if (archived) await appendArchivedRun('intraday', archived);
     simState.snapshot = simEngine.getSnapshot();
     simState.leaderId = null;
     simState.leaderHeartbeat = 0;
@@ -1346,8 +1376,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      const wasReset = applySimConfigPatch(simState, DEFAULT_SIM_CONFIG, body.config as Record<string, unknown>, simEngine);
-      if (wasReset) {
+      const archived = applySimConfigPatch(simState, DEFAULT_SIM_CONFIG, body.config as Record<string, unknown>, simEngine);
+      if (archived) {
+        await appendArchivedRun('intraday', archived);
         simState.leaderId = null;
         simState.leaderHeartbeat = 0;
         simState.updatedAt = Date.now();
@@ -1376,7 +1407,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   if (req.method === 'POST' && url.pathname === '/api/pro-sim/reset') {
     proSimState.running = false;
-    proSimEngine.reset(proSimState.config);
+    const archived = proSimEngine.reset(proSimState.config);
+    if (archived) await appendArchivedRun('pro', archived);
     proSimState.snapshot = proSimEngine.getSnapshot();
     proSimState.updatedAt = Date.now();
     await persistProSim();
@@ -1386,7 +1418,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/pro-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      if (applySimConfigPatch(proSimState, DEFAULT_PRO_SIM_CONFIG, body.config as Record<string, unknown>, proSimEngine)) {
+      const archived = applySimConfigPatch(proSimState, DEFAULT_PRO_SIM_CONFIG, body.config as Record<string, unknown>, proSimEngine);
+      if (archived) {
+        await appendArchivedRun('pro', archived);
         proSimState.updatedAt = Date.now();
       }
     }
@@ -1413,7 +1447,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   if (req.method === 'POST' && url.pathname === '/api/path-sim/reset') {
     pathSimState.running = false;
-    pathSimEngine.reset(pathSimState.config);
+    const archived = pathSimEngine.reset(pathSimState.config);
+    if (archived) await appendArchivedRun('path', archived);
     pathSimState.snapshot = pathSimEngine.getSnapshot();
     pathSimState.updatedAt = Date.now();
     await persistPathSim();
@@ -1423,7 +1458,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/path-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      if (applySimConfigPatch(pathSimState, DEFAULT_PATH_SIM_CONFIG, body.config as Record<string, unknown>, pathSimEngine)) {
+      const archived = applySimConfigPatch(pathSimState, DEFAULT_PATH_SIM_CONFIG, body.config as Record<string, unknown>, pathSimEngine);
+      if (archived) {
+        await appendArchivedRun('path', archived);
         pathSimState.updatedAt = Date.now();
       }
     }
@@ -1450,7 +1487,8 @@ createServer(async (req: BotRequest, res: BotResponse) => {
 
   if (req.method === 'POST' && url.pathname === '/api/bybit-sim/reset') {
     bybitSimState.running = false;
-    bybitSimEngine.reset(bybitSimState.config);
+    const archived = bybitSimEngine.reset(bybitSimState.config);
+    if (archived) await appendArchivedRun('bybit', archived);
     bybitSimState.snapshot = bybitSimEngine.getSnapshot();
     bybitSimState.updatedAt = Date.now();
     await persistBybitSim();
@@ -1460,12 +1498,38 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   if (req.method === 'POST' && url.pathname === '/api/bybit-sim/config') {
     const body = await readJsonBody(req);
     if (body && typeof body.config === 'object' && body.config !== null) {
-      if (applySimConfigPatch(bybitSimState, DEFAULT_BYBIT_SIM_CONFIG, body.config as Record<string, unknown>, bybitSimEngine)) {
+      const archived = applySimConfigPatch(bybitSimState, DEFAULT_BYBIT_SIM_CONFIG, body.config as Record<string, unknown>, bybitSimEngine);
+      if (archived) {
+        await appendArchivedRun('bybit', archived);
         bybitSimState.updatedAt = Date.now();
       }
     }
     await persistBybitSim();
     return json(res, 200, bybitSimState);
+  }
+
+  // ── §9/#4 Run archive — historical runs for BacktestResults ───────────
+  // Public (like /api/public/sim-defaults): the whole sim surface is tokenless
+  // by design. A plain "Reset All Bots" appends here; this endpoint reads it
+  // back; "Clear Cache + Server" clears it.
+  if (req.method === 'GET' && url.pathname === '/api/public/backtest-archive') {
+    const [intraday, pro, path, bybit] = await Promise.all([
+      readArchivedRuns('intraday'),
+      readArchivedRuns('pro'),
+      readArchivedRuns('path'),
+      readArchivedRuns('bybit')
+    ]);
+    return json(res, 200, { intraday, pro, path, bybit });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/public/backtest-archive/clear') {
+    await Promise.all([
+      archiveStore.del('intraday'),
+      archiveStore.del('pro'),
+      archiveStore.del('path'),
+      archiveStore.del('bybit')
+    ]);
+    return json(res, 200, { cleared: true });
   }
 
   return json(res, 404, { error: 'Not found' });

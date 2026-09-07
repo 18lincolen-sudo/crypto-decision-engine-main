@@ -25,7 +25,8 @@ import {
   MultiTimeframeSnapshot,
   SignalEvaluation
 } from './intradayBridge';
-import { DEFAULT_INTRADAY_PARAMS, IntradayParams, SetupType } from './intradayParams';
+import { DEFAULT_INTRADAY_PARAMS, IntradayParams, SetupType, POSITION_TARGET_PCT, PER_ASSET_EXPOSURE_CAP_PERCENT, MAX_TOTAL_EXPOSURE_PERCENT } from './intradayParams';
+import { validateExposureModel } from './simDefaults';
 import {
   evaluateCorrelationGate,
   toPositionDirection,
@@ -65,10 +66,9 @@ export const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
   meanReversionMinStopAtrMult: 1.6,
   meanReversionMinStopPercent: 0.25,
   meanReversionCloseConfirmStop: true,
-  // Operator request: the sim bots do not open dust positions. buildRiskPlan
-  // rounds a sub-minimum intraday order UP to this (or rejects it if the floor
-  // would breach a portfolio cap). MIN_SIM_ENTRY_USD enforces the same $100
-  // floor for the other three bots at order-generation time.
+  // Operator floor: no sim position opens below $100. Per the 10% target model,
+  // a budget below MIN_SIM_ENTRY_USD is SKIPPED — never bumped up.
+  // This override makes buildRiskPlan enforce the same floor.
   minOrderUsd: 100
 };
 
@@ -79,13 +79,9 @@ export const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
  * order-generation time. Larger than the ~$5 exchange-dust floor the fill core
  * keeps as a last-resort guard.
  *
- * The rule is "$100 minimum, always": a signal whose computed budget is below
- * this is ROUNDED UP to it whenever the bot's free cash can cover $100 — even
- * if that exceeds the 8%-per-asset / 20%-total exposure caps (an accepted
- * trade-off, and only reachable on a small account). It is skipped only when
- * there genuinely is not $100 of free cash behind it. (For intraday,
- * SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd makes buildRiskPlan do the round-up
- * first; this is the backstop.)
+ * MIN_ORDER IS A CONSTRAINT, NOT A SIZING INPUT. If the 10% target notional
+ * computes below this floor, the trade is SKIPPED with reason
+ * MIN_ORDER_EXCEEDS_POSITION_TARGET — it is never bumped above the target.
  */
 export const MIN_SIM_ENTRY_USD = 100;
 
@@ -136,8 +132,14 @@ export interface SimPosition {
    *  would incorrectly get held up to twice as long. */
   maxHoldMs?: number;
   timeStopMs?: number;
-  /** Needed at exit-check time to apply MEAN_REVERSION-specific stop handling — see meanReversionCloseConfirmStop in intradayParams.ts. */
-  setupType?: SetupType;
+   /** Needed at exit-check time to apply MEAN_REVERSION-specific stop handling — see meanReversionCloseConfirmStop in intradayParams.ts. */
+   setupType?: SetupType;
+   /** Gross R:R computed from the ACTUAL fill price, not the signal price (§10/§11).
+    *  The evaluation-time actualRR in Prev4hRange/RiskPlan plans is computed from
+    *  `entryRef = currentPrice` (the signal price) — but the order fills at a
+    *  potentially different price, and SL/TP are re-anchored at fill time. This
+    *  field stores the post-fill R:R derived from the re-anchored levels. */
+   fillRR?: number;
 }
 
 export interface SimTrade {
@@ -251,7 +253,7 @@ export function reanchorLevel(fillPrice: number, signalPrice: number, level: num
 
 /** Percentage of free cash committed to one SPOT entry when the caller supplies
  *  no positionPercent. */
-export const DEFAULT_POSITION_PERCENT = 15;
+export const DEFAULT_POSITION_PERCENT = POSITION_TARGET_PCT * 100; // 10 — unified with the 10% per-asset target (§1/§12)
 
 /** FUTURES commits a third of what SPOT does, because leverage multiplies
  *  whatever margin is posted. Kept as a ratio so a configured positionPercent
@@ -285,7 +287,6 @@ export interface EntryBudgetInput {
   tradeType: 'SPOT' | 'FUTURES';
   /** SimBotConfig.positionPercent — read as a CEILING here, not as the size. */
   positionPercent?: number;
-  riskLevel?: 'low' | 'medium' | 'high';
   /** Performance-adaptive multiplier from the decision (clamped to [0,1]). */
   sizingMultiplier?: number;
 }
@@ -293,36 +294,36 @@ export interface EntryBudgetInput {
 /**
  * The size an entry order is actually sent with.
  *
- * Kelly decides, the operator caps. `betSizeUsd` comes from the risk layer,
- * which sizes from the payoff ratio measured in R across recent closed trades
- * (half-Kelly ceiling — see kellyPayoffRatio in adaptiveRisk.ts); positionPercent
- * is then the most of free cash the operator will commit to any one trade, and
- * computeEntryBudget's absolute $ caps still apply on top.
+ * 10% of equity is the non-negotiable target (§1/§12). The Kelly bet size from
+ * the risk layer (riskPlan.notionalUsd, which is itself 10% of equity) and the
+ * performance multiplier are the ONLY dials that can bring the size down from
+ * that target — and they do so by clamping, never by amplifying.
  *
- * Falling back to computeEntryBudget when no risk plan reached the order keeps
- * evaluations built outside the DecisionEngine (tests, older persisted state)
- * working exactly as before.
+ * `positionPercent` and `riskLevel` are NOT sizing inputs here. positionPercent
+ * acts only as the operator ceiling inside computeEntryBudget (the $1000/$500
+ * absolute caps on top), and riskLevel is a confidence-gating only input — it
+ * never scales the position.
  */
 export function resolveEntryBudget(input: EntryBudgetInput): number {
-  // riskLevel is appetite, so it scales the OPERATOR'S ceiling rather than
-  // Kelly's number: Kelly is already the growth-optimal bet for the measured
-  // payoff ratio, and multiplying it by a preference is how a half-Kelly
-  // ceiling quietly becomes a full-Kelly one.
-  const ceiling = computeEntryBudget(input.cash, input.tradeType, input.positionPercent)
-    * riskLevelSizingMultiplier(input.riskLevel);
+  // 10% of free cash is the hard ceiling — nothing exceeds this (§1/§12).
+  const target = input.cash * POSITION_TARGET_PCT;
 
-  // The adaptive multiplier from recent performance only ever de-risks, and it
-  // belongs on the bet itself.
+  // Absolute dollar caps from the operator's positionPercent ceiling.
+  const ceiling = computeEntryBudget(input.cash, input.tradeType, input.positionPercent);
+
+  // Performance multiplier only de-risks (clamped to [0,1]).
   const perfMult = typeof input.sizingMultiplier === 'number' && Number.isFinite(input.sizingMultiplier)
     ? Math.max(0, Math.min(1, input.sizingMultiplier))
     : 1;
 
   const kelly = input.kellyBetSizeUsd;
-  const sized = typeof kelly === 'number' && Number.isFinite(kelly) && kelly > 0
+  const kellySized = typeof kelly === 'number' && Number.isFinite(kelly) && kelly > 0
     ? kelly * perfMult
     : ceiling;
 
-  return Math.min(sized, ceiling);
+  // Target is the strategic ceiling; ceiling is the operator's cap.
+  // Both are upper bounds — neither can exceed 10% of equity.
+  return Math.min(kellySized, Math.min(ceiling, target));
 }
 
 /** Multiplier applied to the entry budget for SimBotConfig.riskLevel.
@@ -628,19 +629,10 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       cash: workingCash,
       tradeType: ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT',
       positionPercent: ctx.positionPercent,
-      riskLevel: ctx.riskLevel,
       sizingMultiplier: riskMult
     });
-    // Operator floor: the sim bots never open a position below MIN_SIM_ENTRY_USD.
-    // Round a small budget UP to the floor when free cash covers it (for
-    // intraday the RiskPlan has usually already done this via
-    // SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd); skip only when the cash is not
-    // there.
-    const canBump = workingCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD;
-    const budget = rawBudget >= MIN_SIM_ENTRY_USD
-      ? rawBudget
-      : canBump ? MIN_SIM_ENTRY_USD : rawBudget;
-    if (budget < MIN_SIM_ENTRY_USD) continue;
+    // MIN_ORDER is a constraint, not a sizing input. Skip when target < floor.
+    if (rawBudget < MIN_SIM_ENTRY_USD) continue;
 
     const evDirection = toPositionDirection(ev.tradeSide as string);
     if (correlationCandles) {
@@ -665,7 +657,7 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     }
 
     totalPositionCount++;
-    workingCash -= budget;
+    workingCash -= rawBudget;
     if (ev.tradeType === 'FUTURES') futuresPositionCount++;
     if (correlationCandles) correlationBook.push({ symbol: toBase(ev.symbol), direction: evDirection });
 
@@ -685,8 +677,8 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       type: ev.tradeType as 'SPOT' | 'FUTURES',
       side: orderSide,
       signalPrice: entryPrice,
-      quantity: (budget * (ev.leverage || 1)) / entryPrice,
-      budgetUsd: budget,
+      quantity: (rawBudget * (ev.leverage || 1)) / entryPrice,
+      budgetUsd: rawBudget,
       leverage: ev.leverage || 1,
       stopLoss: ev.stopLoss,
       takeProfit1: ev.takeProfit1,
@@ -805,9 +797,13 @@ export interface FillResult {
 export interface SimCostOverrides {
   feePercent?: number;
   slippagePercent?: number;
+  /** Portfolio equity at the time of fill — used for the fill-time exposure recheck (§11/N5).
+   *  Optional: when absent the exposure recheck is skipped (backward-compatible). */
+  equity?: number;
 }
 
 export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimPosition[], priceFor: (symbol: string) => number | undefined, formatPrice: (n: number) => string, costs: SimCostOverrides = {}): FillResult {
+  const equity = costs.equity;
   // Explicit timeZone: this runs both in the browser (whatever local TZ) and
   // on the server (Render defaults to UTC) — without it, a trade's displayed
   // "last: HH:MM:SS" silently used the server's UTC clock instead of Israel
@@ -840,16 +836,34 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       : simulateSlippage(market, sideForSlippage, costs.slippagePercent);
     const delayMs = Date.now() - order.createdAt;
 
-    if (isEntryOrder) {
-      const budget = Math.min(order.budgetUsd ?? 100, workingCash);
-      // Operator floor, enforced again at fill time: if free cash dropped
-      // below MIN_SIM_ENTRY_USD between queueing and filling, drop the order
-      // rather than open it undersized.
-      if (budget < MIN_SIM_ENTRY_USD) continue;
+     if (isEntryOrder) {
+       const budget = Math.min(order.budgetUsd ?? 0, workingCash);
+       // Operator floor, enforced again at fill time: if free cash dropped
+       // below MIN_SIM_ENTRY_USD between queueing and filling, drop the order
+       // rather than open it undersized.
+       if (budget < MIN_SIM_ENTRY_USD) continue;
 
       const isFutures = order.type === 'FUTURES';
       const leverage = order.leverage || 1;
       const notional = budget * leverage;
+
+        // §11 / N5: recheck exposure at fill time. Between queue and fill,
+        // other positions in this batch may have consumed the per-asset or
+        // total exposure cap. The budget was pre-trimmed at generation time,
+        // but the fill-time equity picture can be different. Uses costs.equity
+        // passed through from the caller; absent → recheck skipped (backward-compatible).
+        if (equity !== undefined) {
+          const perAssetExposure = positions
+            .filter((p) => p.symbol === order.symbol)
+            .reduce((sum, p) => sum + p.notionalUsd, 0);
+          const totalExposure = isFutures
+            ? positions.filter((p) => p.type === 'FUTURES').reduce((sum, p) => sum + p.notionalUsd, 0)
+            : positions.filter((p) => p.type === 'SPOT').reduce((sum, p) => sum + p.notionalUsd, 0);
+          const perAssetCap = equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
+          const totalCap = equity * (MAX_TOTAL_EXPOSURE_PERCENT / 100);
+          if (perAssetExposure + notional > perAssetCap) continue;
+          if (totalExposure + notional > totalCap) continue;
+        }
       // Limit-entry fills are Maker-type (the order only fills at or better
       // than its own limit price — see selectFillableOrders): charging Taker
       // here inflated entry costs 2.75-5x and contradicted evaluateCostEdge,
@@ -898,6 +912,15 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
       // stopLoss actually stored on the position, not order.stopLoss, which was
       // computed against the signal price rather than the fill price.
       newPos.initialRiskUsd = Math.abs(fillPrice - newPos.stopLoss) * quantity;
+
+      // §10/§11: post-fill R:R computed from the re-anchored levels + actual fill price.
+      // The evaluation-time actualRR (in prev4hRange/trendBreakout plans) used
+      // entryRef = signal price; here we recompute using fillPrice.
+      if (newPos.takeProfit1 && newPos.takeProfit1 !== fillPrice) {
+        const riskAtFill = Math.abs(fillPrice - newPos.stopLoss);
+        const rewardAtFill = Math.abs(newPos.takeProfit1 - fillPrice);
+        newPos.fillRR = riskAtFill > 0 ? Number((rewardAtFill / riskAtFill).toFixed(4)) : 0;
+      }
 
       workingPositions.push(newPos);
       newTrades.push({
@@ -1024,3 +1047,9 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
 
   return { cash: workingCash, positions: workingPositions, newTrades, feesAdded, slipAdded, newCooldowns, events };
 }
+
+// Re-exported for the server factory (simEngineFactory.ts) that imports from
+// @cde/engine/execution. This avoids a circular import: simEngineFactory.ts also
+// imports execute-only helpers from simExecution.ts, so simDefaults.ts (which
+// defines validateExposureModel) is not directly reachable through the barrel.
+export { validateExposureModel } from './simDefaults';

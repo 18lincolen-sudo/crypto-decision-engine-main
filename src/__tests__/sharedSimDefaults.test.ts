@@ -54,7 +54,7 @@ describe('shared sim defaults', () => {
   it('caps the sims at the live bot’s position limit, not above it', () => {
     // At 7 the simulations carried 40% more concurrent risk than the bot they
     // exist to predict.
-    expect(SIM_BASE_DEFAULTS.maxPositions).toBe(5);
+    expect(SIM_BASE_DEFAULTS.maxPositions).toBe(2);
   });
 
   it('returns a fresh object each call — a shared default must not be mutable state', () => {

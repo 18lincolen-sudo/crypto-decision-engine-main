@@ -20,6 +20,7 @@ import {
   calculateSupertrend
 } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
+import { POSITION_TARGET_PCT } from './intradayParams';
 
 // ── Parameters (spec §23 — every knob configurable, no auto-optimisation) ────
 
@@ -39,8 +40,14 @@ export interface TrendBreakoutParams {
   slAtrMultiplier: number;
   /** TP distance = R * this (R = |entry - SL|). */
   tpRMultiplier: number;
-  /** Risk budget for the FULL position, as a fraction of equity. */
+  /** Risk budget for the FULL position, as a fraction of equity.
+   *  Deprecated: position sizing now uses positionTargetPct (10% of equity).
+   *  Kept for API stability — do not use for sizing. */
   riskPerTrade: number;
+  /** Target notional as a fraction of equity (e.g. 0.10 = 10%).
+   *  Single source of truth for position sizing. Stop-loss distance does NOT
+   *  affect notional — it only determines the resulting dollar risk. */
+  positionTargetPct: number;
   /** Move stop to break-even once the trade is this many R in profit. */
   breakEvenR: number;
   /** Begin ATR trailing once the trade is this many R in profit. */
@@ -82,7 +89,10 @@ export const DEFAULT_TREND_BREAKOUT_PARAMS: TrendBreakoutParams = {
   minConfidence: 70,
   slAtrMultiplier: 1.5,
   tpRMultiplier: 2.0,
+  /** Deprecated: position sizing now uses positionTargetPct (10% of equity).
+   *  Kept for API stability — do not use for sizing. */
   riskPerTrade: 0.005,
+  positionTargetPct: POSITION_TARGET_PCT,
   breakEvenR: 1.0,
   trailingStartR: 1.5,
   trailingAtrMultiplier: 1.0,

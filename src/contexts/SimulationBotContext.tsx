@@ -55,6 +55,10 @@ export interface SimulationBotContextValue {
   weeklyDrawdownPercent: number;
   candleCount: number;
   config: SimBotConfig;
+  /** Capital the current run opened with. Authoritative when synced with the
+   *  server; falls back to the local config's initialAmount for the offline
+   *  fallback engine. */
+  initialAmount: number;
   setConfig: (c: SimBotConfig) => void;
   status: SimStatus;
   isRunning: boolean;
@@ -222,7 +226,9 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
   // server is reachable and synced, even if it hasn't produced trades yet.
   const useServer = serverSnapshot !== null && syncStatus === 'synced';
 
-  const activeSource: SimBotSnapshot = useServer ? serverSnapshot : localSim;
+  const activeSource = useServer ? serverSnapshot : localSim;
+
+  const activeInitialAmount = (activeSource as { initialAmount?: number }).initialAmount ?? config.initialAmount;
 
   const value: SimulationBotContextValue = {
     cash: activeSource.cash ?? 10000,
@@ -247,6 +253,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     dailyDrawdownPercent: activeSource.dailyDrawdownPercent ?? 0,
     weeklyDrawdownPercent: activeSource.weeklyDrawdownPercent ?? 0,
     candleCount: activeSource.candleCount ?? 0,
+    initialAmount: activeInitialAmount,
     config,
     setConfig,
     status,

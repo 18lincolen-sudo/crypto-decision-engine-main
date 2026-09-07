@@ -73,7 +73,8 @@ export {
   selectFillableOrders,
   fillDueOrders,
   applyFundingAccrual,
-  FUNDING_INTERVAL_MS
+  FUNDING_INTERVAL_MS,
+  validateExposureModel
 } from './services/simExecution';
 export type { FundingRateReading, FundingAccrualResult } from './services/simExecution';
 
@@ -84,7 +85,9 @@ export type { FundingRateReading, FundingAccrualResult } from './services/simExe
 export {
   DAILY_DRAWDOWN_BLOCK_PERCENT,
   WEEKLY_DRAWDOWN_LOCK_PERCENT,
-  PER_ASSET_EXPOSURE_CAP_PERCENT
+  PER_ASSET_EXPOSURE_CAP_PERCENT,
+  POSITION_TARGET_PCT,
+  MAX_TOTAL_EXPOSURE_PERCENT
 } from './services/intradayParams';
 
 // ── Adaptive risk sizing (win/loss streaks, drawdown, Kelly-style sizing) ────
@@ -142,8 +145,7 @@ export type {
 // ── TrendBreakout ("Bybit" sim bot) order generation ─────────────────────────
 export {
   generateTrendBreakoutOrders,
-  effectiveStop as trendBreakoutEffectiveStop,
-  MAX_TOTAL_EXPOSURE_PERCENT
+  effectiveStop as trendBreakoutEffectiveStop
 } from './services/trendBreakoutExecution';
 export type {
   TrendBreakoutOrderGenContext,

@@ -97,7 +97,7 @@ const pathStrategy: SimEngineStrategy = {
       exitCooldown: input.exitCooldown,
       priceFor: input.priceFor,
       candlesBySymbol,
-      maxPositions: input.maxPositions,
+       maxPositions: input.maxPositions ?? 2, // 2 × 10% = 20% = totalExposureCap
       maxFuturesPositions: input.maxFuturesPositions,
       params
     });

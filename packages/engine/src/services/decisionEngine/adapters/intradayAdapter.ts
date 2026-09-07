@@ -79,9 +79,10 @@ function mapRiskPlan(risk: IntradayDecision['risk']): RiskPlan | null {
     riskRewardRatio: risk.rewardRisk1,
     kellyFraction: 0,
     maxRiskAmountUsd: risk.riskUsd,
-    stopDistanceUsd: risk.stopDistance,
-    blockReason: risk.blockReason
-  };
+     stopDistanceUsd: risk.stopDistance,
+     blockReason: risk.blockReason,
+     sizingMultiplier: risk.sizingMultiplier,
+   };
 }
 
 // ── Pipeline Stages ───────────────────────────────────────────────────────────

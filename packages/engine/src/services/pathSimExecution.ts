@@ -14,7 +14,7 @@
 
 import { Candle } from './tradeEngine';
 import type { SignalEvaluation } from './intradayBridge';
-import { isInEntryCooldown, computeEntryBudget, riskLevelSizingMultiplier, MIN_SIM_ENTRY_USD } from './simExecution';
+import { isInEntryCooldown, computeEntryBudget, MIN_SIM_ENTRY_USD } from './simExecution';
 import type { SimPosition, PendingOrder } from './simExecution';
 import {
   isInStreakCooldown,
@@ -29,7 +29,7 @@ import {
   DEFAULT_CORRELATION_THRESHOLD,
   DEFAULT_MAX_CORRELATED
 } from './correlation';
-import { DAILY_DRAWDOWN_BLOCK_PERCENT, WEEKLY_DRAWDOWN_LOCK_PERCENT, PER_ASSET_EXPOSURE_CAP_PERCENT } from './intradayParams';
+import { DAILY_DRAWDOWN_BLOCK_PERCENT, WEEKLY_DRAWDOWN_LOCK_PERCENT, PER_ASSET_EXPOSURE_CAP_PERCENT, POSITION_TARGET_PCT } from './intradayParams';
 import { PATH_MAX_HOLD_MS, PATH_TIME_STOP_MS } from './pathEngine';
 import { pathKellyFraction } from './pathEngine';
 import type { PathBucket } from './pathStudy';
@@ -87,19 +87,14 @@ export function pathEntryBudget(
   positionPercent: number | undefined,
   riskLevel: 'low' | 'medium' | 'high' | undefined
 ): number {
-  const ceiling = computeEntryBudget(cash, 'SPOT', positionPercent) * riskLevelSizingMultiplier(riskLevel);
   if (!bucket) return 0;
-  const fraction = pathKellyFraction(bucket);
-  if (!(fraction > 0)) return 0;
-  // Per-asset concentration cap, shared with Intraday's futures sizing and
-  // Pro's entry gate (PER_ASSET_EXPOSURE_CAP_PERCENT). A confident bucket's
-  // Kelly fraction can exceed it on its own — the ceiling above bounds the
-  // OPERATOR's per-trade setting, not concentration in one asset. No
-  // existing-exposure term is needed: the caller already refuses a symbol
-  // that is currently held, so this is always a fresh position's entire
-  // exposure to that asset.
+  // Position sizing: 10% of equity as target notional, independent of Kelly.
+  // The operator's positionPercent and riskLevel are no longer primary sizing
+  // inputs — they remain as safety ceilings.
+  const targetNotional = equity * POSITION_TARGET_PCT;
+  const ceiling = computeEntryBudget(cash, 'SPOT', positionPercent);
   const perAssetCap = equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
-  return Math.min(equity * fraction, ceiling, perAssetCap);
+  return Math.min(targetNotional, ceiling, perAssetCap);
 }
 
 export function generatePathOrders(ctx: PathOrderGenContext): PendingOrder[] {

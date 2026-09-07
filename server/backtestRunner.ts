@@ -17,7 +17,9 @@
  */
 import {
   Candle,
-  calculateATR
+  calculateATR,
+  calculateTradingFee,
+  DEFAULT_SLIPPAGE_PERCENT
 } from '@cde/engine/execution';
 import {
   evaluateIntradayDecision,
@@ -328,13 +330,15 @@ export interface BacktestResult {
   exitReasons: Record<string, number>;
 }
 
-// Fee and slippage constants (matching simExecution.ts fillDueOrders)
-const FEE_PERCENT = 0.001;      // 0.1% taker fee (entry + exit = 0.2% total)
-const SLIPPAGE_PERCENT = 0.001; // 0.1% slippage on entry
+// Fee and slippage — aligned with simExecution.ts / tradeEngine.ts.
+// Fee: calculateTradingFee uses Bybit's real schedule (spot taker 0.1%, futures taker 0.055%).
+// Slippage: deterministic backtest uses the base band (DEFAULT_SLIPPAGE_PERCENT = 0.05%)
+// instead of the random 0.05%-0.15% simulation draw, so results are reproducible.
+const SLIPPAGE_PERCENT = DEFAULT_SLIPPAGE_PERCENT;
 
 // ── Portfolio backtest (cross-symbol) ──────────────────────────────────────
 // Runs ALL symbols together on a merged time axis so the portfolio-level
-// gates (maxPositions=7, maxFutures=2) actually bind — matching how the live
+// gates (maxPositions=2, maxFutures=2) actually bind — matching how the live
 // bot trades.
 
 const PORTFOLIO_MAX_POSITIONS = 7;
@@ -423,7 +427,7 @@ export async function runPortfolioBacktest(
         tally(intrabar ? intrabar.exitType : ((check as { reasonCode?: string }).reasonCode ?? check.exitType));
         const exitPrice = intrabar ? intrabar.price : candle.close;
         const exitNotional = pos.type === 'SPOT' ? pos.quantity * exitPrice : pos.sizeUsd + check.pnl;
-        const exitFee = exitNotional * FEE_PERCENT;
+        const exitFee = calculateTradingFee(exitNotional, pos.type, true);
         const pnlAfterFee = check.pnl - exitFee;
         state.totalFees += exitFee;
 
@@ -469,8 +473,8 @@ export async function runPortfolioBacktest(
     if (!pos) tallyGate('RISK_REJECTED');
     if (pos) {
       const entryNotional = pos.type === 'SPOT' ? pos.quantity * candle.close : pos.sizeUsd;
-      const entryFee = entryNotional * FEE_PERCENT;
-      const slippage = entryNotional * SLIPPAGE_PERCENT;
+      const entryFee = calculateTradingFee(entryNotional, pos.type, true);
+      const slippage = entryNotional * (SLIPPAGE_PERCENT / 100);
       const totalEntryCost = entryFee + slippage;
       state.cash -= totalEntryCost;
       state.totalFees += totalEntryCost;

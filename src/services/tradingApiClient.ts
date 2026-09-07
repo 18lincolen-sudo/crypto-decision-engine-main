@@ -2,7 +2,7 @@
 // SimBotConfig belongs to the engine package, not to this hook — importing it
 // from useSimulationBot.ts was the one place app code reached from a service
 // into the hooks layer. See @cde/engine/execution.
-import type { SimBotConfig } from '@cde/engine/execution';
+import type { SimBotConfig, SimTrade } from '@cde/engine/execution';
 import { resolveWorkerBaseUrl as resolveBaseUrl } from './workerConfig';
 // The browser never holds the Bybit secret and never signs orders.
 // Base URL comes from VITE_TRADING_API_URL (set at build time for Netlify),
@@ -65,6 +65,10 @@ export interface WorkerDecisionsResponse {
 
 export interface SimBotSnapshot {
   cash: number;
+  /** Capital the current run opened with. The denominator for every P&L
+   *  figure the UI shows — it cannot be recovered from cash or equity once
+   *  the run has traded. */
+  initialAmount: number;
   positions: unknown[];
   positionsValue: number;
   equity: number;
@@ -428,4 +432,52 @@ export async function getSimDefaults(configuredBaseUrl?: string): Promise<SimDef
   const res = await fetch(`${base}/api/public/sim-defaults`);
   if (!res.ok) throw new Error(`Failed to fetch sim defaults: ${res.status} ${res.statusText}`);
   return (await res.json()) as SimDefaultsResponse;
+}
+
+// ── §9/#4 Run archive ───────────────────────────────────────────────────────
+// Finished runs, captured server-side at each reset. "Reset All Bots" appends
+// here; "Clear Cache + Server" clears it. BacktestResults merges these with the
+// live trades so a reset does not destroy historical performance.
+
+export interface ArchivedRun {
+  runId: string;
+  botId?: string;
+  initialAmount: number;
+  finalEquity: number;
+  totalPnl: number;
+  totalPnlPercent: number;
+  finalCash: number;
+  trades: SimTrade[];
+  openPositions: Array<{
+    symbol: string; type: 'SPOT' | 'FUTURES'; side: string;
+    quantity: number; entryPrice: number; mark: number; pnl: number; reason: string;
+  }>;
+  tradeCount: number;
+  feeTotal: number;
+  slippageTotal: number;
+  fundingTotal: number;
+  startedAt?: number;
+  archivedAt: number;
+}
+
+export interface BacktestArchiveResponse {
+  intraday: ArchivedRun[];
+  pro: ArchivedRun[];
+  path: ArchivedRun[];
+  bybit: ArchivedRun[];
+}
+
+export async function getBacktestArchive(configuredBaseUrl?: string): Promise<BacktestArchiveResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/public/backtest-archive`);
+  if (!res.ok) throw new Error(`Failed to fetch archive: ${res.status} ${res.statusText}`);
+  return (await res.json()) as BacktestArchiveResponse;
+}
+
+export async function clearBacktestArchive(configuredBaseUrl?: string): Promise<void> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/public/backtest-archive/clear`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to clear archive: ${res.status} ${res.statusText}`);
 }

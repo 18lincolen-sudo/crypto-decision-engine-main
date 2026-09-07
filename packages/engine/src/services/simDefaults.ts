@@ -178,9 +178,9 @@ export const SIM_MAX_FUTURES_POSITIONS: Record<SimBotId, number> = {
 /**
  * Everything the bots hold in common.
  *
- * `maxPositions` is 5 — the cap the live bot runs. It used to be 7 in the
- * sims, which let every simulation carry 40% more concurrent risk than the
- * bot it exists to predict.
+ * `maxPositions` is 2 — the economic capacity of a 10% target against a 20%
+ * total exposure cap. Previously 5, which allowed 50% of equity to be tied up
+ * in concurrent positions — exceeding the stated 20% cap on paper.
  *
  * `positionPercent` is 10, matching the live bot. Pro does not actually read
  * it: alg.md §3/§6 size Pro's entries from risk-level allocation
@@ -190,7 +190,7 @@ export const SIM_MAX_FUTURES_POSITIONS: Record<SimBotId, number> = {
 export const SIM_BASE_DEFAULTS = {
   riskLevel: 'medium' as const,
   initialAmount: 10000,
-  maxPositions: 5,
+  maxPositions: 2, // 2 × 10% = 20% = totalExposureCap — validated invariant
   feePercent: 0.1,
   slippagePercent: 0.05,
   executionDelaySec: 3,
@@ -247,4 +247,30 @@ export function simBotDefaults(id: SimBotId, env: SimEnvOverrides = {}): SimBotC
     maxFuturesPositions: spec.maxFuturesPositions,
     minConfidenceOverride
   };
+}
+
+/**
+ * Validates that the exposure model is internally consistent:
+ *   maxPositions × positionTargetPct ≤ totalExposureCapPct
+ *
+ * If this invariant is violated, the exposure cap is the binding constraint and
+ * maxPositions is silently too permissive — exactly the "Strategy says 7,
+ * capital model says 2" contradiction this audit eliminates.
+ *
+ * Throws at startup so the misconfiguration is caught before any trade is placed.
+ */
+export function validateExposureModel(opts: {
+  maxPositions: number;
+  positionTargetPct: number;
+  totalExposureCapPct: number;
+}): void {
+  const maxExposure = opts.maxPositions * opts.positionTargetPct;
+  if (maxExposure > opts.totalExposureCapPct) {
+    throw new Error(
+      `EXPOSURE_MODEL_INVALID: maxPositions(${opts.maxPositions}) × ` +
+      `positionTargetPct(${opts.positionTargetPct}) = ` +
+      `${(maxExposure * 100).toFixed(1)}% > ` +
+      `totalExposureCapPct(${opts.totalExposureCapPct})`
+    );
+  }
 }

@@ -30,7 +30,8 @@ import {
 import {
   DAILY_DRAWDOWN_BLOCK_PERCENT,
   WEEKLY_DRAWDOWN_LOCK_PERCENT,
-  PER_ASSET_EXPOSURE_CAP_PERCENT
+  PER_ASSET_EXPOSURE_CAP_PERCENT,
+  MAX_TOTAL_EXPOSURE_PERCENT
 } from './intradayParams';
 import {
   DEFAULT_TREND_BREAKOUT_PARAMS,
@@ -40,10 +41,9 @@ import {
 
 export const uid = (p: string) => `tb-${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-/** Spec §15 — total leveraged + spot exposure ceiling, as a fraction of equity. */
-export const MAX_TOTAL_EXPOSURE_PERCENT = 20;
-
 const H4_MS = 4 * 60 * 60 * 1000;
+
+export const MIN_ORDER_EXCEEDS_POSITION_TARGET = 'MIN_ORDER_EXCEEDS_POSITION_TARGET';
 
 export interface TrendBreakoutCandleSet {
   h1: Candle[];
@@ -249,7 +249,7 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
   let logicalTradeCount = openLogicalKeys.size;
 
   /** Places one entry lot, respecting cash + both exposure caps. Returns the
-   *  notional actually committed (0 if nothing could be placed). */
+    *  notional actually committed (0 if nothing could be placed). */
   const placeLot = (opts: {
     base: string;
     side: 'LONG' | 'SHORT';
@@ -260,24 +260,15 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
     confidence: number;
     reason: string;
     scaleLabel: string;
-    /** SCALE_1 only: round a sub-$100 first entry UP to the floor (cash
-     *  permitting). Scale-in lots keep the skip — bloating a 30% add to $100
-     *  would break the 50/30/20 proportion. */
-    floorBump?: boolean;
   }): number => {
     const isLong = opts.side === 'LONG';
     const assetUsed = exposureByBase.get(opts.base) ?? 0;
     const assetHeadroom = Math.max(0, perAssetCap - assetUsed);
     const totalHeadroom = Math.max(0, totalCap - totalExposure);
-    let notional = Math.min(opts.desiredNotional, assetHeadroom, totalHeadroom, workingCash);
-    // Operator floor: no sim entry below MIN_SIM_ENTRY_USD.
-    if (notional < MIN_SIM_ENTRY_USD) {
-      if (opts.floorBump && workingCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD) {
-        notional = MIN_SIM_ENTRY_USD;
-      } else {
-        return 0;
-      }
-    }
+    const notional = Math.min(opts.desiredNotional, assetHeadroom, totalHeadroom, workingCash);
+
+    // MIN_ORDER is a constraint, not a sizing input. Skip when target < floor.
+    if (notional < MIN_SIM_ENTRY_USD) return 0;
 
     exposureByBase.set(opts.base, assetUsed + notional);
     totalExposure += notional;
@@ -292,9 +283,6 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
       quantity: notional / opts.price,
       budgetUsd: notional,
       leverage: 1,
-      // Fire at the delayed market price — TrendBreakout enters on the M5
-      // confirmation, "the next closed M5 / the simulation's execution price"
-      // (spec §8), not as a resting discount limit.
       fill: 'market',
       stopLoss: opts.stopLoss,
       takeProfit: opts.takeProfit,
@@ -318,7 +306,6 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
     const set = ctx.candlesBySymbol[lt.base];
     const stNow = currentH1Supertrend(set, p);
     const isLong = lt.side === 'LONG';
-    // Trend must still be valid (spec §11 SCALE_2/§13E invalidated setup).
     if (stNow && (isLong ? stNow !== 'BULL' : stNow !== 'BEAR')) continue;
 
     const live = ctx.priceFor(lt.base) ?? lt.lots[0].currentPrice ?? lt.lots[0].entryPrice;
@@ -333,16 +320,18 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
     const fraction = p.scaleFractions[lotCount] ?? 0;
     if (!(fraction > 0)) continue;
 
-    // Full position notional recomputed against current equity + the logical R.
-    const riskUsd = ctx.equity * p.riskPerTrade;
-    const rFraction = rUnit / first.entryPrice;
-    const fullNotional = rFraction > 0 ? riskUsd / rFraction : 0;
-    if (!(fullNotional > 0)) continue;
+     // Position sizing: target notional = 10% of equity, independent of SL.
+     // Scale-in lots are fractions of that target notional. The total logical
+     // trade never exceeds 10% equity: 5% + 3% + 2% = 10%.
+     const targetNotional = ctx.equity * p.positionTargetPct;
+     const desiredNotional = targetNotional * fraction;
+
+    if (!(desiredNotional > 0)) continue;
 
     placeLot({
       base: lt.base,
       side: lt.side,
-      desiredNotional: fullNotional * fraction,
+      desiredNotional,
       price: live,
       stopLoss: first.stopLoss,
       takeProfit: first.takeProfit ?? first.takeProfit1 ?? live,
@@ -369,22 +358,26 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
     if (logicalTradeCount >= ctx.maxConcurrentTrades) continue;
 
     const price = plan.entryRef || ev.price;
-    const riskUsd = ctx.equity * p.riskPerTrade;
-    const rFraction = plan.riskPerUnit / price;
-    const fullNotional = rFraction > 0 ? riskUsd / rFraction : 0;
-    if (!(fullNotional > 0)) continue;
+
+    // Position sizing: 10% of equity, independent of stop-loss distance.
+    // SL is used only to measure the resulting dollar risk.
+    const targetNotional = ctx.equity * p.positionTargetPct;
+    const desiredNotional = targetNotional * (p.scaleFractions[0] ?? 1);
+
+    if (desiredNotional < MIN_SIM_ENTRY_USD) {
+      continue; // MIN_ORDER_EXCEEDS_POSITION_TARGET — skip silently
+    }
 
     const committed = placeLot({
       base: ev.symbol,
       side,
-      desiredNotional: fullNotional * (p.scaleFractions[0] ?? 1),
+      desiredNotional,
       price,
       stopLoss: plan.stopLoss,
       takeProfit: plan.takeProfit,
       confidence: ev.confidence,
       reason: `כניסה ראשונית · SL ${plan.stopLoss.toFixed(6)} TP ${plan.takeProfit.toFixed(6)}`,
-      scaleLabel: `scale 1/${p.scaleFractions.length}`,
-      floorBump: true
+      scaleLabel: `scale 1/${p.scaleFractions.length}`
     });
     if (committed > 0) {
       logicalTradeCount++;

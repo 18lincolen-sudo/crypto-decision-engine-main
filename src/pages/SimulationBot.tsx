@@ -19,6 +19,7 @@ import { useBybitSimulationBotContext } from '../contexts/BybitSimulationBotCont
 // settings overrides it; the risk table stays exported as reference.
 import { PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD, PRO_ALLOCATION_DEFAULT_PERCENT, PRO_ALLOCATION_HIGH_PERCENT, PRO_DEFAULT_ENTRY_CONFIDENCE, PRO_STOP_LOSS_PERCENT, PRO_TAKE_PROFIT_PERCENT } from '@cde/engine/analysis';
 import { SIM_CACHE_KEYS, toAggregated, combineRisk, groupAction, type AggregatedBot } from '../lib/botAggregation';
+import { clearBacktestArchive } from '../services/tradingApiClient';
 
 const SimulationBotPage = () => {
   const intraday = useSimulationBotContext();
@@ -99,12 +100,12 @@ const SimulationBotPage = () => {
     return failures.length === 0;
   };
 
-  // Reset All is NOT Clear Cache. It resets simulation state through each
-  // engine's own resetAll and touches no localStorage key: clearing the
-  // remembered market data as a side effect of "start over" is a different,
-  // heavier operation, and the operator gets to choose it deliberately.
+  // Reset All is NOT Clear Cache. "Reset All Bots" resets each engine's run and
+  // ARCHIVES it server-side (§9/#4) so BacktestResults keeps the history. Clear
+  // Cache is the heavier operation: it also wipes that archive and the local
+  // localStorage keys.
   const clearAllCache = async () => {
-    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של ארבעת המנועים ותרענן את הדף.')) {
+    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות, ההיסטוריה, ו-ארכיון הריצות של ארבעת המנועים ותרענן את הדף.')) {
       return;
     }
     for (const key of SIM_CACHE_KEYS) {
@@ -118,7 +119,17 @@ const SimulationBotPage = () => {
     // clearing the persisted server-side snapshot that otherwise survives a
     // fresh deploy - that's the "remembers the past even after I uploaded a new
     // dist" symptom.
-    if (await runGroupAction(groupAction(allBots, 'resetAll'))) {
+    const ok = await runGroupAction(groupAction(allBots, 'resetAll'));
+    // Wipe the server-side run archive AFTER the resets — those resets each
+    // append the just-ended run to the archive (§9/#4), so clearing must come
+    // last. This is the ONE action that erases historical runs from
+    // BacktestResults; a plain "Reset All Bots" keeps them.
+    try {
+      await clearBacktestArchive(baseUrl);
+    } catch {
+      // ignore — the reload below still proceeds
+    }
+    if (ok) {
       window.location.reload();
     }
   };

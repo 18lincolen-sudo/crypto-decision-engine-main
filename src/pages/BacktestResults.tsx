@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Activity, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import Navigation from '../components/Navigation';
@@ -7,39 +7,67 @@ import { useSimulationBotContext } from '../contexts/SimulationBotContext';
 import { useProSimulationBotContext } from '../contexts/ProSimulationBotContext';
 import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContext';
 import { useBybitSimulationBotContext } from '../contexts/BybitSimulationBotContext';
-import type { SimTrade } from '@cde/engine/execution';
+import type { SimTrade, SimPosition } from '@cde/engine/execution';
+import { getBacktestArchive, type BacktestArchiveResponse } from '../services/tradingApiClient';
 
 // A live side-by-side comparison of the four simulation bots — closed-trade
 // stats and a merged trade log. The bots poll the worker on their own (every
 // 5s via their contexts), so there is nothing to "run" here; this page only
 // reads what they have already done. All four are simulation only.
+//
+// Two things this page gets right that the first cut got wrong (see
+// ANALYST_REPORT_2026-09-07_bot-comparison.md):
+//   · Every bot is measured against ITS OWN starting capital
+//     (`config.initialAmount`), not a hardcoded $10,000 — the bots each carry
+//     separate capital and the operator changes it per bot.
+//   · "שינוי הון (MtM)" (equity − base: includes unrealized + costs) and
+//     "רווח ממומש" (closed trades only) are shown as two clearly labelled
+//     measures, with an independent reconciliation check between them.
+//   · A server-only bot with no worker data is shown as "אין נתוני שרת", not
+//     folded in as a fake flat $10,000 / 0% row.
 
 type BotKey = 'intraday' | 'pro' | 'path' | 'bybit';
 
 interface TradeRow extends SimTrade {
   bot: string;
   botKey: BotKey;
+  /** Set for rows coming from an archived (pre-reset) run — §9/#4. */
+  runId?: string;
+  archived?: boolean;
 }
 
 interface BotStats {
   key: BotKey;
   label: string;
   running: boolean;
+  hasData: boolean;
+  base: number;
   equity: number;
+  /** equity − base. Mark-to-market: unrealized P&L on open positions plus
+   *  accumulated fees / slippage / funding. */
   pnlTotalUsd: number;
   pnlTotalPct: number;
+  /** Independent price-move P&L on the still-open positions. */
+  unrealizedPnl: number;
   dailyDrawdownPercent: number;
+  /** Server-authoritative (same figure the bot's own column shows). */
   closedTrades: number;
+  winRate: number;
+  /** Rows this bot contributes to the merged log below. */
+  logRows: number;
   wins: number;
   losses: number;
-  winRate: number;
+  breakeven: number;
   realizedPnl: number;
   avgPnl: number;
   bestTrade: number;
   worstTrade: number;
+  /** |MtM − (realized + unrealized)|. Should be within a few dollars (open-
+   *  position entry fees + funding). A large gap means a figure upstream is
+   *  wrong — exactly the symptom the −90% bug produced. */
+  reconGap: number;
+  reconOff: boolean;
 }
-
-const START_CAPITAL = 10_000;
 
 const fmt = (n: number, digits = 2) =>
   n.toFixed(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -47,29 +75,66 @@ const fmt = (n: number, digits = 2) =>
 const pnlColor = (pnl: number) =>
   pnl > 0 ? 'text-green-400' : pnl < 0 ? 'text-red-400' : 'text-muted-foreground';
 
-function statsFor(key: BotKey, label: string, running: boolean, equity: number, dd: number, trades: TradeRow[]): BotStats {
-  const closed = trades.filter((t) => typeof t.pnl === 'number');
+interface BotInput {
+  key: BotKey;
+  label: string;
+  running: boolean;
+  hasData: boolean;
+  base: number;
+  equity: number;
+  dailyDrawdownPercent: number;
+  positions: SimPosition[];
+  serverWinRate: number;
+  serverClosedTrades: number;
+  trades: TradeRow[]; // this bot's closed-trade rows (t.pnl is a number)
+}
+
+function unrealizedFor(positions: SimPosition[]): number {
+  return positions.reduce((sum, p) => {
+    const dir = p.side === 'LONG' || p.side === 'BUY' ? 1 : -1;
+    const px = p.currentPrice || p.entryPrice;
+    // Sim futures are all 1x, and `quantity` already carries leverage — no
+    // separate leverage multiply here.
+    return sum + (px - p.entryPrice) * p.quantity * dir;
+  }, 0);
+}
+
+function statsFor(input: BotInput): BotStats {
+  const closed = input.trades;
   const wins = closed.filter((t) => (t.pnl ?? 0) > 0);
-  const losses = closed.filter((t) => (t.pnl ?? 0) <= 0);
+  const losses = closed.filter((t) => (t.pnl ?? 0) < 0);
+  const breakeven = closed.filter((t) => (t.pnl ?? 0) === 0);
   const realizedPnl = closed.reduce((s, t) => s + (t.pnl ?? 0), 0);
   const pnls = closed.map((t) => t.pnl ?? 0);
-  const pnlTotalUsd = equity - START_CAPITAL;
+  const unrealizedPnl = unrealizedFor(input.positions);
+
+  const pnlTotalUsd = input.equity - input.base;
+  const reconGap = pnlTotalUsd - realizedPnl - unrealizedPnl;
+
   return {
-    key,
-    label,
-    running,
-    equity,
+    key: input.key,
+    label: input.label,
+    running: input.running,
+    hasData: input.hasData,
+    base: input.base,
+    equity: input.equity,
     pnlTotalUsd,
-    pnlTotalPct: (pnlTotalUsd / START_CAPITAL) * 100,
-    dailyDrawdownPercent: dd,
-    closedTrades: closed.length,
+    pnlTotalPct: input.base ? (pnlTotalUsd / input.base) * 100 : 0,
+    unrealizedPnl,
+    dailyDrawdownPercent: input.dailyDrawdownPercent,
+    // Server-authoritative — matches the bot's own column on /simulation-bot.
+    closedTrades: input.serverClosedTrades,
+    winRate: input.serverWinRate,
+    logRows: closed.length,
     wins: wins.length,
     losses: losses.length,
-    winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
+    breakeven: breakeven.length,
     realizedPnl,
     avgPnl: closed.length ? realizedPnl / closed.length : 0,
     bestTrade: pnls.length ? Math.max(...pnls) : 0,
-    worstTrade: pnls.length ? Math.min(...pnls) : 0
+    worstTrade: pnls.length ? Math.min(...pnls) : 0,
+    reconGap,
+    reconOff: Math.abs(reconGap) > Math.max(input.base * 0.01, 5)
   };
 }
 
@@ -82,6 +147,20 @@ export default function BacktestResults() {
 
   const [selectedBot, setSelectedBot] = useState<'all' | BotKey>('all');
   const [sortBy, setSortBy] = useState<'time' | 'pnl'>('time');
+  const [includeHistory, setIncludeHistory] = useState(true);
+
+  // §9/#4 — historical runs archived server-side at each reset. A plain
+  // "Reset All Bots" no longer destroys them; they are re-read here so past
+  // performance survives. Cleared only by "Clear Cache + Server".
+  const [archive, setArchive] = useState<BacktestArchiveResponse | null>(null);
+  useEffect(() => {
+    if (!baseUrl) { setArchive(null); return; }
+    let cancelled = false;
+    getBacktestArchive(baseUrl)
+      .then((a) => { if (!cancelled) setArchive(a); })
+      .catch(() => { if (!cancelled) setArchive(null); });
+    return () => { cancelled = true; };
+  }, [baseUrl]);
 
   const bots = useMemo(() => ([
     { key: 'intraday' as const, label: 'מנוע חדש', ctx: intraday },
@@ -90,18 +169,62 @@ export default function BacktestResults() {
     { key: 'bybit' as const, label: 'Bybit', ctx: bybit }
   ]), [intraday, pro, path, bybit]);
 
-  const allTrades: TradeRow[] = useMemo(() =>
+  const archivedRows: TradeRow[] = useMemo(() => {
+    if (!archive) return [];
+    const rows: TradeRow[] = [];
+    for (const b of bots) {
+      for (const run of archive[b.key] ?? []) {
+        for (const t of run.trades ?? []) {
+          if (typeof t.pnl !== 'number') continue;
+          rows.push({ ...t, bot: b.label, botKey: b.key, runId: run.runId, archived: true });
+        }
+      }
+    }
+    return rows;
+  }, [archive, bots]);
+  const archivedRunCount = useMemo(
+    () => bots.reduce((n, b) => n + ((archive?.[b.key]?.length) ?? 0), 0),
+    [archive, bots]
+  );
+
+  const liveTrades: TradeRow[] = useMemo(() =>
     bots.flatMap((b) =>
       (b.ctx.trades ?? [])
         .filter((t) => typeof t.pnl === 'number') // closed trades only
         .map((t) => ({ ...t, bot: b.label, botKey: b.key }))
     ), [bots]);
 
+  const allTrades: TradeRow[] = useMemo(
+    () => includeHistory ? [...liveTrades, ...archivedRows] : liveTrades,
+    [liveTrades, archivedRows, includeHistory]
+  );
+
   const perBotStats: BotStats[] = useMemo(() =>
-    bots.map((b) => statsFor(
-      b.key, b.label, b.ctx.isRunning, b.ctx.equity, b.ctx.dailyDrawdownPercent,
-      allTrades.filter((t) => t.botKey === b.key)
-    )), [bots, allTrades]);
+    bots.map((b) => {
+      // intraday / pro have no browser fallback flag (always real); path / bybit
+      // expose hasServerData and it is false when the worker is unreachable.
+      const hasData = 'hasServerData' in b.ctx ? b.ctx.hasServerData !== false : true;
+      const botRows = allTrades.filter((t) => t.botKey === b.key);
+      // With history folded in, the live-context winRate/closedTrades only cover
+      // the CURRENT run — recompute from the merged rows so the headline numbers
+      // match the log.
+      const mergedWins = botRows.filter((t) => (t.pnl ?? 0) > 0).length;
+      return statsFor({
+        key: b.key,
+        label: b.label,
+        running: b.ctx.isRunning,
+        hasData,
+        base: b.ctx.initialAmount,
+        equity: b.ctx.equity,
+        dailyDrawdownPercent: b.ctx.dailyDrawdownPercent,
+        positions: (b.ctx.positions ?? []) as SimPosition[],
+        serverWinRate: includeHistory
+          ? (botRows.length ? (mergedWins / botRows.length) * 100 : 0)
+          : (b.ctx.winRate ?? 0),
+        serverClosedTrades: includeHistory ? botRows.length : (b.ctx.closedTrades ?? 0),
+        trades: botRows
+      });
+    }), [bots, allTrades, includeHistory]);
 
   const filtered = selectedBot === 'all'
     ? allTrades
@@ -115,27 +238,50 @@ export default function BacktestResults() {
     ? null
     : perBotStats.find((s) => s.key === selectedBot) ?? null;
 
+  // Totals cover only the bots we actually have data for — a disconnected
+  // server-only bot is excluded, never folded in at a placeholder equity.
   const combined = useMemo(() => {
-    const equity = bots.reduce((s, b) => s + (b.ctx.equity || 0), 0);
-    const realized = allTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
-    const wins = allTrades.filter((t) => (t.pnl ?? 0) > 0).length;
+    const live = perBotStats.filter((s) => s.hasData);
+    const base = live.reduce((s, b) => s + b.base, 0);
+    const equity = live.reduce((s, b) => s + b.equity, 0);
+    const realized = live.reduce((s, b) => s + b.realizedPnl, 0);
+    const unrealized = live.reduce((s, b) => s + b.unrealizedPnl, 0);
+    const closed = live.reduce((s, b) => s + b.logRows, 0);
+    const wins = live.reduce((s, b) => s + b.wins, 0);
+    const pnlUsd = equity - base;
     return {
+      base,
       equity,
-      pnlUsd: equity - START_CAPITAL * bots.length,
+      pnlUsd,
+      pnlPct: base ? (pnlUsd / base) * 100 : 0,
       realized,
-      closed: allTrades.length,
-      winRate: allTrades.length ? (wins / allTrades.length) * 100 : 0
+      unrealized,
+      closed,
+      winRate: closed ? (wins / closed) * 100 : 0,
+      excluded: perBotStats.filter((s) => !s.hasData).map((s) => s.label)
     };
-  }, [bots, allTrades]);
+  }, [perBotStats]);
+
+  const reconWarnings = perBotStats.filter((s) => s.hasData && s.reconOff);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Navigation />
       <div className="max-w-7xl mx-auto px-4 py-8">
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-6 flex-wrap">
           <Activity className="text-orange-400 w-6 h-6" />
           <h1 className="text-2xl font-bold">השוואת ביצועי הבוטים</h1>
           <span className="text-muted-foreground text-sm">({allTrades.length} עסקאות סגורות)</span>
+          {archivedRunCount > 0 && (
+            <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer ml-auto">
+              <input
+                type="checkbox"
+                checked={includeHistory}
+                onChange={(e) => setIncludeHistory(e.target.checked)}
+              />
+              כלול היסטוריית ריצות ({archivedRunCount} ריצות מאורכבות)
+            </label>
+          )}
         </div>
 
         {!baseUrl && (
@@ -145,6 +291,28 @@ export default function BacktestResults() {
               <p className="text-yellow-200 text-sm">
                 כתובת Worker לא הוגדרה. חבר אותה בדף בוט הסימולציה כדי לראות עסקאות אמיתיות.
               </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Reconciliation guard — fires when equity−base and realized+unrealized
+            disagree by more than 1% of capital. That gap is what a wrong
+            baseline (the old hardcoded $10,000) looks like. */}
+        {reconWarnings.length > 0 && (
+          <Card className="bg-red-950/40 border-red-700 mb-6">
+            <CardContent className="flex items-start gap-3 p-4">
+              <AlertTriangle className="text-red-400 w-5 h-5 flex-shrink-0 mt-0.5" />
+              <div className="text-red-200 text-sm space-y-1">
+                <p className="font-semibold">אי-התאמה בין שינוי ההון לרווח הממומש+הלא-ממומש:</p>
+                {reconWarnings.map((s) => (
+                  <p key={s.key} className="font-mono text-xs">
+                    {s.label}: שינוי הון ${fmt(s.pnlTotalUsd)} · ממומש+לא-ממומש ${fmt(s.realizedPnl + s.unrealizedPnl)} · פער ${fmt(s.reconGap)}
+                  </p>
+                ))}
+                <p className="text-xs text-red-300/80">
+                  בדוק שההון ההתחלתי של הבוט (config.initialAmount) תואם ל-equity שהשרת מחזיר.
+                </p>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -160,16 +328,26 @@ export default function BacktestResults() {
                     {s.running ? 'פעיל' : 'מושהה'}
                   </span>
                 </div>
-                <p className={`text-xl font-bold font-mono ${pnlColor(s.pnlTotalUsd)}`}>
-                  {s.pnlTotalUsd >= 0 ? '+' : ''}${fmt(s.pnlTotalUsd)}
-                  <span className="text-xs ml-1">({s.pnlTotalPct >= 0 ? '+' : ''}{fmt(s.pnlTotalPct, 1)}%)</span>
-                </p>
-                <div className="text-xs text-muted-foreground mt-1 font-mono">
-                  שווי ${fmt(s.equity)} · {s.closedTrades} עסקאות · {s.closedTrades ? `${fmt(s.winRate, 1)}% הצלחה` : 'אין עסקאות'}
-                </div>
-                <div className="text-xs text-muted-foreground font-mono">
-                  Drawdown יומי {fmt(s.dailyDrawdownPercent, 1)}%
-                </div>
+                {!s.hasData ? (
+                  <p className="text-sm text-muted-foreground py-3">אין נתוני שרת — הבוט רץ בשרת בלבד וה-Worker לא נגיש</p>
+                ) : (
+                  <>
+                    <p className={`text-xl font-bold font-mono ${pnlColor(s.pnlTotalUsd)}`}>
+                      {s.pnlTotalUsd >= 0 ? '+' : ''}${fmt(s.pnlTotalUsd)}
+                      <span className="text-xs ml-1">({s.pnlTotalPct >= 0 ? '+' : ''}{fmt(s.pnlTotalPct, 1)}%)</span>
+                    </p>
+                    <div className="text-xs text-muted-foreground mt-1 font-mono">
+                      הון בסיס ${fmt(s.base)} · שווי ${fmt(s.equity)}
+                    </div>
+                    <div className="text-xs text-muted-foreground font-mono">
+                      ממומש <span className={pnlColor(s.realizedPnl)}>{s.realizedPnl >= 0 ? '+' : ''}${fmt(s.realizedPnl)}</span>
+                      {' · '}לא-ממומש <span className={pnlColor(s.unrealizedPnl)}>{s.unrealizedPnl >= 0 ? '+' : ''}${fmt(s.unrealizedPnl)}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground font-mono">
+                      {s.closedTrades} עסקאות · {s.closedTrades ? `${fmt(s.winRate, 1)}% הצלחה` : 'אין עסקאות'} · DD יומי {fmt(s.dailyDrawdownPercent, 1)}%
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           ))}
@@ -179,7 +357,7 @@ export default function BacktestResults() {
         <div className="flex flex-wrap gap-2 mb-4">
           {[
             { key: 'all' as const, label: `הכל (${allTrades.length})` },
-            ...perBotStats.map((s) => ({ key: s.key, label: `${s.label} (${s.closedTrades})` }))
+            ...perBotStats.map((s) => ({ key: s.key, label: `${s.label} (${s.logRows})` }))
           ].map(({ key, label }) => (
             <button
               key={key}
@@ -217,7 +395,7 @@ export default function BacktestResults() {
             {[
               { label: 'עסקאות סגורות', value: `${activeStats.closedTrades}`, color: 'text-foreground' },
               { label: 'אחוז הצלחה', value: `${fmt(activeStats.winRate, 1)}%`, color: activeStats.winRate >= 50 ? 'text-green-400' : 'text-red-400' },
-              { label: 'רווח/הפסד ממומש', value: `${activeStats.realizedPnl >= 0 ? '+' : ''}$${fmt(activeStats.realizedPnl)}`, color: pnlColor(activeStats.realizedPnl) },
+              { label: 'רווח ממומש', value: `${activeStats.realizedPnl >= 0 ? '+' : ''}$${fmt(activeStats.realizedPnl)}`, color: pnlColor(activeStats.realizedPnl) },
               { label: 'ממוצע לעסקה', value: `${activeStats.avgPnl >= 0 ? '+' : ''}$${fmt(activeStats.avgPnl)}`, color: pnlColor(activeStats.avgPnl) }
             ].map(({ label, value, color }) => (
               <Card key={label} className="bg-card/60 border-border">
@@ -302,19 +480,26 @@ export default function BacktestResults() {
         {/* Summary table */}
         {allTrades.length > 0 && (
           <div className="mt-6">
-            <h2 className="text-lg font-semibold mb-3">השוואה בין הבוטים</h2>
+            <h2 className="text-lg font-semibold mb-1">השוואה בין הבוטים</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              "שינוי הון (MtM)" = equity − הון בסיס (כולל לא-ממומש ועלויות). "רווח ממומש" = עסקאות סגורות בלבד.
+              כל בוט נמדד מול ההון ההתחלתי שלו.
+            </p>
             <Card className="bg-card/60 border-border overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-muted-foreground text-right">
                       <th className="px-4 py-3 font-medium">בוט</th>
-                      <th className="px-4 py-3 font-medium">רווח/הפסד כולל</th>
+                      <th className="px-4 py-3 font-medium">הון בסיס</th>
+                      <th className="px-4 py-3 font-medium">שינוי הון (MtM)</th>
+                      <th className="px-4 py-3 font-medium">לא ממומש</th>
+                      <th className="px-4 py-3 font-medium">רווח ממומש</th>
                       <th className="px-4 py-3 font-medium">עסקאות</th>
                       <th className="px-4 py-3 font-medium">הצלחות</th>
                       <th className="px-4 py-3 font-medium">הפסדים</th>
+                      <th className="px-4 py-3 font-medium">תיקו</th>
                       <th className="px-4 py-3 font-medium">Win Rate</th>
-                      <th className="px-4 py-3 font-medium">PnL ממומש</th>
                       <th className="px-4 py-3 font-medium">ממוצע/עסקה</th>
                       <th className="px-4 py-3 font-medium">הכי טוב</th>
                       <th className="px-4 py-3 font-medium">הכי רע</th>
@@ -323,44 +508,67 @@ export default function BacktestResults() {
                   <tbody>
                     {perBotStats.map((s) => (
                       <tr key={s.key} className="border-b border-border/50">
-                        <td className="px-4 py-3 font-medium">{s.label}</td>
-                        <td className={`px-4 py-3 font-mono font-medium ${pnlColor(s.pnlTotalUsd)}`}>
-                          {s.pnlTotalUsd >= 0 ? '+' : ''}${fmt(s.pnlTotalUsd)} ({s.pnlTotalPct >= 0 ? '+' : ''}{fmt(s.pnlTotalPct, 1)}%)
+                        <td className="px-4 py-3 font-medium">
+                          {s.label}
+                          {s.reconOff && <AlertTriangle className="inline w-3.5 h-3.5 text-red-400 mr-1" />}
                         </td>
-                        <td className="px-4 py-3">{s.closedTrades}</td>
-                        <td className="px-4 py-3 text-green-400">{s.wins}</td>
-                        <td className="px-4 py-3 text-red-400">{s.losses}</td>
-                        <td className={`px-4 py-3 font-medium ${s.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
-                          {s.closedTrades ? `${fmt(s.winRate, 1)}%` : '—'}
-                        </td>
-                        <td className={`px-4 py-3 font-mono ${pnlColor(s.realizedPnl)}`}>
-                          {s.closedTrades ? `${s.realizedPnl >= 0 ? '+' : ''}$${fmt(s.realizedPnl)}` : '—'}
-                        </td>
-                        <td className={`px-4 py-3 font-mono ${pnlColor(s.avgPnl)}`}>
-                          {s.closedTrades ? `${s.avgPnl >= 0 ? '+' : ''}$${fmt(s.avgPnl)}` : '—'}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-green-400">{s.closedTrades ? `+$${fmt(s.bestTrade)}` : '—'}</td>
-                        <td className="px-4 py-3 font-mono text-red-400">{s.closedTrades ? `$${fmt(s.worstTrade)}` : '—'}</td>
+                        {!s.hasData ? (
+                          <td className="px-4 py-3 text-muted-foreground" colSpan={12}>אין נתוני שרת</td>
+                        ) : (
+                          <>
+                            <td className="px-4 py-3 font-mono text-muted-foreground">${fmt(s.base)}</td>
+                            <td className={`px-4 py-3 font-mono font-medium ${pnlColor(s.pnlTotalUsd)}`}>
+                              {s.pnlTotalUsd >= 0 ? '+' : ''}${fmt(s.pnlTotalUsd)} ({s.pnlTotalPct >= 0 ? '+' : ''}{fmt(s.pnlTotalPct, 1)}%)
+                            </td>
+                            <td className={`px-4 py-3 font-mono ${pnlColor(s.unrealizedPnl)}`}>
+                              {s.unrealizedPnl >= 0 ? '+' : ''}${fmt(s.unrealizedPnl)}
+                            </td>
+                            <td className={`px-4 py-3 font-mono ${pnlColor(s.realizedPnl)}`}>
+                              {s.logRows ? `${s.realizedPnl >= 0 ? '+' : ''}$${fmt(s.realizedPnl)}` : '—'}
+                            </td>
+                            <td className="px-4 py-3">{s.closedTrades}</td>
+                            <td className="px-4 py-3 text-green-400">{s.wins}</td>
+                            <td className="px-4 py-3 text-red-400">{s.losses}</td>
+                            <td className="px-4 py-3 text-muted-foreground">{s.breakeven || '—'}</td>
+                            <td className={`px-4 py-3 font-medium ${s.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                              {s.closedTrades ? `${fmt(s.winRate, 1)}%` : '—'}
+                            </td>
+                            <td className={`px-4 py-3 font-mono ${pnlColor(s.avgPnl)}`}>
+                              {s.logRows ? `${s.avgPnl >= 0 ? '+' : ''}$${fmt(s.avgPnl)}` : '—'}
+                            </td>
+                            <td className="px-4 py-3 font-mono text-green-400">{s.logRows ? `+$${fmt(s.bestTrade)}` : '—'}</td>
+                            <td className="px-4 py-3 font-mono text-red-400">{s.logRows ? `$${fmt(s.worstTrade)}` : '—'}</td>
+                          </>
+                        )}
                       </tr>
                     ))}
                     <tr className="border-t-2 border-border font-semibold">
                       <td className="px-4 py-3">סה"כ</td>
+                      <td className="px-4 py-3 font-mono text-muted-foreground">${fmt(combined.base)}</td>
                       <td className={`px-4 py-3 font-mono ${pnlColor(combined.pnlUsd)}`}>
-                        {combined.pnlUsd >= 0 ? '+' : ''}${fmt(combined.pnlUsd)}
+                        {combined.pnlUsd >= 0 ? '+' : ''}${fmt(combined.pnlUsd)} ({combined.pnlPct >= 0 ? '+' : ''}{fmt(combined.pnlPct, 1)}%)
                       </td>
-                      <td className="px-4 py-3">{combined.closed}</td>
-                      <td className="px-4 py-3" colSpan={2} />
-                      <td className={`px-4 py-3 ${combined.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
-                        {combined.closed ? `${fmt(combined.winRate, 1)}%` : '—'}
+                      <td className={`px-4 py-3 font-mono ${pnlColor(combined.unrealized)}`}>
+                        {combined.unrealized >= 0 ? '+' : ''}${fmt(combined.unrealized)}
                       </td>
                       <td className={`px-4 py-3 font-mono ${pnlColor(combined.realized)}`}>
                         {combined.closed ? `${combined.realized >= 0 ? '+' : ''}$${fmt(combined.realized)}` : '—'}
+                      </td>
+                      <td className="px-4 py-3">{combined.closed}</td>
+                      <td className="px-4 py-3" colSpan={3} />
+                      <td className={`px-4 py-3 ${combined.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                        {combined.closed ? `${fmt(combined.winRate, 1)}%` : '—'}
                       </td>
                       <td className="px-4 py-3" colSpan={3} />
                     </tr>
                   </tbody>
                 </table>
               </div>
+              {combined.excluded.length > 0 && (
+                <p className="px-4 py-2 text-xs text-muted-foreground border-t border-border/50">
+                  לא נכלל בסה"כ (אין נתוני שרת): {combined.excluded.join(', ')}
+                </p>
+              )}
             </Card>
           </div>
         )}

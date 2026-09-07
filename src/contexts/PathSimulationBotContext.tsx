@@ -55,16 +55,20 @@ export interface PathSimulationBotContextValue {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   candleCount: number;
+  /** Capital the current run opened with. Authoritative from the server
+   *  snapshot; falls back to the local config's initialAmount before the
+   *  first sync. */
+  initialAmount: number;
   /**
-   * False whenever the numbers above are the EMPTY_SNAPSHOT placeholder rather
-   * than a real server reading — no Worker URL, or the worker unreachable.
-   *
-   * The portfolio risk meter has to know the difference. This bot has no browser
-   * fallback engine, so an unreachable worker yields exposure 0 and equity
-   * 10,000: a combined risk figure built on that silently under-reports real
-   * exposure, and a risk meter that under-reports is worse than one that says it
-   * does not know.
-   */
+    * False whenever the numbers above are the EMPTY_SNAPSHOT placeholder rather
+    * than a real server reading — no Worker URL, or the worker unreachable.
+    *
+    * The portfolio risk meter has to know the difference. This bot has no browser
+    * fallback engine, so an unreachable worker yields exposure 0 and equity
+    * 10,000: a combined risk figure built on that silently under-reports real
+    * exposure, and a risk meter that under-reports is worse than one that says it
+    * does not know.
+    */
   hasServerData: boolean;
   config: SimBotConfig;
   setConfig: (c: SimBotConfig) => void;
@@ -91,7 +95,7 @@ const EMPTY_SNAPSHOT = {
   pending: [], totalFees: 0, totalSlippageCost: 0, totalFunding: 0, winRate: 0, totalTrades: 0,
   closedTrades: 0, lastEvaluation: '', evaluations: [], minConfidence: SIM_MIN_CONFIDENCE.path,
   hasSavedSession: false, nextTickAt: 0, totalLeveragedExposureUsd: 0,
-  dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0, candleCount: 0
+  dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0, candleCount: 0, initialAmount: 10000
 };
 
 export function PathSimulationBotProvider({ children }: { children: ReactNode }) {
@@ -233,6 +237,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     dailyDrawdownPercent: source.dailyDrawdownPercent ?? 0,
     weeklyDrawdownPercent: source.weeklyDrawdownPercent ?? 0,
     candleCount: source.candleCount ?? 0,
+    initialAmount: source.initialAmount,
     hasServerData: serverSnapshot !== null,
     config,
     setConfig,

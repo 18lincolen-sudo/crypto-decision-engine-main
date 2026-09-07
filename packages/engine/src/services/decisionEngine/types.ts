@@ -156,8 +156,9 @@ export interface RiskPlan {
   riskRewardRatio: number;
   kellyFraction?: number;
   maxRiskAmountUsd?: number;
-  stopDistanceUsd?: number;
-  blockReason?: string;
+   stopDistanceUsd?: number;
+   blockReason?: string;
+   sizingMultiplier?: number;
 }
 
 /** Pipeline stage result */

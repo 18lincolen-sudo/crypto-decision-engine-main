@@ -444,11 +444,12 @@ export function proMinConfidence(riskLevel: ProRiskLevel, override?: number): nu
  */
 export const PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD = 80;
 export const PRO_ALLOCATION_DEFAULT_PERCENT = 0.10;
-export const PRO_ALLOCATION_HIGH_PERCENT = 0.15;
+export const PRO_ALLOCATION_HIGH_PERCENT = 0.10;
 
-/** §4 gate 7: confidence > 80 → 15%, else 10%. */
-export function proAllocationPercent(confidence: number): number {
-  return confidence > PRO_ALLOCATION_HIGH_CONFIDENCE_THRESHOLD ? PRO_ALLOCATION_HIGH_PERCENT : PRO_ALLOCATION_DEFAULT_PERCENT;
+/** §4 gate 7: confidence does NOT affect allocation anymore — every new
+ *  position targets 10% of equity, regardless of confidence score. */
+export function proAllocationPercent(_confidence: number): number {
+  return PRO_ALLOCATION_DEFAULT_PERCENT;
 }
 
 // ── §5 — fixed exit percentages ──────────────────────────────────────────────

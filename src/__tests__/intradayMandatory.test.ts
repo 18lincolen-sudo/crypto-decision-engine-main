@@ -178,6 +178,21 @@ describe('INTEGRATION — full orchestrator produces a SIGNAL', () => {
     expect(d.setupType).toBe('TREND_PULLBACK');
     expect(d.risk?.approved).toBe(true);
     expect(d.risk!.leverage).toBeLessThanOrEqual(5);
+
+    // Single source of truth: the cost analysis ran on the risk plan's exact
+    // entry / SL / TP1 — no shadow levels, no DATA_MISMATCH.
+    expect(d.gate).not.toBe('DATA_MISMATCH');
+    expect(Math.abs(d.cost!.entryPrice - d.risk!.entryPrice)).toBeLessThan(1e-8);
+    expect(Math.abs(d.cost!.stopLoss - d.risk!.stopLoss)).toBeLessThan(1e-8);
+    expect(Math.abs(d.cost!.takeProfit1 - d.risk!.takeProfit1)).toBeLessThan(1e-8);
+    // R:R displayed = R:R of the executed levels
+    expect(d.cost!.grossRewardRisk).toBeCloseTo(d.risk!.rewardPercent / d.risk!.riskPercent, 2);
+    expect(d.cost!.netRewardRisk).toBeCloseTo(
+      (d.cost!.rewardPercent - d.cost!.totalCostPercent) / d.cost!.riskPercent, 2
+    );
+    expect(d.metrics.grossRewardRisk).toBeGreaterThan(d.metrics.netRewardRisk);
+    // The one diagnostic line that lets a human check every number by hand.
+    expect(d.logs.some((l) => l.includes('SIGNAL_LEVELS ENTRY='))).toBe(true);
   });
 });
 
@@ -241,7 +256,8 @@ describe('E. Risk plan', () => {
     expect(plan.approved).toBe(true);
     expect(plan.leverage).toBeGreaterThanOrEqual(1);
     expect(plan.leverage).toBeLessThanOrEqual(5);
-    expect(plan.riskPercentUsed).toBeLessThanOrEqual(0.75);
+     // With fixed SL/TP model, riskPercentUsed = actual stop distance (FIXED_SL_PERCENT = 1.8%)
+     expect(plan.riskPercentUsed).toBeCloseTo(1.8, 1);
     expect(plan.takeProfit1).toBeGreaterThan(plan.stopLoss);
   });
 

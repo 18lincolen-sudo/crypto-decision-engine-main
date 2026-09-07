@@ -34,9 +34,15 @@
 ### סדר השערים (§55, כל שער עוצר את הראשון שנכשל)
 ```
 NO_DATA → CIRCUIT_BREAKER → EXPOSURE → NO_REGIME → VOLATILITY →
-LIQUIDITY → SPREAD → NO_SETUP → NO_ENTRY → COST → RISK
+LIQUIDITY → SPREAD → NO_SETUP → NO_ENTRY → RISK → COST → DATA_MISMATCH
 ```
 מיושם ב-`intradayEngine.ts:126` (`evaluateIntradayDecision`).
+
+**RISK לפני COST** (שונה, 2026-09-07): `buildRiskPlan` מייצר את ה-Entry/SL/TP1
+**הסופיים** (מודל אחוזים קבוע), ו-`evaluateCostEdge` + כל מספרי ה-R:R מחושבים
+על אותם ה-levels בדיוק — **מקור אמת יחיד**. `DATA_MISMATCH` = שער חדש שעוצר
+SIGNAL אם ניתוח העלות רץ על levels שונים מהפקודה (סטייה > `1e-8`), ומדפיס את שני
+הסטים ללוג. אין fallback שמסתיר את זה.
 
 ### חישוב הביטחון
 `confidence = round((setupScore + entryScore) / 2)` — ממוצע של שני ציונים
@@ -74,12 +80,29 @@ p.weeklyDrawdownPercent >= 15  → NO_SIGNAL (נעילה)
   כלפי מעלה לסף; `generateNewOrders` הוא backstop שמעגל שוב אם צריך (מזומן +
   equity ≥ $100). (לבוט האמיתי הסף נשאר $5 — `DEFAULT_INTRADAY_PARAMS.minOrderUsd`.)
 
-### יציאה (Stop/Target קבועים)
+### יציאה (Stop/Target קבועים) — זו האסטרטגיה, לא מבנה
 ```
-fixedSlPercent = 1.8%
-fixedTpPercent = 3.0%
+FIXED_SL_PERCENT = 1.8%   (מרחק הסטופ מ-entry)
+FIXED_TP_PERCENT = 3.0%   (מרחק TP1 מ-entry) → gross R:R = 3.0/1.8 ≈ 1.667
 ```
-(`intradayRisk.ts:245-246`) — ה-"3%" הזה הוא **טייק-פרופיט**, לא תקרת הפסד.
+קבועים יחידים ב-`intradayRisk.ts` (משותפים ל-`buildRiskPlan` ול-fallback).
+ה-"3%" הוא **טייק-פרופיט**, לא תקרת הפסד.
+
+`RiskPlanInput.stopReference` / `targetReference` הם **טלמטריה בלבד** — נכנסים
+ליומן ההחלטה ולסקורינג של ה-setup/entry, אבל `buildRiskPlan` **מתעלם מהם**
+לחישוב ה-levels. אם אי-פעם רוצים סטופ מבני — זה שינוי אסטרטגיה מכוון, במקום
+אחד (`buildRiskPlan`), ו-`validateLevelDirection` תופס סטופ/TP בצד הלא נכון.
+
+**R:R** מחושב תמיד מ-3 המספרים של `buildRiskPlan`:
+```
+riskPercent   = |entry - stopLoss|   / entry * 100
+rewardPercent = |takeProfit1 - entry| / entry * 100
+grossRR       = rewardPercent / riskPercent
+netRR         = (rewardPercent - totalCostPercent) / riskPercent
+```
+כל SIGNAL מדפיס שורת `SIGNAL_LEVELS ENTRY=.. SL=.. TP1=.. RISK%=.. REWARD%=..
+GROSS_RR=.. ENTRY_FEE%=.. EXIT_FEE%=.. SLIPPAGE%=.. TOTAL_COST%=.. NET_RR=..`
+לאימות ידני.
 
 ### עוקף high-confidence (`intradayEngine.ts`)
 אם `buildRiskPlan` נדחה **וגם** `confidence >= 72` → תוכנית fallback מינימלית
@@ -88,7 +111,7 @@ fixedTpPercent = 3.0%
 
 ### מה תוצאה בריאה אמורה להיראות
 - רוב הסימבולים: `NO_SETUP`/`NO_ENTRY` (זה תקין — הגנה נגד רעש).
-- SIGNAL רק כשכל 11 השערים עברו + `confidence >= 60`.
+- SIGNAL רק כשכל 12 השערים עברו + `confidence >= 60`.
 - Drawdown יומי/שבועי אף פעם לא אמור לחרוג מ-8%/15% — אם קורה, הבוט **חייב**
   להפסיק לפתוח (לא לסגור פוזיציות קיימות).
 - אין פוזיציה שחורגת מ-8% מההון בנכס בודד (futures) או 15% (spot).

@@ -39,8 +39,9 @@ describe('positionPercent sizes entries', () => {
   });
 
   it('ignores a nonsensical value rather than sizing to zero', () => {
-    expect(computeEntryBudget(1000, 'SPOT', 0)).toBeCloseTo(150, 6);
-    expect(computeEntryBudget(1000, 'SPOT', Number.NaN)).toBeCloseTo(150, 6);
+    // DEFAULT_POSITION_PERCENT = 10 (POSITION_TARGET_PCT * 100) — §1/§12
+    expect(computeEntryBudget(1000, 'SPOT', 0)).toBeCloseTo(100, 6);
+    expect(computeEntryBudget(1000, 'SPOT', Number.NaN)).toBeCloseTo(100, 6);
   });
 });
 

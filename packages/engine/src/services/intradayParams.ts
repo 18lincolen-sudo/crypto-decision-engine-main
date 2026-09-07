@@ -25,8 +25,13 @@ export type DecisionGate =
   | 'SPREAD'
   | 'NO_SETUP'
   | 'NO_ENTRY'
+  | 'RISK'
   | 'COST'
-  | 'RISK';
+  // The cost analysis and the risk plan disagree about entry / SL / TP1 beyond
+  // 1e-8 — a "shadow levels" bug. No SIGNAL is emitted; both level sets are
+  // logged. This must never fire in normal operation (the cost gate is fed the
+  // risk plan's own levels); it is a guard against a future regression.
+  | 'DATA_MISMATCH';
 
 export interface IntradayParams {
   // ── Layer A — 1H regime ────────────────────────────────────────────────────
@@ -88,8 +93,19 @@ export interface IntradayParams {
   minRewardRisk: number;
 
   // ── Risk (§30-§35) ────────────────────────────────────────────────────────
+  /** Deprecated: position sizing now uses positionTargetPct (10% of equity).
+   *  Kept for API stability during the transition — do not use for sizing. */
   riskPerTradePercent: number;
+  /** Deprecated: position sizing now uses positionTargetPct (10% of equity).
+   *  Kept for API stability during the transition — do not use for sizing. */
   maxRiskPerTradePercent: number;
+  /** Target notional as a fraction of equity (e.g. 0.10 = 10%).
+   *  Single source of truth for position sizing. Stop-loss distance does NOT
+   *  affect notional — it only determines the resulting dollar risk.
+   *  In engines that support scale-in (e.g. TrendBreakout), the scaleFractions
+   *  array defines FRACTIONS OF THIS TARGET, not fractions of remaining
+   *  allocation — so Scale 1 + Scale 2 + Scale 3 = positionTargetPct exactly. */
+  positionTargetPct: number;
   minStopAtrMult: number;
   maxStopAtrMult: number;
   minStopPercent: number;
@@ -196,18 +212,35 @@ export const DAILY_DRAWDOWN_BLOCK_PERCENT = 8;
 export const WEEKLY_DRAWDOWN_LOCK_PERCENT = 15;
 
 /**
+ * Target position size as a fraction of equity.
+ *
+ * This is the SINGLE SOURCE OF TRUTH for position sizing across all engines.
+ * Every new position targets this notional, regardless of stop-loss distance.
+ *
+ * Previous behavior: riskPerTrade (0.5% of equity) divided by SL distance →
+ * position size varied with stop width. That made wide stops produce oversized
+ * positions and tight stops produce dust. The new model fixes notional first,
+ * then measures the resulting stop-risk as a DERIVED figure.
+ */
+export const POSITION_TARGET_PCT = 0.10;
+
+/**
  * Max exposure to a single asset, in percent of equity.
  *
- * Originally lived only inside buildRiskPlan's FUTURES branch (intradayRisk.ts)
- * — Intraday's own SPOT trades and the Pro/Path bots (both spot-only) had no
- * equivalent, each instead bounding a single position by a per-trade budget
- * rule that has nothing to do with concentration (Pro: 10-15% of
- * initialAmount by confidence; Path: a Kelly fraction capped by
- * positionPercent, ~10%) — both above this figure. One number, shared by all
- * three engines' entry sizing, so "how much of one asset can this portfolio
- * hold" means the same thing everywhere the question is asked.
+ * MUST be >= POSITION_TARGET_PCT. A cap below the target silently forces
+ * every position below its intended size — exactly the contradiction this
+ * audit fixes. Startup validation enforces this invariant.
  */
-export const PER_ASSET_EXPOSURE_CAP_PERCENT = 8;
+export const PER_ASSET_EXPOSURE_CAP_PERCENT = 10;
+
+/**
+ * Total portfolio exposure ceiling, in percent of equity.
+ *
+ * With POSITION_TARGET_PCT = 10% and this at 20%, the portfolio holds at most
+ * two full positions. This is intentional: the system measures quality, not
+ * quantity.
+ */
+export const MAX_TOTAL_EXPOSURE_PERCENT = 20;
 
 export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   adxTrendMin: 25,
@@ -256,6 +289,7 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
 
   riskPerTradePercent: 0.5,
   maxRiskPerTradePercent: 0.75,
+  positionTargetPct: POSITION_TARGET_PCT,
   minStopAtrMult: 0.8,
   maxStopAtrMult: 2.5,
   minStopPercent: 0.12,
@@ -265,13 +299,13 @@ export const DEFAULT_INTRADAY_PARAMS: IntradayParams = {
   tp2RewardRisk: 2.5,
   maxLeverage: 5,
   maxMarginPerTradePercent: 4,
-  maxSpotNotionalPercent: 15,
+  maxSpotNotionalPercent: 10, // 10% per-asset cap for SPOT — unified with FUTURES per-asset cap
   // Matches the legacy engine's hard-coded 20% cap (tradeEngine.ts) and the
   // 20% the risk-meter UI actually displays — was 40 here, silently allowing
   // double the exposure the UI showed as the limit (observed live: 62%
   // exposure against a displayed "20% max", flagged as "limit exceeded").
   maxLeveragedExposurePercent: 20,
-  maxOpenPositions: 7,
+  maxOpenPositions: 2, // 2 × 10% = 20% = totalExposureCap — validated invariant
   maxOpenFutures: 2,
   minOrderUsd: 5,
   allowShortDuringHighVolatility: true,

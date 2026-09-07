@@ -12,14 +12,20 @@
  *
  * Gate order (§55) — the FIRST failing gate is reported as the block reason:
  *   NO_DATA → CIRCUIT_BREAKER → EXPOSURE → NO_REGIME → VOLATILITY →
- *   LIQUIDITY → SPREAD → NO_SETUP → NO_ENTRY → COST → RISK
+ *   LIQUIDITY → SPREAD → NO_SETUP → NO_ENTRY → RISK → COST → DATA_MISMATCH
+ *
+ * RISK before COST is deliberate: buildRiskPlan produces the FINAL, executed
+ * entry / SL / TP1 (fixed-percentage model), and the cost gate + every R:R
+ * number must be computed on those exact levels — never on the structural
+ * references, which are telemetry only. DATA_MISMATCH is the guard that no
+ * SIGNAL escapes with a cost analysis on different levels than the order.
  */
 
 import { Candle, PortfolioRiskStats, formatDynamicPrice } from './tradeEngine';
 import { detectRegime1H, Regime1H } from './intradayRegime';
 import { detectSetup15M, Setup15M } from './intradaySetup';
 import { confirmEntry5M, Entry5M } from './intradayEntry';
-import { evaluateCostEdge, CostAnalysis, buildRiskPlan, RiskPlan } from './intradayRisk';
+import { evaluateCostEdge, CostAnalysis, buildRiskPlan, RiskPlan, FIXED_SL_PERCENT, FIXED_TP_PERCENT } from './intradayRisk';
 import { DEFAULT_INTRADAY_PARAMS, DecisionGate, Direction, IntradayParams, SetupType,
   withParams
 } from './intradayParams';
@@ -72,12 +78,21 @@ export interface IntradayDecision {
   logs: string[];
   /** One-line summary for the evaluation list */
   summary: string;
-  /** Structured telemetry for the UI / backtest */
+  /** Structured telemetry for the UI / backtest.
+   *  `netRewardRisk` / `grossRewardRisk` / `stopLossDistancePercent` /
+   *  `rewardDistancePercent` are ALL computed on the final executed levels
+   *  (RiskPlan = single source of truth). `riskPercent` here is the SIZING
+   *  risk-per-trade (% of equity), a different quantity from the SL distance. */
   metrics: {
     setupScore: number;
     entryScore: number;
     edgeRatio: number;
     netRewardRisk: number;
+    grossRewardRisk: number;
+    /** |entry - SL| / entry * 100 on the executed levels (fixed model → 1.8). */
+    stopLossDistancePercent: number;
+    /** |TP1 - entry| / entry * 100 on the executed levels (fixed model → 3.0). */
+    rewardDistancePercent: number;
     riskPercent: number;
     atrPercentile: number;
     volatility: string;
@@ -112,7 +127,7 @@ function emptyDecision(symbol: string, gate: DecisionGate, outcome: DecisionOutc
     risk: null,
     logs,
     summary: logs[logs.length - 1] ?? 'NO_DATA',
-    metrics: { setupScore: 0, entryScore: 0, edgeRatio: 0, netRewardRisk: 0, riskPercent: 0, atrPercentile: 0, volatility: 'NONE' },
+    metrics: { setupScore: 0, entryScore: 0, edgeRatio: 0, netRewardRisk: 0, grossRewardRisk: 0, stopLossDistancePercent: 0, rewardDistancePercent: 0, riskPercent: 0, atrPercentile: 0, volatility: 'NONE' },
     funnel: { evaluated: true, regimePassed: false, setupCandidates: 0, entryCandidates: 0, costBlocked: false, riskBlocked: false, approved: false, executed: false }
   };
 }
@@ -221,20 +236,19 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
   }
   logs.push(`[${symbol}] 15M=${setup.setupType} dir=${setup.direction} SetupScore=${setup.setupScore} (strong=${setup.strong})`);
 
-  // ── LAYER C: 5M ENTRY ───────────────────────────────────────────────────────
-  let entry = confirmEntry5M(input.m5, setup, params);
+  // ── LAYER C: 5M ENTRY ──
+  // The 5M confirmation gate is authoritative. No confidence bypass: a score of
+  // 72 does not override an unconfirmed entry (§19/N10). If entry.confirmed is
+  // false, the signal is dead — regardless of confidence.
+  const entry = confirmEntry5M(input.m5, setup, params);
   const setupScore = setup.setupScore;
   const entryScore = entry.entryScore;
-  const confidence = Math.round((setupScore + entryScore) / 2);
-  if (!entry.confirmed && confidence < 72) {
+  if (!entry.confirmed) {
     logs.push(`[${symbol}] NO_ENTRY — EntryScore=${entry.entryScore} | ${entry.blockers[0] ?? ''}`);
     return finalize(symbol, 'NO_ENTRY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('NO_ENTRY', 'NO_SIGNAL', setup, entry), null);
   }
-  if (!entry.confirmed && confidence >= 72) {
-    logs.push(`[${symbol}] NO_ENTRY BYPASS — EntryScore=${entry.entryScore} | ${entry.blockers[0] ?? ''} (confidence ${confidence} >= 72)`);
-    entry = { ...entry, confirmed: true, blockers: [] };
-  }
-  logs.push(`[${symbol}] 5M=${entry.trigger} EntryScore=${entry.entryScore} price=${formatDynamicPrice(entry.entryPrice)}`);
+  const confidence = Math.round((setupScore + entryScore) / 2);
+  logs.push(`[${symbol}] 5M=${entry.trigger} EntryScore=${entry.entryScore} confidence=${confidence} price=${formatDynamicPrice(entry.entryPrice)}`);
 
   // ── TRADE TYPE ROUTING (§19/§34) ────────────────────────────────────────────
   let tradeType: TradeType;
@@ -307,35 +321,10 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     return finalize(symbol, 'VOLATILITY', 'NO_SIGNAL', regime, setup, entry, null, null, logs, params, now, mkFunnel('VOLATILITY', 'NO_SIGNAL', setup, entry), tradeType);
   }
 
-  // ── COST / EDGE (§25) ───────────────────────────────────────────────────────
-  const cost = evaluateCostEdge({
-    tradeType,
-    entryPrice: entry.entryPrice,
-    stopLoss: entry.stopReference,
-    takeProfit1: entry.targetReference ?? entry.entryPrice + (entry.entryPrice - entry.stopReference) * params.tp1RewardRisk,
-    spreadPercent,
-    atrPercentile: regime.atrPercentile,
-    entryIsLimit: true,
-    // Already computed by confirmEntry5M for the volume trigger — reused rather
-    // than recomputed.
-    relativeVolume: entry.indicators.relativeVolume,
-    params
-  });
-  // No confidence bypass on the cost gate. This one was not in the original
-  // list — it turned up while tracing the call site — but it is the same defect:
-  // evaluateCostEdge asks whether the expected move covers fees plus spread plus
-  // slippage, which is arithmetic about whether the trade can pay for itself. A
-  // score of 72 does not make a negative-expectancy trade positive, and letting
-  // it through was strictly worse than a normal loss: the trade was known to be
-  // unprofitable before it was opened. Every other capital-preservation gate in
-  // this repo lost its 72-exemption in the same pass.
-  if (!cost.approved) {
-    logs.push(`[${symbol}] COST — ${cost.reason}`);
-    return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, null, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry), tradeType);
-  }
-  logs.push(`[${symbol}] COST OK — ${cost.reason}`);
-
-  // ── RISK PLAN (§30-§35) ─────────────────────────────────────────────────────
+  // ── RISK PLAN (§30-§35) — FIRST, because it produces the FINAL executed
+  //    entry / SL / TP1. The cost gate and every R:R number below run on these
+  //    exact levels (single source of truth), never on the structural
+  //    references (telemetry only). ──────────────────────────────────────────
   // Adaptive sizing (DecisionEngine path only): the orchestrator injects
   // `_sizingMultiplier` into params from recent closed-trade performance.
   // The live scan() path passes no multiplier → 1 (base sizing, unchanged).
@@ -349,6 +338,7 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     tradeType,
     setupType: setup.setupType as Exclude<SetupType, 'NONE'>,
     entryPrice: entry.entryPrice,
+    // Telemetry only — buildRiskPlan uses the fixed-percentage model.
     stopReference: entry.stopReference,
     targetReference: entry.targetReference,
     atr5: entry.atr5,
@@ -364,23 +354,101 @@ export function evaluateIntradayDecision(input: IntradayDecisionInput): Intraday
     params
   });
 
-  // High-confidence bypass: if buildRiskPlan rejected but confidence >= 72,
-  // use a minimal fallback with fixed 1.8% SL / 3% TP.
-  // BUT: never bypass per-asset cap or circuit breaker limits. If the rejection
-  // reason is per-asset exposure, don't fallback.
-  const isPerAssetRejection = risk.blockReason && risk.blockReason.includes('אקספוזר על נכס זה');
-  const effectiveRisk = risk.approved ? risk : (confidence >= 72 && tradeType !== null && !isPerAssetRejection
-    ? buildFallbackIntradayRisk(entry.entryPrice, setup.direction as Exclude<Direction, 'NONE'>, tradeType, sizingMultiplier)
-    : null);
+  // RISK gate is authoritative — a rejection from buildRiskPlan is a rejection.
+  // No high-confidence bypass: buildRiskPlan enforces per-asset caps, total
+  // exposure caps, position count limits, and the MIN_ORDER floor
+  // unconditionally. Confidence ≥ 72 does not override any of these (§19/N10).
+  const effectiveRisk = risk.approved ? risk : null;
 
   if (!effectiveRisk) {
     logs.push(`[${symbol}] RISK — ${risk.blockReason ?? 'נפסל'}`);
-    return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, cost, risk, logs, params, now, mkFunnel('RISK', 'NO_SIGNAL', setup, entry), tradeType);
+    return finalize(symbol, 'RISK', 'NO_SIGNAL', regime, setup, entry, null, risk, logs, params, now, mkFunnel('RISK', 'NO_SIGNAL', setup, entry), tradeType);
   }
 
+  // ── COST / EDGE (§25) — on the EXACT levels the order will use ──────────────
+  // No confidence bypass: evaluateCostEdge is arithmetic about whether the move
+  // covers fees + spread + slippage. A score of 72 does not make a
+  // negative-expectancy trade positive.
+  const cost = evaluateCostEdge({
+    tradeType,
+    entryPrice: entry.entryPrice,
+    stopLoss: effectiveRisk.stopLoss,
+    takeProfit1: effectiveRisk.takeProfit1,
+    spreadPercent,
+    atrPercentile: regime.atrPercentile,
+    entryIsLimit: true,
+    // Already computed by confirmEntry5M for the volume trigger — reused.
+    relativeVolume: entry.indicators.relativeVolume,
+    params
+  });
+  if (!cost.approved) {
+    logs.push(`[${symbol}] COST — ${cost.reason}`);
+    return finalize(symbol, 'COST', 'NO_SIGNAL', regime, setup, entry, cost, effectiveRisk, logs, params, now, mkFunnel('COST', 'NO_SIGNAL', setup, entry), tradeType);
+  }
+  logs.push(`[${symbol}] COST OK — ${cost.reason}`);
+
+  // ── CONSISTENCY (§ single source of truth) ────────────────────────────────
+  // The cost analysis MUST have been computed on the risk plan's exact levels.
+  // If not, a "shadow levels" bug has been reintroduced upstream — do NOT emit
+  // a SIGNAL; report DATA_MISMATCH and log both level sets for diagnosis.
+  const LEVEL_TOL = 1e-8;
+  const levelMismatch =
+    Math.abs(cost.entryPrice - effectiveRisk.entryPrice) > LEVEL_TOL ||
+    Math.abs(cost.stopLoss - effectiveRisk.stopLoss) > LEVEL_TOL ||
+    Math.abs(cost.takeProfit1 - effectiveRisk.takeProfit1) > LEVEL_TOL;
+  if (levelMismatch) {
+    logs.push(
+      `[${symbol}] DATA_MISMATCH — CostAnalysis levels ` +
+      `ENTRY=${cost.entryPrice} SL=${cost.stopLoss} TP1=${cost.takeProfit1} ` +
+      `!= RiskPlan levels ENTRY=${effectiveRisk.entryPrice} SL=${effectiveRisk.stopLoss} TP1=${effectiveRisk.takeProfit1} ` +
+      `(tolerance ${LEVEL_TOL})`
+    );
+    return finalize(symbol, 'DATA_MISMATCH', 'NO_SIGNAL', regime, setup, entry, cost, effectiveRisk, logs, params, now, mkFunnel('DATA_MISMATCH', 'NO_SIGNAL', setup, entry), tradeType);
+  }
+
+  // ── DIAGNOSTIC — every number below is on the SAME entry / SL / TP1 ────────
   logs.push(
-    `[${symbol}] SIGNAL ${tradeType} ${setup.direction} ${setup.setupType} | SL=${formatDynamicPrice(effectiveRisk.stopLoss)} TP1=${formatDynamicPrice(effectiveRisk.takeProfit1)} lev=${effectiveRisk.leverage}x risk=${effectiveRisk.riskPercentUsed}% qty=${effectiveRisk.quantity}`
+    `[${symbol}] SIGNAL_LEVELS ` +
+    `ENTRY=${effectiveRisk.entryPrice} SL=${effectiveRisk.stopLoss} TP1=${effectiveRisk.takeProfit1} ` +
+    `RISK%=${effectiveRisk.riskPercent.toFixed(3)} REWARD%=${effectiveRisk.rewardPercent.toFixed(3)} ` +
+    `GROSS_RR=${effectiveRisk.grossRewardRisk.toFixed(2)} ` +
+    `ENTRY_FEE%=${cost.entryFeePercent.toFixed(3)} EXIT_FEE%=${cost.exitFeePercent.toFixed(3)} ` +
+    `SLIPPAGE%=${cost.slippagePercent.toFixed(3)} TOTAL_COST%=${cost.totalCostPercent.toFixed(3)} ` +
+    `NET_RR=${cost.netRewardRisk.toFixed(2)}`
   );
+   logs.push(
+     `[${symbol}] SIGNAL ${tradeType} ${setup.direction} ${setup.setupType} | SL=${formatDynamicPrice(effectiveRisk.stopLoss)} TP1=${formatDynamicPrice(effectiveRisk.takeProfit1)} lev=${effectiveRisk.leverage}x risk=${effectiveRisk.riskPercent}% qty=${effectiveRisk.quantity}`
+   );
+   logs.push(
+     `[${symbol}] SIGNAL_JSON ` +
+     JSON.stringify({
+       symbol,
+       tradeType,
+       direction: setup.direction,
+       setupType: setup.setupType,
+       confidence,
+       entryPrice: effectiveRisk.entryPrice,
+       stopLoss: effectiveRisk.stopLoss,
+       takeProfit1: effectiveRisk.takeProfit1,
+       takeProfit2: effectiveRisk.takeProfit2,
+       riskPercent: effectiveRisk.riskPercent,
+       rewardPercent: effectiveRisk.rewardPercent,
+       grossRR: effectiveRisk.grossRewardRisk,
+       positionPercentOfEquity: effectiveRisk.positionPercentOfEquity,
+       notionalUsd: effectiveRisk.notionalUsd,
+       bindingConstraint: effectiveRisk.bindingConstraint,
+       leverage: effectiveRisk.leverage,
+       quantity: effectiveRisk.quantity,
+       netRR: cost.netRewardRisk,
+       entryFeePercent: cost.entryFeePercent,
+       exitFeePercent: cost.exitFeePercent,
+       slippagePercent: cost.slippagePercent,
+       totalCostPercent: cost.totalCostPercent,
+       regime: regime.regime,
+       bias: regime.bias,
+       atrPercentile: regime.atrPercentile
+     })
+   );
 
   return finalize(symbol, 'RISK', 'SIGNAL', regime, setup, entry, cost, effectiveRisk, logs, params, now, mkFunnel('RISK', 'SIGNAL', setup, entry), tradeType);
 }
@@ -432,49 +500,16 @@ function finalize(
       setupScore,
       entryScore,
       edgeRatio: cost?.edgeRatio ?? 0,
+      // All R:R numbers come off the final executed levels (RiskPlan / cost on
+      // those same levels) — never the structural references.
       netRewardRisk: cost?.netRewardRisk ?? 0,
-      riskPercent: risk?.riskPercentUsed ?? 0,
+      grossRewardRisk: cost?.grossRewardRisk ?? risk?.grossRewardRisk ?? 0,
+      stopLossDistancePercent: risk?.riskPercent ?? 0,
+      rewardDistancePercent: risk?.rewardPercent ?? 0,
+       riskPercent: risk?.riskPercent ?? 0,
       atrPercentile: regime?.atrPercentile ?? 0,
       volatility: regime?.volatility ?? 'NONE'
     },
     funnel
-  };
-}
-
-/** Builds a minimal fallback risk plan for high-confidence intraday signals
- *  that were rejected by buildRiskPlan. Uses fixed 1.8% SL / 3% TP.
- *  sizingMultiplier scales the (already tiny) emergency size the same way it
- *  scales the regular plan — it only ever de-risks. */
-function buildFallbackIntradayRisk(entryPrice: number, direction: Exclude<Direction, 'NONE'>, tradeType: TradeType, sizingMultiplier: number = 1): RiskPlan {
-  const slPercent = 1.8;
-  const tpPercent = 3.0;
-  const isLong = direction === 'LONG';
-  const stopLoss = isLong ? entryPrice * (1 - slPercent / 100) : entryPrice * (1 + slPercent / 100);
-  const takeProfit1 = isLong ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
-  const takeProfit2 = isLong ? entryPrice * (1 + tpPercent * 1.5 / 100) : entryPrice * (1 - tpPercent * 1.5 / 100);
-  const stopDistance = Math.abs(entryPrice - stopLoss);
-  const rewardRisk1 = Math.abs(takeProfit1 - entryPrice) / stopDistance;
-  const rewardRisk2 = Math.abs(takeProfit2 - entryPrice) / stopDistance;
-  const baseUsd = 5 * Math.min(1, Math.max(0, sizingMultiplier));
-  return {
-    approved: true,
-    blockReason: undefined,
-    stopLoss: Number(stopLoss.toFixed(8)),
-    takeProfit1: Number(takeProfit1.toFixed(8)),
-    takeProfit2: Number(takeProfit2.toFixed(8)),
-    stopDistance: Number(stopDistance.toFixed(8)),
-    stopDistancePercent: Number((slPercent).toFixed(4)),
-    riskUsd: baseUsd,
-    quantity: baseUsd / stopDistance,
-    notionalUsd: (baseUsd / stopDistance) * entryPrice,
-    marginUsd: tradeType === 'FUTURES' ? baseUsd : (baseUsd / stopDistance) * entryPrice,
-    leverage: 1,
-    rewardRisk1: Number(rewardRisk1.toFixed(2)),
-    rewardRisk2: Number(rewardRisk2.toFixed(2)),
-    maxHoldMs: 60 * 60_000,
-    timeStopMs: Math.round(60 * 60_000 * 0.45),
-    positionPercentOfEquity: 0,
-    riskPercentUsed: 0.5,
-    sizingMultiplier: Math.min(1, Math.max(0, sizingMultiplier))
   };
 }
