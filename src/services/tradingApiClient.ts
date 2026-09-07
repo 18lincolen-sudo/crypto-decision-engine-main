@@ -74,6 +74,9 @@ export interface SimBotSnapshot {
   pending: unknown[];
   totalFees: number;
   totalSlippageCost: number;
+  /** Cumulative perpetual funding paid on FUTURES positions (USD). Spot-only
+   *  bots stay 0; absent on snapshots from before funding accrual existed. */
+  totalFunding?: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
@@ -245,9 +248,10 @@ export async function setProSimConfig(config: SimBotConfig, configuredBaseUrl?: 
   return (await res.json()) as ProSimBotStateResponse;
 }
 
-// ── 4H Path simulation bot ───────────────────────────────────────────
-// The fourth bot (server/pathSimEngine.ts). Server-driven like the Legacy and
-// Pro sims — no leader election, so no claim/push counterpart.
+// ── "נתיב 4H" simulation bot (Prev-4H Range) ─────────────────────────
+// server/pathSimEngine.ts. Server-driven like the Pro and Bybit sims — no
+// leader election, so no claim/push counterpart. (The old empirical-bucket
+// engine and its lookup-table endpoint were removed.)
 
 export interface PathSimBotStateResponse {
   running: boolean;
@@ -256,63 +260,12 @@ export interface PathSimBotStateResponse {
   updatedAt: number;
 }
 
-/** Telemetry for the lookup table the bot trades from. Worth surfacing on its
- *  own: a bot holding because its table is empty and a bot holding because the
- *  market offered nothing look identical from the trade list. */
-export interface PathTableStatus {
-  buckets: number;
-  /** Which table the bot is actually trading.
-   *  'validated'      — walk-forward tested by scripts/pathStudy.ts. Tradeable.
-   *  'live-in-sample' — the runtime fallback. Exercises the machinery, proves
-   *                     nothing; its buckets may be look-elsewhere survivors.
-   *  'none'           — no table; the bot abstains. */
-  source?: 'validated' | 'live-in-sample' | 'none';
-  validated?: {
-    builtAt?: string;
-    snapshotFrom?: string;
-    snapshotTo?: string;
-    survivors?: number;
-  } | null;
-  /** Why the table is the size it is — an empty table has two very different
-   *  causes and the bucket count alone cannot tell them apart.
-   *  'ok'                 — the rebuild ran on real history.
-   *  'warming-up'         — every symbol was skipped for want of candles. Clears
-   *                          itself as the series fills; NOT a strategy result.
-   *  'no-validated-table' — running the in-sample fallback; nothing published. */
-  readiness?: 'ok' | 'warming-up' | 'no-validated-table';
-  skippedForHistory?: number;
-  symbolsSeen?: number;
-  minCandlesRequired?: number;
-  builtAt: number;
-  sourceBars: number;
-  minSamples: number;
-  minExpectedR: number;
-  top: {
-    regime: string;
-    fng: string;
-    slot: number;
-    direction: string;
-    n: number;
-    tpR: number;
-    pLow: number;
-    expectedR: number;
-  }[];
-}
-
 export async function getPathSimState(configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
   const base = resolveBaseUrl(configuredBaseUrl);
   if (!base) throw new Error('כתובת Worker לא הוגדרה');
   const res = await fetch(`${base}/api/path-sim/state`);
   if (!res.ok) throw new Error(`Failed to fetch path sim state: ${res.status} ${res.statusText}`);
   return (await res.json()) as PathSimBotStateResponse;
-}
-
-export async function getPathTable(configuredBaseUrl?: string): Promise<PathTableStatus> {
-  const base = resolveBaseUrl(configuredBaseUrl);
-  if (!base) throw new Error('כתובת Worker לא הוגדרה');
-  const res = await fetch(`${base}/api/path-sim/table`);
-  if (!res.ok) throw new Error(`Failed to fetch path table: ${res.status} ${res.statusText}`);
-  return (await res.json()) as PathTableStatus;
 }
 
 export async function startPathSim(configuredBaseUrl?: string): Promise<PathSimBotStateResponse> {
@@ -349,6 +302,61 @@ export async function setPathSimConfig(config: SimBotConfig, configuredBaseUrl?:
   });
   if (!res.ok) throw new Error(`Failed to set path sim config: ${res.status} ${res.statusText}`);
   return (await res.json()) as PathSimBotStateResponse;
+}
+
+// ── "Bybit" simulation bot (TrendBreakout) ───────────────────────────────────
+// The fourth sim bot. Server-driven like Pro and Path — no leader election, so
+// no claim/push counterpart. SIMULATION ONLY.
+
+export interface BybitSimBotStateResponse {
+  running: boolean;
+  config: SimBotConfig;
+  snapshot: SimBotSnapshot | null;
+  updatedAt: number;
+}
+
+export async function getBybitSimState(configuredBaseUrl?: string): Promise<BybitSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/bybit-sim/state`);
+  if (!res.ok) throw new Error(`Failed to fetch bybit sim state: ${res.status} ${res.statusText}`);
+  return (await res.json()) as BybitSimBotStateResponse;
+}
+
+export async function startBybitSim(configuredBaseUrl?: string): Promise<BybitSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/bybit-sim/start`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to start bybit sim: ${res.status} ${res.statusText}`);
+  return (await res.json()) as BybitSimBotStateResponse;
+}
+
+export async function stopBybitSim(configuredBaseUrl?: string): Promise<BybitSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/bybit-sim/stop`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to stop bybit sim: ${res.status} ${res.statusText}`);
+  return (await res.json()) as BybitSimBotStateResponse;
+}
+
+export async function resetBybitSim(configuredBaseUrl?: string): Promise<BybitSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/bybit-sim/reset`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to reset bybit sim: ${res.status} ${res.statusText}`);
+  return (await res.json()) as BybitSimBotStateResponse;
+}
+
+export async function setBybitSimConfig(config: SimBotConfig, configuredBaseUrl?: string): Promise<BybitSimBotStateResponse> {
+  const base = resolveBaseUrl(configuredBaseUrl);
+  if (!base) throw new Error('כתובת Worker לא הוגדרה');
+  const res = await fetch(`${base}/api/bybit-sim/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config })
+  });
+  if (!res.ok) throw new Error(`Failed to set bybit sim config: ${res.status} ${res.statusText}`);
+  return (await res.json()) as BybitSimBotStateResponse;
 }
 
 export function createTradingApiClient(configuredBaseUrl: string, adminToken: string): TradingApiClient {
@@ -392,6 +400,7 @@ export interface SimDefaultsResponse {
   legacy: SimBotConfig;
   pro: SimBotConfig;
   path: SimBotConfig;
+  bybit: SimBotConfig;
   /** Which deploy-time variables the worker actually has set. Diagnostic only. */
   envOverrides: {
     minConfidence: number | null;

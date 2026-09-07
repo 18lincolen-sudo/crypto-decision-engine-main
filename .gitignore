@@ -40,3 +40,5 @@ decisions.baseline*.json
 # re-downloadable; run results are local measurements, not source.
 backtest-ab/
 path-study/
+ASSETS/
+graphify-out/

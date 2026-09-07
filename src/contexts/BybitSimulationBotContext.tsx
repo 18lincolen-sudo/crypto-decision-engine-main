@@ -1,11 +1,11 @@
 import { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo, ReactNode } from 'react';
 import {
-  getPathSimState,
-  startPathSim,
-  stopPathSim,
-  resetPathSim,
-  setPathSimConfig,
-  PathSimBotStateResponse
+  getBybitSimState,
+  startBybitSim,
+  stopBybitSim,
+  resetBybitSim,
+  setBybitSimConfig,
+  BybitSimBotStateResponse
 } from '../services/tradingApiClient';
 import type { SimBotConfig, SimPosition, SimTrade, SimPoint, PendingOrder } from '@cde/engine/execution';
 import type { SignalEvaluation } from '@cde/engine';
@@ -16,23 +16,16 @@ import { simBotDefaults } from '@cde/engine/execution';
 import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
 import { useServerSimDefaults } from '../hooks/useServerSimDefaults';
 
-// Unlike the intraday/pro contexts there is NO browser fallback engine here,
-// and that is deliberate. The Prev-4H Range strategy needs H1 history across
-// the whole universe to aggregate into 4H bars; a browser holds one page-load's
-// worth of candles for a handful of symbols, so a local copy would silently
-// trade a thinner strategy under the same name. When the worker is unreachable
-// this context reports it and shows nothing — the honest state — rather than a
-// degraded twin.
-// The static base, shared with server/tradingWorker.ts so the two runtimes
-// cannot drift. What is NOT shared: the operator's deploy-time environment
-// (BOT_MIN_CONFIDENCE, BOT_POSITION_PERCENT, BOT_MAX_OPEN_POSITIONS,
-// BOT_RISK_LEVEL). The browser cannot read those, so this is the value shown
-// until the first successful poll adopts the server's real config — a
-// placeholder that is now provably the same number the worker starts from,
-// rather than a second hand-maintained copy of it.
-const DEFAULT_PATH_CONFIG: SimBotConfig = simBotDefaults('path');
+// Like the Path bot, this one has NO browser fallback engine — TrendBreakout
+// needs H1/M15/M5 history across the whole universe that a single page load
+// cannot hold, so a local twin would silently trade a thinner strategy under
+// the same name. When the worker is unreachable this context reports it and
+// shows nothing (the honest state) rather than a degraded copy.
+//
+// SIMULATION ONLY. This bot is never a real-money bot until a separate decision.
+const DEFAULT_BYBIT_CONFIG: SimBotConfig = simBotDefaults('bybit');
 
-export interface PathSimulationBotContextValue {
+export interface BybitSimulationBotContextValue {
   cash: number;
   positions: SimPosition[];
   positionsValue: number;
@@ -55,16 +48,8 @@ export interface PathSimulationBotContextValue {
   dailyDrawdownPercent: number;
   weeklyDrawdownPercent: number;
   candleCount: number;
-  /**
-   * False whenever the numbers above are the EMPTY_SNAPSHOT placeholder rather
-   * than a real server reading — no Worker URL, or the worker unreachable.
-   *
-   * The portfolio risk meter has to know the difference. This bot has no browser
-   * fallback engine, so an unreachable worker yields exposure 0 and equity
-   * 10,000: a combined risk figure built on that silently under-reports real
-   * exposure, and a risk meter that under-reports is worse than one that says it
-   * does not know.
-   */
+  /** False when the numbers above are the EMPTY_SNAPSHOT placeholder rather
+   *  than a real server reading (no Worker URL, or the worker unreachable). */
   hasServerData: boolean;
   config: SimBotConfig;
   setConfig: (c: SimBotConfig) => void;
@@ -78,24 +63,23 @@ export interface PathSimulationBotContextValue {
   syncError: string | null;
 }
 
-const PathSimulationBotContext = createContext<PathSimulationBotContextValue | null>(null);
+const BybitSimulationBotContext = createContext<BybitSimulationBotContextValue | null>(null);
 
-/** The Path bot's only localStorage key. Exported so SimulationBot.tsx's Clear
- *  Cache list imports it instead of holding a second copy of the string — a
- *  duplicate that drifts is how a cache key stops being cleared. */
-export const PATH_SIM_BOT_LAST_KNOWN_RUNNING_KEY = 'path-sim-bot-last-known-running';
-const LAST_KNOWN_RUNNING_KEY = PATH_SIM_BOT_LAST_KNOWN_RUNNING_KEY;
+/** The Bybit bot's only localStorage key. Exported so SimulationBot.tsx's Clear
+ *  Cache list imports it rather than holding a second copy of the string. */
+export const BYBIT_SIM_BOT_LAST_KNOWN_RUNNING_KEY = 'bybit-sim-bot-last-known-running';
+const LAST_KNOWN_RUNNING_KEY = BYBIT_SIM_BOT_LAST_KNOWN_RUNNING_KEY;
 
 const EMPTY_SNAPSHOT = {
   cash: 10000, positions: [], positionsValue: 0, equity: 10000, trades: [], history: [],
   pending: [], totalFees: 0, totalSlippageCost: 0, totalFunding: 0, winRate: 0, totalTrades: 0,
-  closedTrades: 0, lastEvaluation: '', evaluations: [], minConfidence: SIM_MIN_CONFIDENCE.path,
+  closedTrades: 0, lastEvaluation: '', evaluations: [], minConfidence: SIM_MIN_CONFIDENCE.bybit,
   hasSavedSession: false, nextTickAt: 0, totalLeveragedExposureUsd: 0,
   dailyDrawdownPercent: 0, weeklyDrawdownPercent: 0, candleCount: 0
 };
 
-export function PathSimulationBotProvider({ children }: { children: ReactNode }) {
-  const [config, setConfigState] = useState<SimBotConfig>(DEFAULT_PATH_CONFIG);
+export function BybitSimulationBotProvider({ children }: { children: ReactNode }) {
+  const [config, setConfigState] = useState<SimBotConfig>(DEFAULT_BYBIT_CONFIG);
   const [status, setStatus] = useState<SimStatus>(() => {
     try {
       return localStorage.getItem(LAST_KNOWN_RUNNING_KEY) === '1' ? 'running' : 'idle';
@@ -103,16 +87,14 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
       return 'idle';
     }
   });
-  const [serverSnapshot, setServerSnapshot] = useState<PathSimBotStateResponse['snapshot']>(null);
+  const [serverSnapshot, setServerSnapshot] = useState<BybitSimBotStateResponse['snapshot']>(null);
   const [controlError, setControlError] = useState<string | null>(null);
-  // True once this bot's own /state has delivered a config. The RUNNING
-  // config is a fact and always beats the worker's starting defaults.
   const configFromServer = useRef(false);
   const { baseUrl } = useWorkerAuth();
 
   const isRunning = status === 'running';
 
-  const applyServerState = useCallback((st: PathSimBotStateResponse) => {
+  const applyServerState = useCallback((st: BybitSimBotStateResponse) => {
     if (st.snapshot) setServerSnapshot(st.snapshot);
     if (typeof st.running === 'boolean') {
       setStatus(st.running ? 'running' : current => current === 'paused' ? 'paused' : 'idle');
@@ -125,19 +107,16 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
   }, []);
 
   const pollingOptions = useMemo(() => ({ baseInterval: 5000, maxInterval: 30000 }), []);
-  // Fills the window before the first poll: the compile-time base cannot
-  // carry this worker's BOT_* environment overrides. Writes locally only —
-  // it never POSTs a config the operator did not choose.
-  useServerSimDefaults('path', baseUrl, setConfigState, configFromServer.current);
+  useServerSimDefaults('bybit', baseUrl, setConfigState, configFromServer.current);
 
-  const { data: pathSimStateData, syncStatus, syncError } = useApiPolling<PathSimBotStateResponse>(
-    () => getPathSimState(baseUrl),
+  const { data: bybitSimStateData, syncStatus, syncError } = useApiPolling<BybitSimBotStateResponse>(
+    () => getBybitSimState(baseUrl),
     pollingOptions
   );
 
   useEffect(() => {
-    if (pathSimStateData) applyServerState(pathSimStateData);
-  }, [pathSimStateData, applyServerState]);
+    if (bybitSimStateData) applyServerState(bybitSimStateData);
+  }, [bybitSimStateData, applyServerState]);
 
   useEffect(() => {
     if (syncStatus === 'local-only') setServerSnapshot(null);
@@ -147,7 +126,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     let cancelled = false;
     (async () => {
       try {
-        const serverState = await getPathSimState(baseUrl);
+        const serverState = await getBybitSimState(baseUrl);
         if (!cancelled) applyServerState(serverState);
       } catch {
         /* keep local state if the worker is unreachable */
@@ -165,7 +144,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
       return;
     }
     try {
-      applyServerState(await startPathSim(baseUrl));
+      applyServerState(await startBybitSim(baseUrl));
     } catch (error) {
       setServerSnapshot(null);
       setControlError(error instanceof Error ? error.message : 'שגיאה בהפעלת הבוט');
@@ -178,7 +157,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     try { localStorage.setItem(LAST_KNOWN_RUNNING_KEY, '0'); } catch { /* ignore */ }
     if (!baseUrl) return;
     try {
-      const state = await stopPathSim(baseUrl);
+      const state = await stopBybitSim(baseUrl);
       if (state.snapshot) setServerSnapshot(state.snapshot);
     } catch (error) {
       setControlError(error instanceof Error ? error.message : 'שגיאה בהשהיית הבוט');
@@ -192,7 +171,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     setServerSnapshot(null);
     if (!baseUrl) return;
     try {
-      await resetPathSim(baseUrl);
+      await resetBybitSim(baseUrl);
     } catch (error) {
       setControlError(error instanceof Error ? error.message : 'שגיאה באיפוס הבוט');
     }
@@ -202,7 +181,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     setControlError(null);
     setConfigState(c);
     if (baseUrl) {
-      setPathSimConfig(c, baseUrl).catch((error) => {
+      setBybitSimConfig(c, baseUrl).catch((error) => {
         setControlError(error instanceof Error ? error.message : 'שגיאה בשמירת ההגדרות');
       });
     }
@@ -210,7 +189,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
 
   const source = (serverSnapshot ?? EMPTY_SNAPSHOT) as typeof EMPTY_SNAPSHOT;
 
-  const value: PathSimulationBotContextValue = {
+  const value: BybitSimulationBotContextValue = {
     cash: source.cash ?? 10000,
     positions: (source.positions ?? []) as SimPosition[],
     positionsValue: source.positionsValue ?? 0,
@@ -226,7 +205,7 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     closedTrades: source.closedTrades ?? 0,
     lastEvaluation: source.lastEvaluation ?? '',
     evaluations: (source.evaluations ?? []) as SignalEvaluation[],
-    minConfidence: source.minConfidence ?? SIM_MIN_CONFIDENCE.path,
+    minConfidence: source.minConfidence ?? SIM_MIN_CONFIDENCE.bybit,
     hasSavedSession: source.hasSavedSession ?? false,
     nextTickAt: source.nextTickAt ?? 0,
     totalLeveragedExposureUsd: source.totalLeveragedExposureUsd ?? 0,
@@ -246,15 +225,15 @@ export function PathSimulationBotProvider({ children }: { children: ReactNode })
     syncError
   };
 
-  return <PathSimulationBotContext.Provider value={value}>{children}</PathSimulationBotContext.Provider>;
+  return <BybitSimulationBotContext.Provider value={value}>{children}</BybitSimulationBotContext.Provider>;
 }
 
-export function usePathSimulationBotContext(): PathSimulationBotContextValue {
-  const ctx = useContext(PathSimulationBotContext);
-  if (!ctx) throw new Error('usePathSimulationBotContext must be used within a PathSimulationBotProvider');
+export function useBybitSimulationBotContext(): BybitSimulationBotContextValue {
+  const ctx = useContext(BybitSimulationBotContext);
+  if (!ctx) throw new Error('useBybitSimulationBotContext must be used within a BybitSimulationBotProvider');
   return ctx;
 }
 
-export function usePathSimulationBotContextSafe(): PathSimulationBotContextValue | null {
-  return useContext(PathSimulationBotContext);
+export function useBybitSimulationBotContextSafe(): BybitSimulationBotContextValue | null {
+  return useContext(BybitSimulationBotContext);
 }

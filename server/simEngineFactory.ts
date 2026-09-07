@@ -21,6 +21,7 @@ import { toBaseAsset } from '@cde/engine/market-data';
 import {
   fillDueOrders,
   selectFillableOrders,
+  applyFundingAccrual,
   SimPosition,
   SimTrade,
   SimPoint,
@@ -43,6 +44,13 @@ export interface SimSnapshot {
   pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
+  /** Cumulative perpetual funding paid on FUTURES positions (USD, positive =
+   *  cost). Applied to every sim bot alike; spot-only bots stay at 0. Optional
+   *  because snapshots persisted before funding accrual existed lack it. */
+  totalFunding?: number;
+  /** When funding was last accrued (ms). Absent on old snapshots — the engine
+   *  then starts accruing from the next tick rather than billing a backlog. */
+  lastFundingAppliedAt?: number;
   lastEvaluation?: string;
 }
 
@@ -156,6 +164,8 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
   let pending: PendingOrder[] = [];
   let totalFees = 0;
   let totalSlippageCost = 0;
+  let totalFunding = 0;
+  let lastFundingAppliedAt = 0;
   let lastEvaluation = '';
   let lastEvaluations: SignalEvaluation[] = [];
   // Safety net against rapid re-entry churn: after a LOSING full exit, skip new
@@ -360,6 +370,18 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       };
     });
 
+    // Perpetual funding on open FUTURES positions — applied before equity is
+    // read so drawdown / circuit-breaker see the funding-adjusted balance. The
+    // same helper runs for every bot; spot-only bots have no futures leg and
+    // stay at totalFunding = 0.
+    if (!lastFundingAppliedAt) lastFundingAppliedAt = Date.now();
+    const funding = applyFundingAccrual(positions, cash, fundingBySymbol, lastFundingAppliedAt, Date.now());
+    if (funding.fundingPaid !== 0) {
+      cash = funding.cash;
+      totalFunding += funding.fundingPaid;
+    }
+    lastFundingAppliedAt = funding.lastAppliedAt;
+
     const eq = equity();
     const { dailyDrawdownPercent, weeklyDrawdownPercent } = drawdowns(eq);
     const totalLeveragedExposureUsd = leveragedExposure();
@@ -493,6 +515,8 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
       pending,
       totalFees,
       totalSlippageCost,
+      totalFunding,
+      lastFundingAppliedAt,
       winRate,
       totalTrades: trades.length,
       closedTrades: closedTrades.length,
@@ -542,6 +566,10 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     pending = snapshot.pending ?? [];
     totalFees = snapshot.totalFees ?? 0;
     totalSlippageCost = snapshot.totalSlippageCost ?? 0;
+    totalFunding = snapshot.totalFunding ?? 0;
+    // Deliberately NOT restored: start accruing funding from the next tick
+    // rather than billing the gap since the snapshot was written.
+    lastFundingAppliedAt = 0;
     lastEvaluation = snapshot.lastEvaluation ?? '';
     // Restore the run's OWN starting capital. Reading snapshot.cash here reset
     // the P&L baseline to whatever the balance happened to be at restart, so
@@ -559,6 +587,8 @@ export function createGenericSimEngine(strategy: SimEngineStrategy, getSymbols?:
     pending = [];
     totalFees = 0;
     totalSlippageCost = 0;
+    totalFunding = 0;
+    lastFundingAppliedAt = 0;
     lastEvaluation = '';
     lastEvaluations = [];
   }

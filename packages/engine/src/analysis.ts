@@ -158,3 +158,42 @@ export {
   utcDayStart
 } from './services/fearGreedHistory';
 export type { FearGreedPoint, FearGreedSeries } from './services/fearGreedHistory';
+
+// ── Prev-4H Range (the "נתיב 4H" sim bot — breakout of the previous closed
+//    4H candle's high/low, filtered by the 4H EMA20 trend; simulation only).
+//    Replaced the empirical-bucket Path engine. Order generation is in
+//    @cde/engine/execution. ──────────────────────────────────────────────────
+export {
+  evaluatePrev4hRange,
+  readPrev4hRangePlan,
+  DEFAULT_PREV4H_RANGE_PARAMS,
+  PREV4H_MIN_H4_BARS,
+  PREV4H_MIN_H1_CANDLES
+} from './services/prev4hRange';
+export type {
+  Prev4hRangeParams,
+  Prev4hRangePlan,
+  Prev4hRangeState,
+  Prev4hRangeReason,
+  Prev4hRangeInput
+} from './services/prev4hRange';
+
+// ── TrendBreakout (the "Bybit" sim bot — an independent trend-following
+//    breakout strategy; simulation only). Its signal function lives here; its
+//    order generation is in @cde/engine/execution alongside the other bots'. ──
+export {
+  evaluateTrendBreakout,
+  readTrendBreakoutPlan,
+  computeConfidence as computeTrendBreakoutConfidence,
+  donchian,
+  volumeSMA,
+  DEFAULT_TREND_BREAKOUT_PARAMS
+} from './services/trendBreakout';
+export type {
+  TrendBreakoutParams,
+  TrendBreakoutPlan,
+  TrendBreakoutState,
+  TrendBreakoutReason,
+  TrendDirection,
+  TrendBreakoutInput
+} from './services/trendBreakout';

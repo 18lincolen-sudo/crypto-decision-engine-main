@@ -1,14 +1,18 @@
-# מדריך ייחוס — שלושת בוטי הסימולציה
+# מדריך ייחוס — ארבעת בוטי הסימולציה
 
 > קובץ זה נבנה ע"י קריאת הקוד עצמו (לא תיעוד קודם). כל שורה כאן מצוינת עם
 > הקובץ שבו היא באמת קורית. עדכן אותו כשהחישוב עצמו משתנה — לא לפני.
-> נכון לתאריך: 2026-09-06, מסביב לקומיטים עד `1c54229`.
+> נכון לתאריך: 2026-09-07, מסביב לקומיטים עד `e1ca516` + תוספת בוט 4 (Bybit).
 
-שלושת הבוטים רצים כ-3 מופעים נפרדים לגמרי של אותה תשתית
+ארבעת הבוטים רצים כ-4 מופעים נפרדים לגמרי של אותה תשתית
 (`server/simEngineFactory.ts` → `createGenericSimEngine`) — לכל אחד `cash`,
 `positions`, `history` ו-KV store נפרדים ב-Firestore. **תוצאה של בוט אחד
 לעולם לא יכולה להשפיע על בוט אחר** — הם חולקים רק קבועים (סף drawdown, תקרת
 נכס בודד) ונתוני שוק (נרות), לא state.
+
+> **בוט 4 (Bybit · TrendBreakout) הוא סימולציה בלבד.** הוא לא מיועד לכסף אמיתי
+> עד להחלטה נפרדת. נוסף כדי להשוות אותו מול שלושת האחרים ולבחור מי ראוי
+> לקידום לבוט אמיתי.
 
 ---
 
@@ -45,8 +49,8 @@ LIQUIDITY → SPREAD → NO_SETUP → NO_ENTRY → COST → RISK
 
 **סף תפעולי נוסף**, מעל שני אלה: `BOT_MIN_CONFIDENCE` (env, כרגע **60**) —
 נבדק **אחרי** שהמנוע כבר אישר SIGNAL; אם `confidence < 60` הדחייה מתויגת
-`MIN_CONFIDENCE` (`intradayAdapter.ts:361-368`). זהו **ציון (Score)**, לא
-הסתברות — קנה מידה משותף ל-Pro, שונה מ-Path.
+`MIN_CONFIDENCE` (`intradayAdapter.ts:361-368`). זהו **ציון (Score)** 0–100 —
+קנה מידה משותף לכל ארבעת הבוטים (מאז שמנוע ה-probability של נתיב 4H הוחלף).
 
 ### מעגל שבירה (Circuit Breaker) — שער 2
 ```
@@ -65,7 +69,10 @@ p.weeklyDrawdownPercent >= 15  → NO_SIGNAL (נעילה)
 - **תקרת חשיפה ממונפת כוללת:** `equity × 20%`.
 - **תקרת נכס בודד (רק FUTURES):** `equity × 8%` — `PER_ASSET_EXPOSURE_CAP_PERCENT`
   ב-`intradayParams.ts` (משותף גם ל-Pro/Path, ראה שם). **לא חל על SPOT.**
-- **הזמנה מינימלית:** $5.
+- **הזמנה מינימלית:** בסימולציה **$100** — `SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd`
+  ב-`simExecution.ts` (בקשת מפעיל). `buildRiskPlan` מעגל פוזיציה קטנה מ-$100
+  כלפי מעלה לסף, או דוחה אם זה חורג מתקרת התיק. (לבוט האמיתי הסף נשאר $5 —
+  `DEFAULT_INTRADAY_PARAMS.minOrderUsd`.)
 
 ### יציאה (Stop/Target קבועים)
 ```
@@ -131,7 +138,8 @@ budget = min(
 )
 ```
 טבלת `PRO_ALLOCATION_BY_RISK` **הוסרה** (הייתה קוד מת — אף gate לא קרא לה).
-מינימום הזמנה: $5.
+מינימום הזמנה בסימולציה: **$100** (`MIN_SIM_ENTRY_USD`) — budget מתחת לזה →
+`NO_SIGNAL [NO_BUDGET]`. חל על כל ארבעת בוטי הסימולציה.
 
 ### כניסה — Market או Limit (§6, `proSimEngine.ts` config `proLimitEntries`)
 - **Market (ברירת מחדל §6):** מילוי מיידי ב-`executeAt`, במחיר שוק + slippage.
@@ -164,95 +172,158 @@ Spot בלבד — אין שורט, SELL על פוזיציה לא-מוחזקת מ
 
 ---
 
-## 3. מנוע נתיב 4H (Path · Empirical)
+## 3. נתיב 4H (Prev-4H Range · טווח נר קודם)
 
-**קבצי מפתח:** `packages/engine/src/services/pathEngine.ts` (החלטה חיה),
-`pathStudy.ts` (בניית/אימות טבלה), `pathSimExecution.ts` (הזמנות),
-`server/pathSimEngine.ts` (rebuild + wiring).
+> **החליף את מנוע ה-Empirical Path.** הבקטסט של המשתמש
+> (`ASSETS/path-slot-study33/diagnostic.json`, 4.9M תוצאות) הראה **0 דליים עם
+> תוחלת חיובית אחרי עלויות** בכל regime — הקצה (~0.05R) קטן פי 5–10 מעלות
+> ה-round-trip (~0.28R). מודל הדליים, הטבלה, `/api/path-sim/table`
+> ו-`installValidatedTable` הוסרו. `pathEngine.ts`/`pathStudy.ts`/
+> `scripts/pathStudy.ts` נשארו על הדיסק (מספקים `aggregateToH4` וכו') אבל
+> **אף בוט לא קורא להם יותר**. סימולציה בלבד.
+
+**קבצי מפתח:** `packages/engine/src/services/prev4hRange.ts` (הסיגנל),
+`prev4hRangeExecution.ts` (גודל + יציאות), `server/pathSimEngine.ts` (חיבור).
 
 ### נתוני קלט נדרשים
 ```
-PATH_MIN_H4_BARS  = 62   (ברי 4H סגורים, מתוכם 60 קודמים + 1 מתויג)
-MIN_PATH_CANDLES  = 248  (= 62 × 4, ברי H1 הדרושים לצבור אותם)
-M5                = 30 נרות מינימום (לאישור 5M)
+PREV4H_MIN_H4_BARS   = 24   (ברי 4H מלאים — ל-EMA20 + מרווח)
+PREV4H_MIN_H1_CANDLES = 96  (= 24 × 4; aggregateToH4 פולט בר רק כשכל 4 ה-H1 נסגרו)
 ```
-מוגדר פעם אחת ב-`pathEngine.ts` (המנוע העמוק ביותר), מיוצא מחדש בכל מקום
-אחר (`pathSimExecution.ts`, `pathAdapter.ts`) — כך שלא יכולה להיות סתירה
-בין הדרישה של המנוע לזו של ה-gate שמחליט אם בכלל לקרוא לו.
+`prev = h4[last]` הוא הבר ה-4H ה**אחרון שנסגר לגמרי** — אין lookahead.
 
-### תיוג מצב (`labelBarState`, `pathStudy.ts`)
-לכל בר 4H **סגור** (לא הבר הנוכחי): `regime` (TRENDING_UP / TRENDING_DOWN /
-RANGING, מ-`detectMarketRegime`) × `fng` (Fear&Greed bucket). **`useFearGreed`
-כפוי `false` בשני מקומות הקריאה** (`pathEngine.ts`, `server/pathSimEngine.ts`)
-— כל הברים מתקפלים ל-`NEUTRAL` יחיד, בכוונה: מונע דליפת-עתיד (ה-Fear&Greed
-"של היום" מוחל על ברים היסטוריים) מלהשפיע בפועל, גם אם `DEFAULT_USE_FEAR_GREED`
-ישתנה בעתיד עבור המחקר האופליין.
+### חלון וזיהוי
+```
+H = prev.high · L = prev.low · mid = (H+L)/2 · range = H−L · rangePct = range/prev.close
+```
+פועלים רק כש-`barOpenFor(now) === prev.timestamp + BAR_MS` (החלון שמיד אחרי
+`prev`). נתוני H1 לא עדכניים → `STALE_BAR`. פוזיציה אחת לסימבול לכל חלון.
 
-### הטבלה (`table` — הליבה של הבוט)
-נבנית ע"י `buildPathTable(outcomes, {minSamples})` (`pathStudy.ts:520`):
-```
-key = (regime, fng, slot∈[0,15], direction∈{LONG,SHORT})   ← עד 96 תאים אפשריים
-כל תא נכנס לטבלה רק אם:
-  1. group.length >= minSamples          (בשרת החי: 120 — LIVE_MIN_SAMPLES)
-  2. bucket.expectedR > minExpectedR     (0.05 — MIN_EXPECTED_R)
-```
-**שני התנאים ביחד**, לכל תא בנפרד.
+### פילטר מגמה (§4)
+`ema = EMA(20)` על סגירות ה-4H (`calculateEMA`, `tradeEngine.ts`).
+`trendUp = ema>emaPrev AND prev.close>ema` · `trendDown` = המראה. אף אחד →
+`AGAINST_TREND` (אין עסקה).
 
-### שלושה מקורות טבלה אפשריים (`tableSource`, `server/pathSimEngine.ts`)
-| מצב | איך מגיעים אליו | אמינות |
-|---|---|---|
-| `none` | לפני כל rebuild | — |
-| `live-in-sample` | `rebuildTable()` כל 30 דק' (`TABLE_REBUILD_MS`), מהנרות שבזיכרון כרגע | **לא מאומת** — נבדק על אותם נתונים שנבנה מהם |
-| `validated` | `POST /api/path-sim/table` (`scripts/pathStudy.ts publish`) | walk-forward, out-of-sample |
+### פילטר טווח
+`rangePct` חייב להיות ב-`[minRangePct 0.005, maxRangePct 0.08]` — אחרת
+`RANGE_TOO_TIGHT` / `RANGE_TOO_WIDE`.
 
-**המעבר ל-`validated` לא קורה לבד** — מישהו צריך להריץ `publish` עם
-`WORKER_URL`+`BOT_ADMIN_TOKEN`. עד אז, ותמיד אחרי `rebuildTable()` הראשון,
-`tableSource` נשאר `live-in-sample` לצמיתות.
+### סיגנל (פריצה)
+`trendUp AND live > H` → **LONG** (`SPOT`). `trendDown AND live < L` → **SHORT**
+(`FUTURES` מינוף 1x — spot לא יכול לשרטט). אחרת `NO_BREAKOUT` (מצב `ARMED`).
 
-### חישוב הביטחון (Probability, לא Score!)
+### חישוב הביטחון (Score 0–100 — לא הסתברות!)
 ```
-confidence = round(bucket.pLow × 100)
+40 + 30·clamp(breakoutDist/(range·0.5)) + 20·trendStrength + 10·rangeSweetSpot
 ```
-`pLow` הוא **Wilson lower bound** על שיעור ההצלחה ההיסטורי של הדלי — לא ציון
-משוקלל. סף כניסה: `BOT_PATH_MIN_CONFIDENCE` (env, כרגע **33**) — נמוך בכוונה,
-כי יעד 1.5R צריך רק ~36% הצלחה כדי להיות רווחי. **אסור** להשתמש ב-
-`BOT_MIN_CONFIDENCE` (60, סף ה-Score) עבור הבוט הזה — `simBotDefaults()`
-אוכפת את זה (`simDefaults.ts`).
+סף כניסה `minConfidence = 55` (`SIM_BOTS.path.minConfidence`). **קנה מידה
+משותף ל-Intraday/Pro/Bybit** — `BOT_MIN_CONFIDENCE` מגיע אליו עכשיו כמו לשאר
+(מנוע ה-Wilson/probability הישן נעלם).
 
-### גודל פוזיציה (Kelly, `pathEntryBudget`, `pathSimExecution.ts:83`)
+### גודל פוזיציה
 ```
-budget = min(
-  equity × pathKellyFraction(bucket),   ← half-Kelly על ה-pLow הנמדד
-  ceiling (positionPercent × riskLevel multiplier),
-  equity × 8%                            ← PER_ASSET_EXPOSURE_CAP_PERCENT
-)
+riskUsd  = equity × riskPerTrade (0.5%)
+notional = riskUsd / (R/entry)          ← R = |entry − mid| = range/2
+נחתך ב: נכס בודד 8% · חשיפה כוללת 20% (MAX_TOTAL_EXPOSURE_PERCENT) · רצפת $100 (MIN_SIM_ENTRY_USD)
 ```
+פוזיציה אחת לסימבול, בלי scale-in.
 
 ### יציאה
 ```
-SL = entry ∓ 1R          (riskUnit = ATR של 15M לפני הבר)
-TP = entry ± riskUnit × bucket.tpR   (בד"כ 1.5R)
-תקרת החזקה: בר 4H אחד (PATH_MAX_HOLD_MS)
-Time Stop: חצי בר בלי התקדמות >= 0.3R (PATH_TIME_STOP_MS)
+SL = mid (אמצע הטווח)
+TP = H + range×tpRangeMult (LONG) / L − range×tpRangeMult (SHORT)   [ברירת מחדל ×1 → ~2:1]
+Time stop: סוף החלון — now >= barOpenFor(openTimestamp) + BAR_MS
+היפוך: EMA20 (4H) כבר לא בכיוון הפוזיציה
 ```
-Spot LONG בלבד — כל התוחלות נמדדות כעסקת ספוט עם סטופ של 1R.
 
 ### מעגל שבירה ותקרת נכס
-זהה לשני הבוטים האחרים (8%/15% drawdown, 8% תקרת נכס) — מיושם ב-
-`pathSimExecution.ts:generatePathOrders`.
+זהה לשלושת האחרים (8%/15% drawdown, 8% תקרת נכס) — ב-
+`generatePrev4hRangeOrders`.
 
 ### מה תוצאה בריאה אמורה להיראות
-- כל עוד `tableSource: "live-in-sample"` **וגם** `buckets: 0` — הבוט
-  **אמור** להראות `NO_SIGNAL [NO_BUCKET]` בכל מקום. זו לא תקלה, זו המנגנון
-  עובד כמתוכנן ("נמנע במקום לנחש").
-- `readiness: "warming-up"` → `"ok"` כשכל 53 המטבעות עברו את סף ה-248 H1.
-- מספר הדגימות בכל תא אמור לגדול עם הזמן (uptime מצטבר, עד
-  `MAX_CANDLES_PER_TF=600` ב-`marketDataService.ts`) — לא בקפיצה מיידית.
-- הופעת buckets בפועל **לא** מעידה על קצה אמיתי כל עוד `source !== "validated"`.
+- רוב הסימבולים: `NO_SIGNAL [AGAINST_TREND]` או `[NO_BREAKOUT]` — תקין,
+  צריך מגמה **וגם** פריצה **וגם** טווח בתחום.
+- כל `NO_SIGNAL` נושא סיבה: `STALE_BAR`, `AGAINST_TREND`, `RANGE_TOO_TIGHT`,
+  `RANGE_TOO_WIDE`, `NO_BREAKOUT`, `CONFIDENCE_BELOW_MIN`.
+- כל פוזיציה נסגרת לכל המאוחר בסוף נר ה-4H שבו נפתחה.
 
 ---
 
-## מה משותף בין שלושתם (ולמה אסור להתערבב)
+## 4. בוט Bybit (TrendBreakout · פריצת מגמה) — סימולציה בלבד
+
+**קבצי מפתח:** `packages/engine/src/services/trendBreakout.ts` (הסיגנל),
+`packages/engine/src/services/trendBreakoutExecution.ts` (גודל, scale-in,
+ניהול סטופ, יציאות), `server/bybitSimEngine.ts` (חיבור לתשתית),
+`TRENDBREAKOUT_SPEC.md` (המפרט המלא של המשתמש).
+
+**אסטרטגיה עצמאית לחלוטין** — לא קונצנזוס של Intraday/Pro/Path ולא משתמשת
+בסיגנלים שלהם. חולקת רק נתוני שוק, מנוע המילוי, הקבועים המשותפים ותשתית
+הסימולציה.
+
+### נתוני קלט
+H1 ≥ 200 · M15 ≥ 300 · M5 ≥ 30 (מובטח ע"י ה-READY של ה-MTF snapshot). רק נרות
+**סגורים** — אין lookahead.
+
+### מגמה (H1, §3)
+LONG רק אם: Supertrend(10,3) = BULL **וגם** EMA50 > EMA200 **וגם** close > EMA50.
+SHORT = המראה. אחרת NEUTRAL → אין עסקה.
+
+### פריצה (M15, §4)
+close > Donchian-High(20) הקודם (LONG) / < Donchian-Low(20) (SHORT), **וגם**
+נפח ≥ VolumeSMA(20) × 1.2, **וגם** כיוון = מגמת H1.
+
+### אישור כניסה (M5, §5)
+LONG: EMA9 > EMA21 **וגם** close > EMA9 **וגם** המחיר במרחק ≤ 1.0×ATR(M5)
+ממחיר הפריצה (אחרת `ENTRY_TOO_EXTENDED` — לא רודפים).
+
+### ביטחון (Score 0–100, §7)
+H1 Supertrend 25 · H1 EMA 20 · פריצת M15 25 · אישור נפח 15 · אישור M5 15.
+סף כניסה `MIN_CONFIDENCE = 70`. זהו **Score**, לא הסתברות — קנה מידה משותף
+ל-Intraday/Pro, שונה מ-Path.
+
+### גודל פוזיציה (§14 + §15)
+`riskUsd = equity × 0.5%` ; `fullNotional = riskUsd / (|entry−SL| / entry)`.
+נחתך קשיח ע"י התקרות המשותפות: נכס בודד ≤ 8% מ-equity
+(`PER_ASSET_EXPOSURE_CAP_PERCENT`), חשיפה כוללת ≤ 20%
+(`MAX_TOTAL_EXPOSURE_PERCENT`, `trendBreakoutExecution.ts`). **מכיוון שה-SL
+הדוק (1.5×ATR(M15)), תקרת ה-8% היא לרוב האילוץ הכובל — וזה מכוון.**
+
+### Scale-in (§11) — מודל lots
+`fillDueOrders` לא יודע להוסיף לפוזיציה, לכן כל scale הוא `SimPosition` נפרד.
+עסקה לוגית אחת = כל ה-lots עם אותו נכס-בסיס + כיוון, אותו SL/TP לוגי, נסגרים
+יחד. לוטים 50/30/20% מ-`fullNotional`. SCALE_2 רק מעל +0.5R + מגמה תקפה;
+SCALE_3 רק מעל +1.0R + Supertrend עדיין בכיוון. אף פעם לא מוסיפים בהפסד
+(אין מרטינגייל / averaging-down). כל lot חייב להיות ≥ `MIN_SIM_ENTRY_USD`
+($100) — לוט שנחתך מתחת לזה ע"י התקרות פשוט לא נפתח.
+
+### ניהול סטופ (§12) — מחושב מחדש בכל tick
+מ-entry קבוע + ה-highest/lowest ש-factory כבר עוקב אחריו (הקוד אף פעם לא
+משנה את `pos.stopLoss`). ב-+1R → סטופ אפקטיבי = entry (break-even). ב-+1.5R →
+טריילינג `extreme ∓ 1.0×ATR(M15)`, מונוטוני בכיוון הרווח, לעולם לא מתרופף.
+
+### יציאות (§13)
+סטופ אפקטיבי נחצה · TP (2R) · היפוך H1 Supertrend נגד הפוזיציה · Time Stop
+אחרי 24 נרות H1. setup שהתבטל → חוסם scale-in נוסף, לא סוגר.
+
+### SHORT
+בסימולציה אי-אפשר לשרטט ב-SPOT, לכן SHORT = `FUTURES` במינוף **1x**
+(מתנהג כמו ספוט הפוך; כל התקרות חלות). `SIM_BOTS.bybit.maxFuturesPositions = 3`
+(ו-`path` = 2) — בניגוד ל-Pro שהוא 0.
+
+### מעגל שבירה
+זהה לשלושת האחרים (8%/15% על ה-equity של הבוט עצמו), מיושם ב-
+`generateTrendBreakoutOrders` (יציאות בלבד כשמופעל).
+
+### מה תוצאה בריאה אמורה להיראות
+- רוב הסימבולים: `NO_SIGNAL [H1_TREND_NEUTRAL]` או `[BREAKOUT_NOT_CONFIRMED]` —
+  תקין, המנוע דורש מגמה **וגם** פריצה **וגם** נפח **וגם** אישור M5.
+- כל `NO_SIGNAL` נושא סיבה מפורשת (§22): `VOLUME_TOO_LOW`,
+  `M5_CONFIRMATION_FAILED`, `ENTRY_TOO_EXTENDED`, `CONFIDENCE_BELOW_MIN`.
+- פוזיציה יחידה עשויה להופיע כ-1–3 lots (scale-in) — לא באג.
+
+---
+
+## מה משותף בין ארבעתם (ולמה אסור להתערבב)
 
 | נושא | קבוע יחיד | קובץ מקור |
 |---|---|---|
@@ -260,13 +331,25 @@ Spot LONG בלבד — כל התוחלות נמדדות כעסקת ספוט עם
 | Drawdown שבועי | 15% | `intradayParams.ts` → `WEEKLY_DRAWDOWN_LOCK_PERCENT` |
 | תקרת נכס בודד | 8% | `intradayParams.ts` → `PER_ASSET_EXPOSURE_CAP_PERCENT` |
 | מכפיל סיכון אדפטיבי | לפי streak הפסדים | `adaptiveRisk.ts` |
-| Fill/Fee/Slippage | מנוע אחד | `simExecution.ts` |
+| Fill/Fee/Slippage/Funding | מנוע אחד | `simExecution.ts` |
 
 כל אחד מהם **נמדד בנפרד** על ה-equity/positions/history של הבוט שלו בלבד
 (`server/simEngineFactory.ts`) — משותף הוא רק הסף, לא המדידה.
 
+### Funding (נוסף עם בוט 4, חל על כל ארבעתם)
+`applyFundingAccrual` (`simExecution.ts`) מנוכה בכל tick ב-`simEngineFactory.ts`
+לפני חישוב ה-equity, על פוזיציות **FUTURES** פתוחות בלבד:
+`notional × lastFundingRate × (elapsed / 8h)`. LONG משלם כשהריבית חיובית,
+SHORT מקבל. חלון הצבירה חסום ל-8 שעות כדי שהשבתת worker ארוכה לא תחייב סכום
+חד-פעמי. Pro ו-Path הם spot בלבד → `totalFunding = 0` בפועל; רק פוזיציות
+ה-futures של Intraday והשורטים של Bybit מרגישים את זה. זהו תיקון מודל-עלויות
+אחיד — לא שינוי באלגוריתם של אף מנוע.
+
 ## פערים ידועים, לא-קריטיים (לא תוקנו — לתעד בלבד)
 - **Pro `PRO_COVERAGE_FULL_WEIGHT=88`** מול סכום משקלות בפועל **105** —
   לא נבדק לעומק אם זה מקדים coverage=1 בתקופת חימום. (`proAlgEngine.ts:116`)
-- **Path sentiment leak** — קיים בקוד (`rebuildTable` מעביר Fear&Greed של
-  "היום"), אך רדום כל עוד `useFearGreed=false` נשאר `false` בכל קריאה.
+- **`scripts/pathStudy.ts` + `pathEngine.ts`/`pathStudy.ts`** — נשארו בקוד
+  (מיוצאים מ-`@cde/engine/analysis`, מסופקים ל-`aggregateToH4` ולבקטסטים) אך
+  **אף בוט לא סוחר לפיהם יותר** מאז שנתיב 4H עבר ל-Prev-4H Range.
+- **Prev-4H Range** — פילטר מגמת EMA20 בלבד; אין הוכחה לקצה אחרי עלויות
+  (פריצות 4H מאובררות היטב). נוסף כ**עמית השוואה**, לא כהמלצה.

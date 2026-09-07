@@ -168,25 +168,25 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
     expect(ev.status).toBe('NO_SIGNAL [NO_SLOTS]');
   });
 
-  it('equity below the $5 floor → NO_BUDGET', () => {
+  it('equity below the $100 sim floor → NO_BUDGET', () => {
     const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 4, equity: 4 }));
     expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
   });
 
-  it('low cash refuses even with healthy equity (cash-based, not equity-based)', () => {
-    // $50 cash but $10,000 equity → budget is min(1000, 50) = 50, which is above $5
-    // but the fill step would refuse it (budget + fee > cash), so the gate
-    // allocates against cash to prevent "ready to buy" with no purchase.
-    // confidence 80 → 10% allocation → min(1000, 50) = 50
-    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 10_000 }));
+  it('budget is allocated against CASH, not equity (cash-based sizing)', () => {
+    // $150 cash but $10,000 equity → budget = min(1000, 150) = 150, capped at
+    // available cash rather than sized off the much larger equity. 150 clears
+    // the $100 sim floor, so it is a real SIGNAL sized to the cash on hand.
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 150, equity: 10_000 }));
     expect(ev.status).toBe('SIGNAL SPOT BUY');
     expect(ev.willExecute).toBe(true);
-    expect(ev.budgetUsd).toBeCloseTo(50, 6); // capped at available cash
+    expect(ev.budgetUsd).toBeCloseTo(150, 6); // capped at available cash
   });
 
-  it('very low cash (<$5) refuses even with healthy equity', () => {
-    // $4 cash but $10,000 equity → budget = min(1000, 4) = 4 < $5 → NO_BUDGET
-    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 4, equity: 10_000 }));
+  it('low cash below the $100 sim floor refuses even with healthy equity', () => {
+    // $50 cash but $10,000 equity → budget = min(1000, 50) = 50 < $100 sim
+    // floor (MIN_SIM_ENTRY_USD) → NO_BUDGET. The sim bots do not open dust.
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 10_000 }));
     expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
     expect(ev.willExecute).toBe(false);
   });
@@ -222,7 +222,7 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
     // rejection path only fires when existing exposure already saturates it,
     // which cannot happen here since a held symbol is refused earlier (gate 3).
     const [ev] = applyProEntryGates([buyEval('LA', 95)], gateCtx({ equity: 1 }));
-    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]'); // trimmed to $0.08 — below the $5 floor, not a per-asset rejection
+    expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]'); // trimmed to $0.08 — below the $100 sim floor, not a per-asset rejection
   });
 });
 

@@ -11,6 +11,7 @@ import { useProSimulationBotContext } from '../contexts/ProSimulationBotContext'
 import { useWorkerAuth } from '../contexts/WorkerAuthContext';
 import { useCryptoData } from '../hooks/useCryptoData';
 import { usePathSimulationBotContext } from '../contexts/PathSimulationBotContext';
+import { useBybitSimulationBotContext } from '../contexts/BybitSimulationBotContext';
 // Thresholds are READ from the engines that own them, never restated here. A
 // number typed into JSX is a second definition, and the moment the engine moves
 // the panel starts describing a bot that no longer exists.
@@ -23,6 +24,7 @@ const SimulationBotPage = () => {
   const intraday = useSimulationBotContext();
   const pro = useProSimulationBotContext();
   const path = usePathSimulationBotContext();
+  const bybit = useBybitSimulationBotContext();
   const { cryptoData, isLoading } = useCryptoData();
   const { baseUrl, setBaseUrl, persistBaseUrl, baseUrlSource, setBaseUrlSource } = useWorkerAuth();
   const [groupBusy, setGroupBusy] = useState(false);
@@ -51,10 +53,11 @@ const SimulationBotPage = () => {
   const allBots: AggregatedBot[] = [
     toAggregated('חדש', intraday),
     toAggregated('פרו', pro),
-    // Path is the one engine with no browser fallback. When the worker is
-    // unreachable its snapshot is a placeholder (equity 10,000, exposure 0),
-    // not a reading — and `hasServerData` is how it says so.
-    toAggregated('נתיב 4H', path, path.hasServerData)
+    // Path and Bybit are the engines with no browser fallback. When the worker
+    // is unreachable their snapshot is a placeholder (equity 10,000, exposure
+    // 0), not a reading — and `hasServerData` is how they say so.
+    toAggregated('נתיב 4H', path, path.hasServerData),
+    toAggregated('Bybit', bybit, bybit.hasServerData)
   ];
 
   const runGroupAction = async (actions: Array<() => Promise<void>>) => {
@@ -75,7 +78,7 @@ const SimulationBotPage = () => {
   // remembered market data as a side effect of "start over" is a different,
   // heavier operation, and the operator gets to choose it deliberately.
   const clearAllCache = async () => {
-    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של שלושת המנועים ותרענן את הדף.')) {
+    if (!window.confirm('לאפס את כל המטמון של הבוטים (מקומי + שרת)? הפעולה תמחק את כל הפוזיציות וההיסטוריה של ארבעת המנועים ותרענן את הדף.')) {
       return;
     }
     for (const key of SIM_CACHE_KEYS) {
@@ -109,10 +112,10 @@ const SimulationBotPage = () => {
         <div className="text-center pt-2">
           <h1 className="text-3xl sm:text-4xl font-bold mb-2 text-primary flex items-center justify-center gap-3 font-mono">
             <Bot className="w-9 h-9" />
-            בוט סימולציה — השוואת שלושה אלגוריתמים
+            בוט סימולציה — השוואת ארבעה אלגוריתמים
           </h1>
           <p className="text-sm sm:text-base text-muted-foreground font-mono break-words">
-            מנוע חדש (רב-שכבתי Multi-Timeframe) · בוט פרו (מימוש מדויק של alg.md) · מנוע נתיב 4H (Empirical Path) — כל אחד עם הון וסטטיסטיקה נפרדים
+מנוע חדש (רב-שכבתי Multi-Timeframe) · בוט פרו (מימוש מדויק של alg.md) · נתיב 4H (טווח נר קודם — פריצת הגבוה/נמוך של נר ה-4H הקודם) · Bybit (TrendBreakout — פריצת Donchian על מגמת H1) — כל אחד עם הון וסטטיסטיקה נפרדים. נתיב 4H ו-Bybit הם סימולציה בלבד ואינם מיועדים לכסף אמיתי.
           </p>
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <Button
@@ -206,7 +209,7 @@ const SimulationBotPage = () => {
         {/* Cross-device sync status — the shared server state (so a second device
             sees the SAME running bot) needs a Worker URL configured on THIS
             device too; localStorage is per-device and never syncs on its own. */}
-        {(intraday.syncStatus === 'local-only' || pro.syncStatus === 'local-only' || path.syncStatus === 'local-only') && (
+        {(intraday.syncStatus === 'local-only' || pro.syncStatus === 'local-only' || path.syncStatus === 'local-only' || bybit.syncStatus === 'local-only') && (
           <Card className="border-yellow-500/40 bg-yellow-500/5">
             <CardContent className="p-4 space-y-2 font-mono">
               <div className="flex items-center gap-2 text-yellow-400 text-sm font-bold">
@@ -215,18 +218,20 @@ const SimulationBotPage = () => {
                   const offline = [
                     intraday.syncStatus === 'local-only' && 'חדש',
                     pro.syncStatus === 'local-only' && 'פרו',
-                    // Path has no local twin: offline for it means no data at
-                    // all, not "running locally". The banner below says so.
-                    path.syncStatus === 'local-only' && 'נתיב 4H'
+                    // Path and Bybit have no local twin: offline for them means
+                    // no data at all, not "running locally". The banner below
+                    // says so.
+                    path.syncStatus === 'local-only' && 'נתיב 4H',
+                    bybit.syncStatus === 'local-only' && 'Bybit'
                   ].filter(Boolean) as string[];
-                  return offline.length === 3
-                    ? 'שלושת המנועים לא מסונכרנים עם שרת — שניים מציגים סימולציה מקומית, ומנוע נתיב 4H אינו זמין כלל (הוא רץ בשרת בלבד)'
+                  return offline.length === 4
+                    ? 'ארבעת המנועים לא מסונכרנים עם שרת — חדש ופרו מציגים סימולציה מקומית, ומנועי נתיב 4H ו-Bybit אינם זמינים כלל (הם רצים בשרת בלבד)'
                     : `מנוע ${offline.join(' ו-')} לא מסונכרן עם שרת — מציג סימולציה מקומית בלבד במכשיר הזה`;
                 })()}
               </div>
               <p className="text-xs text-muted-foreground">
                 אם הפעלת את הבוט במכשיר אחר, לא תראה כאן את אותה פעילות עד שתחבר את המכשיר הזה לאותה כתובת Worker.
-                {intraday.syncError ? ` (${intraday.syncError})` : pro.syncError ? ` (${pro.syncError})` : path.syncError ? ` (${path.syncError})` : ''}
+                {intraday.syncError ? ` (${intraday.syncError})` : pro.syncError ? ` (${pro.syncError})` : path.syncError ? ` (${path.syncError})` : bybit.syncError ? ` (${bybit.syncError})` : ''}
               </p>
               <div className="flex gap-2 flex-wrap items-center">
                 <Input
@@ -253,7 +258,7 @@ const SimulationBotPage = () => {
             <div className="flex items-center gap-2 text-sm font-mono">
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
               <span className="text-muted-foreground">
-                {isLoading ? 'טוען נתוני שוק...' : `${cryptoData?.length || 0} נכסים חיים · נתונים משותפים לשלושת המנועים`}
+                {isLoading ? 'טוען נתוני שוק...' : `${cryptoData?.length || 0} נכסים חיים · נתונים משותפים לארבעת המנועים`}
               </span>
             </div>
           </CardContent>
@@ -273,8 +278,7 @@ const SimulationBotPage = () => {
           unavailableEngines={risk.unavailableEngines}
         />
 
-        {/* Three engines — 1 column on mobile, 2 from large up, so the odd
-            third never sits alone on its own row. */}
+        {/* Four engines — 1 column on mobile, 2 from large up (2×2). */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <SimulationEngineColumn
             title="מנוע חדש · Multi-Timeframe"
@@ -290,6 +294,7 @@ const SimulationBotPage = () => {
             pending={intraday.pending}
             totalFees={intraday.totalFees}
             totalSlippageCost={intraday.totalSlippageCost}
+            totalFunding={intraday.totalFunding}
             winRate={intraday.winRate}
             totalTrades={intraday.totalTrades}
             closedTrades={intraday.closedTrades}
@@ -319,6 +324,7 @@ const SimulationBotPage = () => {
             pending={pro.pending}
             totalFees={pro.totalFees}
             totalSlippageCost={pro.totalSlippageCost}
+            totalFunding={pro.totalFunding}
             winRate={pro.winRate}
             totalTrades={pro.totalTrades}
             closedTrades={pro.closedTrades}
@@ -335,25 +341,8 @@ const SimulationBotPage = () => {
           />
 
           <SimulationEngineColumn
-            title="מנוע נתיב 4H · Empirical Path"
-            confidenceKind="probability"
-            subtitle={
-              // The table's PROVENANCE is the headline, not its size: a
-              // validated table and an in-sample one look identical in the trade
-              // list and are worth completely different things.
-              !path.table
-                ? 'פירוק נר 4H ל-16 נתחי 15 דק׳ · טבלת הסתברויות נטענת'
-                : path.table.readiness === 'warming-up'
-                  // Zero buckets because no symbol has enough history yet is
-                  // NOT the same as zero buckets because nothing cleared the
-                  // bar, and the count alone reads identically for both.
-                  ? `נתחי 15 דק׳ בתוך נר 4H · אוסף היסטוריה (${path.table.skippedForHistory}/${path.table.symbolsSeen} מטבעות מתחת ל-${path.table.minCandlesRequired} נרות)`
-                  : path.table.source === 'validated'
-                    ? `נתחי 15 דק׳ בתוך נר 4H · ${path.table.buckets} דליים מאומתים (walk-forward)`
-                    : path.table.source === 'live-in-sample'
-                      ? `נתחי 15 דק׳ בתוך נר 4H · ${path.table.buckets} דליים IN-SAMPLE — לא אומת`
-                      : 'נתחי 15 דק׳ בתוך נר 4H · אין טבלה — הבוט נמנע'
-            }
+            title="נתיב 4H · טווח נר קודם"
+            subtitle="פריצת הגבוה/נמוך של נר ה-4H הקודם, בכיוון מגמת EMA20 (4H) · SL = אמצע הטווח, TP = טווח×1 · יציאה בסוף הנר"
             accentClass="text-violet-400"
             cryptoData={cryptoData}
             cash={path.cash}
@@ -365,6 +354,7 @@ const SimulationBotPage = () => {
             pending={path.pending}
             totalFees={path.totalFees}
             totalSlippageCost={path.totalSlippageCost}
+            totalFunding={path.totalFunding}
             winRate={path.winRate}
             totalTrades={path.totalTrades}
             closedTrades={path.closedTrades}
@@ -379,6 +369,36 @@ const SimulationBotPage = () => {
             pause={path.pause}
             resetAll={path.resetAll}
           />
+
+          <SimulationEngineColumn
+            title="Bybit · TrendBreakout"
+            subtitle="פריצת Donchian(20) ב-M15 על מגמת H1 (Supertrend + EMA50/200), תזמון M5 · SL 1.5×ATR, TP 2R, scale-in 50/30/20 · סימולציה בלבד"
+            accentClass="text-cyan-400"
+            cryptoData={cryptoData}
+            cash={bybit.cash}
+            positions={bybit.positions}
+            positionsValue={bybit.positionsValue}
+            equity={bybit.equity}
+            trades={bybit.trades}
+            history={bybit.history}
+            pending={bybit.pending}
+            totalFees={bybit.totalFees}
+            totalSlippageCost={bybit.totalSlippageCost}
+            totalFunding={bybit.totalFunding}
+            winRate={bybit.winRate}
+            totalTrades={bybit.totalTrades}
+            closedTrades={bybit.closedTrades}
+            evaluations={bybit.evaluations}
+            hasSavedSession={bybit.hasSavedSession}
+            nextTickAt={bybit.nextTickAt}
+            config={bybit.config}
+            setConfig={bybit.setConfig}
+            status={bybit.status}
+            isRunning={bybit.isRunning}
+            start={bybit.start}
+            pause={bybit.pause}
+            resetAll={bybit.resetAll}
+          />
         </div>
       </div>
     </div>
@@ -386,7 +406,7 @@ const SimulationBotPage = () => {
   );
 };
 
-// The three sim-bot providers now live at the app root (see App.tsx) so every
+// The four sim-bot providers now live at the app root (see App.tsx) so every
 // page — not just this one — sees live, server-synced bot state.
 export default SimulationBotPage;
 

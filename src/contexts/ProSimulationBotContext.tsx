@@ -47,6 +47,9 @@ export interface ProSimulationBotContextValue {
   pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
+  /** Perpetual funding on FUTURES positions (USD). 0 for Pro in practice — it
+   *  is spot-only — and 0 for the browser twin, which does not model funding. */
+  totalFunding: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
@@ -224,6 +227,7 @@ export function ProSimulationBotProvider({ children }: { children: ReactNode }) 
     pending: (activeSource.pending ?? []) as PendingOrder[],
     totalFees: activeSource.totalFees ?? 0,
     totalSlippageCost: activeSource.totalSlippageCost ?? 0,
+    totalFunding: (activeSource as { totalFunding?: number }).totalFunding ?? 0,
     winRate: activeSource.winRate ?? 0,
     totalTrades: activeSource.totalTrades ?? 0,
     closedTrades: activeSource.closedTrades ?? 0,

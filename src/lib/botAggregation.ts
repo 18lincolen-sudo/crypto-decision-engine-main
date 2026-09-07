@@ -15,6 +15,7 @@
 import { SIM_BOT_STORAGE_KEY } from '../hooks/useSimulationBot';
 import { PRO_SIM_BOT_STORAGE_KEY } from '../hooks/useProSimulationBot';
 import { PATH_SIM_BOT_LAST_KNOWN_RUNNING_KEY } from '../contexts/PathSimulationBotContext';
+import { BYBIT_SIM_BOT_LAST_KNOWN_RUNNING_KEY } from '../contexts/BybitSimulationBotContext';
 
 /**
  * Keys holding the bots' remembered history (positions/trades/equity/running).
@@ -38,6 +39,8 @@ export const SIM_CACHE_KEYS = [
   // does remember whether it was running. Leaving that behind made a cleared
   // bot come back "running" on the next load.
   PATH_SIM_BOT_LAST_KNOWN_RUNNING_KEY,
+  // Same for the Bybit (TrendBreakout) bot — server-only, one localStorage flag.
+  BYBIT_SIM_BOT_LAST_KNOWN_RUNNING_KEY,
   'crypto-portfolio'
 ];
 

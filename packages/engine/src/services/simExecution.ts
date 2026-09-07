@@ -64,8 +64,25 @@ export const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
   allowShortDuringHighVolatility: true,
   meanReversionMinStopAtrMult: 1.6,
   meanReversionMinStopPercent: 0.25,
-  meanReversionCloseConfirmStop: true
+  meanReversionCloseConfirmStop: true,
+  // Operator request: the sim bots do not open dust positions. buildRiskPlan
+  // rounds a sub-minimum intraday order UP to this (or rejects it if the floor
+  // would breach a portfolio cap). MIN_SIM_ENTRY_USD enforces the same $100
+  // floor for the other three bots at order-generation time.
+  minOrderUsd: 100
 };
+
+/**
+ * Smallest position any simulation bot will open, in USD.
+ *
+ * Applies to every sim bot (intraday / pro / path / bybit) at
+ * order-generation time. Larger than the ~$5 exchange-dust floor the fill core
+ * still keeps as a last-resort guard — this is the operator's "no entry below
+ * $100" rule, so a signal that can only be sized below it is skipped rather
+ * than taken small. For intraday specifically, SIM_INTRADAY_PARAMS_OVERRIDE
+ * .minOrderUsd lets buildRiskPlan round UP to $100 instead of skipping.
+ */
+export const MIN_SIM_ENTRY_USD = 100;
 
 // ── Shared data shapes ───────────────────────────────────────────────────────
 
@@ -325,6 +342,70 @@ export function isInEntryCooldown(cooldownAt: number | undefined, now: number = 
   return typeof cooldownAt === 'number' && now - cooldownAt < ENTRY_COOLDOWN_MS;
 }
 
+// ── Perpetual funding accrual (shared by all four sim bots) ───────────────────
+// The fill core already models fee + slippage; this is the third recurring
+// futures cost (spec §17). Applied uniformly in the engine factory's tick so
+// the four bots keep an identical cost model — a difference in their results
+// stays a difference in DECISIONS. In practice only the bots that hold FUTURES
+// positions (Intraday, and the Bybit bot's shorts) ever see a funding leg;
+// Pro and Path are spot-only.
+
+/** Perpetual funding settles every 8h on Binance/Bybit. */
+export const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
+
+export interface FundingRateReading {
+  /** Funding rate for ONE 8h period, as a fraction. 0.0001 = 0.01%/8h. */
+  lastFundingRate: number;
+  at: number;
+}
+
+export interface FundingAccrualResult {
+  cash: number;
+  /** Funding moved this call, in USD. Positive = the bots PAID (a cost). */
+  fundingPaid: number;
+  lastAppliedAt: number;
+}
+
+/**
+ * Time-prorated funding on open FUTURES positions between `lastAppliedAt` and
+ * `now` — a deterministic approximation of the 8h funding cycle, the same way
+ * the sim already prorates hold / time-stop budgets.
+ *
+ * LONG pays when the rate is positive (and receives when negative); SHORT is
+ * the mirror. SPOT positions have no funding leg. An empty / stale rate map is
+ * a no-op — a funding-feed outage must never disturb the simulation. The
+ * accrual window is capped at one funding interval so a long worker outage
+ * cannot bill a lump sum on restart.
+ */
+export function applyFundingAccrual(
+  positions: SimPosition[],
+  cash: number,
+  fundingBySymbol: Map<string, FundingRateReading> | undefined,
+  lastAppliedAt: number,
+  now: number = Date.now()
+): FundingAccrualResult {
+  if (!lastAppliedAt || lastAppliedAt >= now) return { cash, fundingPaid: 0, lastAppliedAt: now };
+  const elapsed = Math.min(now - lastAppliedAt, FUNDING_INTERVAL_MS);
+  const fraction = elapsed / FUNDING_INTERVAL_MS;
+  if (!(fraction > 0) || !fundingBySymbol || fundingBySymbol.size === 0) {
+    return { cash, fundingPaid: 0, lastAppliedAt: now };
+  }
+
+  let paid = 0;
+  for (const pos of positions) {
+    if (pos.type !== 'FUTURES') continue;
+    const key = pos.symbol.toUpperCase();
+    const reading = fundingBySymbol.get(key) ?? fundingBySymbol.get(`${key}USDT`);
+    if (!reading || !Number.isFinite(reading.lastFundingRate)) continue;
+    const live = pos.currentPrice || pos.entryPrice;
+    const notional = pos.quantity * live;
+    const isLong = pos.side === 'LONG' || pos.side === 'BUY';
+    paid += notional * reading.lastFundingRate * fraction * (isLong ? 1 : -1);
+  }
+
+  return { cash: cash - paid, fundingPaid: paid, lastAppliedAt: now };
+}
+
 // ── 2. Order generation ──────────────────────────────────────────────────────
 // Checks every open position for an exit (SL/TP/trailing/reversal/time-stop
 // via evaluatePositionExit), then queues new entry orders for evaluations
@@ -545,7 +626,11 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       riskLevel: ctx.riskLevel,
       sizingMultiplier: riskMult
     });
-    if (budget < 5) continue;
+    // Operator floor: no sim entry below MIN_SIM_ENTRY_USD. For intraday the
+    // budget has usually already been rounded up to it in buildRiskPlan
+    // (SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd); anything still under it here
+    // could not be sized to the floor without breaching a cap, so it is skipped.
+    if (budget < MIN_SIM_ENTRY_USD) continue;
 
     const evDirection = toPositionDirection(ev.tradeSide as string);
     if (correlationCandles) {
@@ -747,7 +832,10 @@ export function fillDueOrders(due: PendingOrder[], cash: number, positions: SimP
 
     if (isEntryOrder) {
       const budget = Math.min(order.budgetUsd ?? 100, workingCash);
-      if (budget < 5) continue;
+      // Operator floor, enforced again at fill time: if free cash dropped
+      // below MIN_SIM_ENTRY_USD between queueing and filling, drop the order
+      // rather than open it undersized.
+      if (budget < MIN_SIM_ENTRY_USD) continue;
 
       const isFutures = order.type === 'FUTURES';
       const leverage = order.leverage || 1;

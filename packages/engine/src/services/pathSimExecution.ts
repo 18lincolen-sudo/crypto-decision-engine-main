@@ -14,7 +14,7 @@
 
 import { Candle } from './tradeEngine';
 import type { SignalEvaluation } from './intradayBridge';
-import { isInEntryCooldown, computeEntryBudget, riskLevelSizingMultiplier } from './simExecution';
+import { isInEntryCooldown, computeEntryBudget, riskLevelSizingMultiplier, MIN_SIM_ENTRY_USD } from './simExecution';
 import type { SimPosition, PendingOrder } from './simExecution';
 import {
   isInStreakCooldown,
@@ -196,7 +196,7 @@ export function generatePathOrders(ctx: PathOrderGenContext): PendingOrder[] {
 
     const bucket = (ev.decision as unknown as { bucket?: PathBucket } | undefined)?.bucket;
     const budget = pathEntryBudget(bucket, ctx.equity, workingCash, ctx.positionPercent, ctx.riskLevel);
-    if (budget < 5) continue;
+    if (budget < MIN_SIM_ENTRY_USD) continue; // operator floor: no sim entry below $100
 
     const evDirection = toPositionDirection(ev.tradeSide as string);
     const gate = evaluateCorrelationGate({

@@ -195,18 +195,19 @@ describe('Test 6 — Clear Cache covers Path', () => {
   });
 });
 
-describe('Test 11 — the page names its three engines consistently', () => {
+describe('Test 11 — the page names its four engines consistently', () => {
   const page = readFileSync(join(process.cwd(), 'src/pages/SimulationBot.tsx'), 'utf8');
 
-  it('says three everywhere, never the old four', () => {
-    expect(page).toContain('שלושה אלגוריתמים');
-    expect(page).toContain('שלושת המנועים');
-    expect(page).not.toContain('ארבעה אלגוריתמים');
-    expect(page).not.toContain('ארבעת המנועים');
+  it('says four everywhere, never the old three', () => {
+    expect(page).toContain('ארבעה אלגוריתמים');
+    expect(page).toContain('ארבעת המנועים');
+    expect(page).not.toContain('שלושה אלגוריתמים');
+    expect(page).not.toContain('שלושת המנועים');
   });
 
-  it('names the Path engine in the header description', () => {
-    expect(page).toContain('Empirical Path');
+  it('names the Path and Bybit engines in the header description', () => {
+    expect(page).toContain('טווח נר קודם'); // Prev-4H Range (was "Empirical Path")
+    expect(page).toContain('TrendBreakout');
   });
 
   it('prints no hand-typed threshold: the numbers come from the engines', () => {

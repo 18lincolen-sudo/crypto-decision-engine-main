@@ -23,7 +23,11 @@ import { createSimEngine, SimSnapshot } from './simEngine.ts';
 import { createProSimEngine, ProSimSnapshot } from './proSimEngine.ts';
 // Fourth bot: trades a measured 15-minute slot inside the current 4H bar
 // rather than a chart score (see pathSimEngine.ts).
-import { createPathSimEngine, installValidatedTable, PathSimSnapshot, getPathTableStatus } from './pathSimEngine.ts';
+import { createPathSimEngine, PathSimSnapshot } from './pathSimEngine.ts';
+// Fifth engine, FOURTH sim bot: TrendBreakout (H1 trend + M15 Donchian breakout
+// + M5 timing). Simulation only — never a real-money bot until a separate
+// decision (see bybitSimEngine.ts).
+import { createBybitSimEngine, BybitSimSnapshot } from './bybitSimEngine.ts';
 // Core decision engine — single source of truth for Layers 0-3 (intraday MTF).
 import { evaluateIntradayDecision, IntradayDecision, IntradayTradeType as TradeType } from '@cde/engine/analysis';
 import { buildPortfolioRiskStats } from '@cde/engine';
@@ -116,6 +120,7 @@ export const ENGINE_VERSIONS = {
   intraday: '1.0.0',
   pro: '1.0.0',
   path: '1.0.0',
+  bybit: '1.0.0',
 } as const;
 
 
@@ -490,11 +495,7 @@ function simStoreFor(id: keyof typeof SIM_BOTS) {
 const simStore = simStoreFor('intraday');
 const proSimStore = simStoreFor('pro');
 const pathSimStore = simStoreFor('path');
-/** The validated 4H path table. Durable like every other artifact the worker
- *  depends on — it used to be read from a gitignored local file that simply did
- *  not exist on the server, so the bot silently fell back to an in-sample
- *  rebuild while reporting nothing about the difference. */
-const pathTableStore = createKVStore('path-table', join(DATA_DIR, 'path-table.json'));
+const bybitSimStore = simStoreFor('bybit');
 const configStore = createKVStore('config', join(DATA_DIR, 'config.json'));
 
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
@@ -623,39 +624,15 @@ async function persistProSim() {
   }));
 }
 
-// ── 4H Path sim (bot 4) ─────────────────────────────────────────────────────
-// Same config shape and the same shared defaults as the other three: the point
-// of the fourth bot is to isolate its DECISION layer, so every other variable
-// (capital, position cap, costs, sizing ceiling) is deliberately identical.
-// maxFuturesPositions is 0 (spot-only) and the confidence floor is a
-// PROBABILITY, so BOT_MIN_CONFIDENCE deliberately does not reach it — only
-// BOT_PATH_MIN_CONFIDENCE does. The registry enforces that, not this line.
+// ── "נתיב 4H" sim (Prev-4H Range) ───────────────────────────────────────────
+// Same config shape and shared defaults as the other three so the DECISION
+// layer is what is being compared. Since the empirical-bucket engine was
+// replaced, this bot reports a SCORE (not a probability) and is not spot-only
+// (maxFuturesPositions comes from the registry). SIMULATION ONLY.
 const DEFAULT_PATH_SIM_CONFIG = simBotDefaults('path', SIM_ENV);
 const pathSimState = { running: false, config: { ...DEFAULT_PATH_SIM_CONFIG } as typeof DEFAULT_PATH_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.path as string };
 
 const pathSimEngine = createPathSimEngine(() => symbols);
-
-/**
- * Installs the validated 4H table from durable storage at boot.
- *
- * Boot, not tick: `buildEvaluations` is synchronous, so a network read inside it
- * would either block the tick or resolve after the decision it was meant to
- * inform. Failure is not fatal — the bot falls back to its in-sample rebuild and
- * `/api/path-sim/table` reports `source` so the difference is visible rather
- * than assumed.
- */
-async function hydratePathTable() {
-  try {
-    const saved = await pathTableStore.get('table');
-    if (!saved) {
-      console.log('[path-table] none stored — the Path bot will rebuild in-sample until one is published');
-      return;
-    }
-    installValidatedTable(JSON.parse(saved));
-  } catch (e) {
-    console.warn('[path-table] unreadable, falling back to the in-sample rebuild:', e instanceof Error ? e.message : String(e));
-  }
-}
 
 async function hydratePathSim() {
   const saved = await pathSimStore.get('state');
@@ -673,6 +650,35 @@ async function persistPathSim() {
     running: pathSimState.running, config: pathSimState.config,
     snapshot: pathSimState.snapshot, updatedAt: pathSimState.updatedAt,
     engineVersion: pathSimState.engineVersion
+  }));
+}
+
+// ── Bybit sim (bot 4 on the page — TrendBreakout) ──────────────────────────
+// Same config shape and shared defaults as the other three so the DECISION
+// layer is what is being compared. Unlike Pro/Path this bot is NOT spot-only:
+// maxFuturesPositions comes from the registry (3) because SHORT setups are
+// simulated as 1x futures and scale-in opens up to 3 lots. SIMULATION ONLY.
+const DEFAULT_BYBIT_SIM_CONFIG = simBotDefaults('bybit', SIM_ENV);
+const bybitSimState = { running: false, config: { ...DEFAULT_BYBIT_SIM_CONFIG } as typeof DEFAULT_BYBIT_SIM_CONFIG, snapshot: null as unknown | null, updatedAt: 0, engineVersion: ENGINE_VERSIONS.bybit as string };
+
+const bybitSimEngine = createBybitSimEngine(() => symbols);
+
+async function hydrateBybitSim() {
+  const saved = await bybitSimStore.get('state');
+  if (!saved) return;
+  const s = JSON.parse(saved) as Record<string, unknown>;
+  bybitSimState.running = typeof s.running === 'boolean' ? s.running : false;
+  bybitSimState.config = { ...DEFAULT_BYBIT_SIM_CONFIG, ...sanitizeSimConfig(typeof s.config === 'object' && s.config !== null ? { ...s.config as Record<string, unknown> } : {}) };
+  bybitSimState.snapshot = s.snapshot ?? null;
+  bybitSimState.updatedAt = typeof s.updatedAt === 'number' ? s.updatedAt : 0;
+  bybitSimState.engineVersion = typeof s.engineVersion === 'string' ? s.engineVersion : ENGINE_VERSIONS.bybit;
+}
+
+async function persistBybitSim() {
+  await bybitSimStore.set('state', JSON.stringify({
+    running: bybitSimState.running, config: bybitSimState.config,
+    snapshot: bybitSimState.snapshot, updatedAt: bybitSimState.updatedAt,
+    engineVersion: bybitSimState.engineVersion
   }));
 }
 
@@ -1210,6 +1216,7 @@ createServer(async (req: BotRequest, res: BotResponse) => {
       intraday: DEFAULT_SIM_CONFIG,
       pro: DEFAULT_PRO_SIM_CONFIG,
       path: DEFAULT_PATH_SIM_CONFIG,
+      bybit: DEFAULT_BYBIT_SIM_CONFIG,
       // Which of the four environment variables are actually set here. The
       // frontend does not need this to function; an operator looking at two
       // deployments that disagree does.
@@ -1387,35 +1394,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, proSimState);
   }
 
-  // ── 4H Path sim endpoints ─────────────────────────────────────
+  // ── "נתיב 4H" sim endpoints (Prev-4H Range) ───────────────────
   if (req.method === 'GET' && url.pathname === '/api/path-sim/state') {
     return json(res, 200, pathSimState);
-  }
-
-  // Table telemetry: an empty table and a quiet market both produce no trades,
-  // and they are not the same situation.
-  // Publishing a table CHANGES WHAT THE BOT TRADES, so unlike the rest of the
-  // path-sim namespace this one is not UI-facing and stays behind the token.
-  // scripts/pathStudy.ts publish is the intended caller.
-  if (req.method === 'POST' && url.pathname === '/api/path-sim/table') {
-    if (!authorized(req)) return json(res, 401, { error: 'Unauthorized' });
-    const body = await readJsonBody(req);
-    if (!body || !Array.isArray((body as { table?: unknown }).table)) {
-      return json(res, 400, { error: 'expected { table: PathBucket[] , … }' });
-    }
-    const serialised = JSON.stringify(body);
-    // Firestore caps a document at 1MiB. Refuse loudly rather than write a
-    // document that silently fails to save.
-    if (serialised.length > 900_000) {
-      return json(res, 413, { error: `table too large (${serialised.length} bytes; cap ~900KB)` });
-    }
-    await pathTableStore.set('table', serialised);
-    const installed = installValidatedTable(body as Parameters<typeof installValidatedTable>[0]);
-    return json(res, 200, { ok: installed, buckets: (body as { table: unknown[] }).table.length });
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/path-sim/table') {
-    return json(res, 200, getPathTableStatus());
   }
 
   if (req.method === 'POST' && url.pathname === '/api/path-sim/start') {
@@ -1450,6 +1431,43 @@ createServer(async (req: BotRequest, res: BotResponse) => {
     return json(res, 200, pathSimState);
   }
 
+  // ── Bybit sim endpoints (TrendBreakout) ───────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/bybit-sim/state') {
+    return json(res, 200, bybitSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/bybit-sim/start') {
+    bybitSimState.running = true;
+    await persistBybitSim();
+    return json(res, 200, bybitSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/bybit-sim/stop') {
+    bybitSimState.running = false;
+    await persistBybitSim();
+    return json(res, 200, bybitSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/bybit-sim/reset') {
+    bybitSimState.running = false;
+    bybitSimEngine.reset(bybitSimState.config);
+    bybitSimState.snapshot = bybitSimEngine.getSnapshot();
+    bybitSimState.updatedAt = Date.now();
+    await persistBybitSim();
+    return json(res, 200, bybitSimState);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/bybit-sim/config') {
+    const body = await readJsonBody(req);
+    if (body && typeof body.config === 'object' && body.config !== null) {
+      if (applySimConfigPatch(bybitSimState, DEFAULT_BYBIT_SIM_CONFIG, body.config as Record<string, unknown>, bybitSimEngine)) {
+        bybitSimState.updatedAt = Date.now();
+      }
+    }
+    await persistBybitSim();
+    return json(res, 200, bybitSimState);
+  }
+
   return json(res, 404, { error: 'Not found' });
 }).listen(port, async () => {
   // On a free-tier host the local disk is wiped on every restart/spin-down —
@@ -1468,8 +1486,9 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   await hydrateProSim();
   if (proSimState.snapshot) proSimEngine.hydrate(proSimState.snapshot as ProSimSnapshot);
   await hydratePathSim();
-  await hydratePathTable();
   if (pathSimState.snapshot) pathSimEngine.hydrate(pathSimState.snapshot as PathSimSnapshot);
+  await hydrateBybitSim();
+  if (bybitSimState.snapshot) bybitSimEngine.hydrate(bybitSimState.snapshot as BybitSimSnapshot);
   console.log('[cors] allowed origins: [' + allowedOrigins.join(', ') + ']' + (allowedOrigins.length === 0 ? ' (wildcard)' : ''));
   console.log(`Trading worker listening on ${port} | mode=${testnet ? 'testnet' : 'live'} | dryRun=${dryRun} | symbols=${symbols.length} | risk=${riskLevel} | cors=${allowedOrigins.join(',') || '*'}`);
   if (state.running) void scan();
@@ -1579,12 +1598,14 @@ createServer(async (req: BotRequest, res: BotResponse) => {
   startSimTicker('intraday', simState, simEngine, persistSim);
   startSimTicker('pro', proSimState, proSimEngine, persistProSim);
   startSimTicker('path', pathSimState, pathSimEngine, persistPathSim);
+  startSimTicker('bybit', bybitSimState, bybitSimEngine, persistBybitSim);
 });
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] ${signal} — flushing state and warm cache`);
   try { await store.set('state', serializeState()); } catch { /* ignore */ }
   try { await persistPathSim(); } catch { /* ignore */ }
+  try { await persistBybitSim(); } catch { /* ignore */ }
   lastCachePersistAt = 0;
   try { await persistMarketCache(); } catch { /* ignore */ }
   // Force-flush the throttled sim snapshots too — otherwise up to

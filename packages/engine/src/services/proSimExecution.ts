@@ -34,6 +34,7 @@ import { PER_ASSET_EXPOSURE_CAP_PERCENT } from './intradayParams';
 import type { Candle } from './tradeEngine';
 import type { SignalEvaluation, DecisionFactor } from './intradayBridge';
 import type { SimPosition, PendingOrder } from './simExecution';
+import { MIN_SIM_ENTRY_USD } from './simExecution';
 
 export const uid = (p: string) => `pro-${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -245,8 +246,8 @@ export function applyProEntryGates(
       // fresh position's entire exposure to that asset.
       const perAssetCap = ctx.equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
       const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash, perAssetCap);                            // 7
-      if (budget < 5) {
-        return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $5)`, false, minConfidence);
+      if (budget < MIN_SIM_ENTRY_USD) {
+        return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $${MIN_SIM_ENTRY_USD})`, false, minConfidence);
       }
       occupiedSlots++;                                                                                                          // 8
       projectedCash -= budget;
@@ -310,7 +311,7 @@ export function generateProOrders(ctx: ProOrderGenContext): PendingOrder[] {
   for (const ev of evaluations) {
     if (!ev.willExecute || ev.action !== 'buy' || !ev.price) continue;
     const budget = ev.budgetUsd ?? 0; // §4 gate 7, allocated in the gate pass
-    if (budget < 5) continue;
+    if (budget < MIN_SIM_ENTRY_USD) continue;
     if (positions.some((p) => p.symbol === ev.symbol)) continue;
     if (newOrders.some((o) => o.symbol === ev.symbol) || pending.some((o) => o.symbol === ev.symbol)) continue;
 

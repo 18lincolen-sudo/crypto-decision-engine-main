@@ -67,11 +67,15 @@ export {
   riskLevelSizingMultiplier,
   ENTRY_COOLDOWN_MS,
   isInEntryCooldown,
+  MIN_SIM_ENTRY_USD,
   generateNewOrders,
   LIMIT_ORDER_TTL_MS,
   selectFillableOrders,
-  fillDueOrders
+  fillDueOrders,
+  applyFundingAccrual,
+  FUNDING_INTERVAL_MS
 } from './services/simExecution';
+export type { FundingRateReading, FundingAccrualResult } from './services/simExecution';
 
 // ── Drawdown circuit-breaker thresholds ─────────────────────────────────────
 // Re-exported from intradayParams so the server-side bot engines read the SAME
@@ -124,3 +128,24 @@ export {
 export { generatePathOrders, pathEntryBudget, MIN_PATH_CANDLES,
   PATH_MIN_H4_BARS } from './services/pathSimExecution';
 export type { PathOrderGenContext } from './services/pathSimExecution';
+
+// ── Prev-4H Range ("נתיב 4H" sim bot) order generation ───────────────────────
+export {
+  generatePrev4hRangeOrders,
+  MAX_TOTAL_EXPOSURE_PERCENT as PREV4H_MAX_TOTAL_EXPOSURE_PERCENT
+} from './services/prev4hRangeExecution';
+export type {
+  Prev4hRangeOrderGenContext,
+  Prev4hRangeCandleSet
+} from './services/prev4hRangeExecution';
+
+// ── TrendBreakout ("Bybit" sim bot) order generation ─────────────────────────
+export {
+  generateTrendBreakoutOrders,
+  effectiveStop as trendBreakoutEffectiveStop,
+  MAX_TOTAL_EXPOSURE_PERCENT
+} from './services/trendBreakoutExecution';
+export type {
+  TrendBreakoutOrderGenContext,
+  TrendBreakoutCandleSet
+} from './services/trendBreakoutExecution';

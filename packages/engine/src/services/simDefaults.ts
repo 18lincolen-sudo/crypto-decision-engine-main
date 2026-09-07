@@ -29,7 +29,7 @@
 
 import type { SimBotConfig } from './simExecution';
 
-export type SimBotId = 'intraday' | 'pro' | 'path';
+export type SimBotId = 'intraday' | 'pro' | 'path' | 'bybit';
 
 /**
  * What a bot's `confidence` number MEANS.
@@ -123,15 +123,35 @@ export const SIM_BOTS: Record<SimBotId, SimBotSpec> = {
     routePrefix: '/api/path-sim',
     storeKey: 'path-sim-state',
     uiFacing: true,
-    // A probability, not a score. See ConfidenceScale.
-    confidenceScale: 'probability',
-    minConfidence: 33,
-    maxFuturesPositions: 0
+    // Prev-4H Range reports a weighted 0-100 SIGNAL score (breakout distance +
+    // trend strength + range quality) — same scale family as Intraday / Pro /
+    // Bybit. The old empirical-bucket engine reported a probability (a Wilson
+    // lower bound); that engine and its lookup table were removed.
+    confidenceScale: 'score',
+    minConfidence: 55,
+    // Not spot-only: a breakout BELOW the previous 4H low is simulated as a
+    // 1x FUTURES short (spot cannot short), same as the Bybit bot.
+    maxFuturesPositions: 2
+  },
+  bybit: {
+    id: 'bybit',
+    label: 'Bybit · פריצת מגמה',
+    routePrefix: '/api/bybit-sim',
+    storeKey: 'bybit-sim-state',
+    uiFacing: true,
+    // TrendBreakout reports a weighted 0-100 SIGNAL score (spec §7), same scale
+    // family as Intraday and Pro — not a probability like Path.
+    confidenceScale: 'score',
+    minConfidence: 70,
+    // Unlike Pro and Path this bot is NOT spot-only: SHORT setups are simulated
+    // as 1x FUTURES positions (spot cannot short), and scale-in opens up to 3
+    // lots per logical trade — hence a non-zero futures cap.
+    maxFuturesPositions: 3
   }
 };
 
 /** Stable order: the order the simulation page lays the columns out in. */
-export const SIM_BOT_IDS: SimBotId[] = ['intraday', 'pro', 'path'];
+export const SIM_BOT_IDS: SimBotId[] = ['intraday', 'pro', 'path', 'bybit'];
 
 export const SIM_BOT_SPECS: SimBotSpec[] = SIM_BOT_IDS.map((id) => SIM_BOTS[id]);
 
@@ -144,13 +164,15 @@ export const UI_FACING_SIM_PREFIXES: string[] = SIM_BOT_SPECS
 export const SIM_MIN_CONFIDENCE: Record<SimBotId, number> = {
   intraday: SIM_BOTS.intraday.minConfidence,
   pro: SIM_BOTS.pro.minConfidence,
-  path: SIM_BOTS.path.minConfidence
+  path: SIM_BOTS.path.minConfidence,
+  bybit: SIM_BOTS.bybit.minConfidence
 };
 
 export const SIM_MAX_FUTURES_POSITIONS: Record<SimBotId, number> = {
   intraday: SIM_BOTS.intraday.maxFuturesPositions,
   pro: SIM_BOTS.pro.maxFuturesPositions,
-  path: SIM_BOTS.path.maxFuturesPositions
+  path: SIM_BOTS.path.maxFuturesPositions,
+  bybit: SIM_BOTS.bybit.maxFuturesPositions
 };
 
 /**

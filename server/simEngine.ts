@@ -12,7 +12,7 @@ import {
   StrategyTickInput,
   SimSnapshot
 } from './simEngineFactory';
-import { SIM_MIN_CONFIDENCE } from '@cde/engine/execution';
+import { SIM_MIN_CONFIDENCE, SIM_INTRADAY_PARAMS_OVERRIDE } from '@cde/engine/execution';
 import { generateNewOrders } from '@cde/engine/execution';
 import { SignalEvaluation, DecisionFactor } from '@cde/engine';
 import { Candle, PortfolioRiskStats } from '@cde/engine';
@@ -126,7 +126,12 @@ const intradayStrategy: SimEngineStrategy = {
           livePrice: snap.livePrice,
           priceChange24h
         },
-        params: DEFAULT_INTRADAY_PARAMS as unknown as Record<string, unknown>,
+        // Simulation-only param layer — NOT the real bot's (tradingWorker.ts's
+        // scan() passes DEFAULT_INTRADAY_PARAMS unmodified). Carries the sim's
+        // mean-reversion tuning AND minOrderUsd:100 so buildRiskPlan rounds a
+        // sub-$100 intraday order up to the operator floor instead of opening
+        // it small.
+        params: { ...DEFAULT_INTRADAY_PARAMS, ...SIM_INTRADAY_PARAMS_OVERRIDE } as unknown as Record<string, unknown>,
         now: Date.now(),
         closedTrades: input.closedTrades,
         config: {

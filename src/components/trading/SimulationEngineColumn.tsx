@@ -42,6 +42,9 @@ export interface EngineColumnProps {
   pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
+  /** Cumulative perpetual funding on FUTURES positions (USD, positive = paid).
+   *  Optional — spot-only bots and pre-funding snapshots leave it undefined. */
+  totalFunding?: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
@@ -64,7 +67,7 @@ export interface EngineColumnProps {
 export default function SimulationEngineColumn({
   title, subtitle, accentClass, cryptoData,
   cash, positions, positionsValue, equity, trades, history, pending,
-  totalFees, totalSlippageCost, winRate, totalTrades, closedTrades,
+  totalFees, totalSlippageCost, totalFunding = 0, winRate, totalTrades, closedTrades,
   evaluations, hasSavedSession, nextTickAt, config: botConfig, setConfig: setBotConfig,
   status, isRunning, start, pause, resetAll, confidenceKind = 'score'
 }: EngineColumnProps) {
@@ -480,7 +483,7 @@ export default function SimulationEngineColumn({
           metrics={[
             { label: 'עסקאות', value: `${totalTrades}`, hint: `${closedTrades} נסגרו · ${winRate.toFixed(1)}%` },
             { label: 'פוזיציות', value: `${positions.length}/${botConfig.maxPositions ?? 7}`, hint: `${openFuturesCount} פיוצ'רס` },
-            { label: 'עלויות', value: `-$${(totalFees + totalSlippageCost).toFixed(2)}`, tone: 'negative', hint: `עמלות $${totalFees.toFixed(2)}` },
+            { label: 'עלויות', value: `-$${(totalFees + totalSlippageCost + Math.max(0, totalFunding)).toFixed(2)}`, tone: 'negative', hint: `עמלות $${totalFees.toFixed(2)}${totalFunding ? ` · פאנדינג ${totalFunding >= 0 ? '-' : '+'}$${Math.abs(totalFunding).toFixed(2)}` : ''}` },
             { label: 'אחרון', value: lastTrade ? `${lastTrade.side.toUpperCase()} ${lastTrade.symbol}` : '—', hint: lastTrade?.timestamp || 'אין' }
           ]}
         />

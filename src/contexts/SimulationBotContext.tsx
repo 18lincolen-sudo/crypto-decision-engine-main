@@ -39,6 +39,9 @@ export interface SimulationBotContextValue {
   pending: PendingOrder[];
   totalFees: number;
   totalSlippageCost: number;
+  /** Perpetual funding on FUTURES positions (USD, positive = paid). 0 for the
+   *  browser twin, which does not model funding — the server snapshot does. */
+  totalFunding: number;
   winRate: number;
   totalTrades: number;
   closedTrades: number;
@@ -231,6 +234,7 @@ export function SimulationBotProvider({ children }: { children: ReactNode }) {
     pending: (activeSource.pending ?? []) as PendingOrder[],
     totalFees: activeSource.totalFees ?? 0,
     totalSlippageCost: activeSource.totalSlippageCost ?? 0,
+    totalFunding: (activeSource as { totalFunding?: number }).totalFunding ?? 0,
     winRate: activeSource.winRate ?? 0,
     totalTrades: activeSource.totalTrades ?? 0,
     closedTrades: activeSource.closedTrades ?? 0,

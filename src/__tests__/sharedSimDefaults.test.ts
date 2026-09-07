@@ -42,12 +42,13 @@ describe('shared sim defaults', () => {
     // Pro's operator flat bar: 70 — the bot enters a BUY above it (per-risk
     // §3 values remain exported as reference only).
     expect(SIM_MIN_CONFIDENCE.pro).toBe(70);
-    // A probability, not a score. Never align this with the other two.
-    expect(SIM_MIN_CONFIDENCE.path).toBe(33);
+    // Prev-4H Range — a 0-100 signal score (breakout distance + trend + range),
+    // same scale family as the others; 55 is its own calibration.
+    expect(SIM_MIN_CONFIDENCE.path).toBe(55);
   });
 
-  it('keeps bot 4 spot-only', () => {
-    expect(SIM_MAX_FUTURES_POSITIONS.path).toBe(0);
+  it('lets the "נתיב 4H" bot short via 1x futures (breakout below the prev-4H low)', () => {
+    expect(SIM_MAX_FUTURES_POSITIONS.path).toBe(2);
   });
 
   it('caps the sims at the live bot’s position limit, not above it', () => {
