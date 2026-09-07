@@ -60,6 +60,32 @@ const SimulationBotPage = () => {
     toAggregated('Bybit', bybit, bybit.hasServerData)
   ];
 
+  // The four bots as compact summary cards (equity / P&L / positions / win
+  // rate). Structurally narrower than any one context so the four differing
+  // context types assign cleanly; `hasServerData` is optional because only the
+  // two server-only bots carry it.
+  const summaryBots: Array<{
+    key: string;
+    label: string;
+    accent: string;
+    ring: string;
+    serverOnly?: boolean;
+    ctx: {
+      config: { initialAmount: number };
+      equity: number;
+      positions: Array<{ type?: string }>;
+      isRunning: boolean;
+      winRate: number;
+      closedTrades: number;
+      hasServerData?: boolean;
+    };
+  }> = [
+    { key: 'intraday', label: 'חדש', ctx: intraday, accent: 'text-primary', ring: 'border-primary/30' },
+    { key: 'pro', label: 'פרו', ctx: pro, accent: 'text-amber-400', ring: 'border-amber-400/30' },
+    { key: 'path', label: 'נתיב 4H', ctx: path, accent: 'text-violet-400', ring: 'border-violet-400/30', serverOnly: true },
+    { key: 'bybit', label: 'Bybit', ctx: bybit, accent: 'text-cyan-400', ring: 'border-cyan-400/30', serverOnly: true }
+  ];
+
   const runGroupAction = async (actions: Array<() => Promise<void>>) => {
     setGroupBusy(true);
     setGroupError(null);
@@ -108,16 +134,19 @@ const SimulationBotPage = () => {
       <Navigation />
 
       <div className="max-w-[1600px] mx-auto p-3 sm:p-4 space-y-6">
-        {/* Header */}
-        <div className="text-center pt-2">
-          <h1 className="text-3xl sm:text-4xl font-bold mb-2 text-primary flex items-center justify-center gap-3 font-mono">
-            <Bot className="w-9 h-9" />
-            בוט סימולציה — השוואת ארבעה אלגוריתמים
-          </h1>
-          <p className="text-sm sm:text-base text-muted-foreground font-mono break-words">
-מנוע חדש (רב-שכבתי Multi-Timeframe) · בוט פרו (מימוש מדויק של alg.md) · נתיב 4H (טווח נר קודם — פריצת הגבוה/נמוך של נר ה-4H הקודם) · Bybit (TrendBreakout — פריצת Donchian על מגמת H1) — כל אחד עם הון וסטטיסטיקה נפרדים. נתיב 4H ו-Bybit הם סימולציה בלבד ואינם מיועדים לכסף אמיתי.
-          </p>
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+        {/* Header — one compact title row + one controls row (was five stacked
+            full-width cards). */}
+        <div className="pt-2 space-y-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold text-primary flex items-center gap-2 font-mono">
+              <Bot className="w-7 h-7" />
+              בוט סימולציה — השוואת ארבעה אלגוריתמים
+            </h1>
+            <span className="text-[11px] text-muted-foreground font-mono">
+              הון וסטטיסטיקה נפרדים לכל בוט · נתיב 4H ו-Bybit סימולציה בלבד (לא לכסף אמיתי)
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
               onClick={() => void runGroupAction(groupAction(allBots, 'start'))}
@@ -156,55 +185,52 @@ const SimulationBotPage = () => {
               <Trash2 className="w-4 h-4" />
               איפוס מטמון (מקומי + שרת)
             </Button>
+            <div className="h-6 w-px bg-border mx-1 hidden sm:block" />
+
+            {/* Worker URL + live-data pulled inline so the header is two rows,
+                not a stack of full-width diagnostic cards. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-mono text-muted-foreground">
+              <span>Worker:</span>
+              <span className="text-primary font-semibold break-all">{baseUrl || 'לא הוגדר'}</span>
+              <span className={`px-1.5 py-0.5 rounded ${
+                baseUrlSource === 'env' ? 'bg-green-500/10 text-green-400' :
+                baseUrlSource === 'localStorage' ? 'bg-yellow-500/10 text-yellow-400' :
+                baseUrlSource === 'manual' ? 'bg-blue-500/10 text-blue-400' :
+                'bg-muted text-muted-foreground'
+              }`}>
+                {sourceLabel[baseUrlSource] || baseUrlSource}
+              </span>
+              {baseUrl && (
+                <a
+                  href={`${baseUrl}/health`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  /health
+                </a>
+              )}
+              {baseUrl && (
+                <button type="button" onClick={resetWorkerUrl} className="text-destructive hover:underline">
+                  איפוס כתובת
+                </button>
+              )}
+              <span className="mx-0.5">·</span>
+              <span className="inline-flex items-center gap-1">
+                <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-primary' : ''}`} />
+                {isLoading ? 'טוען שוק…' : `${cryptoData?.length || 0} נכסים חיים · נתונים משותפים לארבעת המנועים`}
+              </span>
+            </div>
           </div>
 
           {(groupError || anyControlError) && (
-            <Card className="mt-3 border-red-500/40 bg-red-500/10">
+            <Card className="border-red-500/40 bg-red-500/10">
               <CardContent className="p-3 text-sm text-red-300 font-mono">
                 {groupError || anyControlError}
               </CardContent>
             </Card>
           )}
-
-        {/* Worker URL diagnostic — shows exactly which URL the frontend is using
-            and where it came from. This is the #1 cause of "CORS blocked" errors
-            after a Render URL change: localStorage still holds the old address. */}
-        <Card className="border-primary/20 bg-card/50">
-          <CardContent className="p-3 flex flex-wrap items-center gap-3 text-xs font-mono">
-            <span className="text-muted-foreground">Worker URL:</span>
-            <span className="text-primary font-semibold break-all">{baseUrl || 'לא הוגדר'}</span>
-            <span className="text-muted-foreground">מקור:</span>
-            <span className={`px-2 py-0.5 rounded ${
-              baseUrlSource === 'env' ? 'bg-green-500/10 text-green-400' :
-              baseUrlSource === 'localStorage' ? 'bg-yellow-500/10 text-yellow-400' :
-              baseUrlSource === 'manual' ? 'bg-blue-500/10 text-blue-400' :
-              'bg-muted text-muted-foreground'
-            }`}>
-              {sourceLabel[baseUrlSource] || baseUrlSource}
-            </span>
-            {baseUrl && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={resetWorkerUrl}
-                className="h-7 text-xs text-destructive hover:text-destructive"
-              >
-                איפוס כתובת
-              </Button>
-            )}
-            {baseUrl && (
-              <a
-                href={`${baseUrl}/health`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline flex items-center gap-1"
-              >
-                <ExternalLink className="w-3 h-3" />
-                בדיקת /health
-              </a>
-            )}
-          </CardContent>
-        </Card>
 
         {/* Cross-device sync status — the shared server state (so a second device
             sees the SAME running bot) needs a Worker URL configured on THIS
@@ -252,17 +278,50 @@ const SimulationBotPage = () => {
           </Card>
         )}
 
-        {/* Live data status */}
-        <Card className="border-primary/30 bg-card/50 backdrop-blur">
-          <CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-mono">
-              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
-              <span className="text-muted-foreground">
-                {isLoading ? 'טוען נתוני שוק...' : `${cryptoData?.length || 0} נכסים חיים · נתונים משותפים לארבעת המנועים`}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
+        {/* Four analytic summary cards — one column per bot: equity, P&L, open
+            positions, win rate. Full controls + decision feed stay in each
+            engine column below. */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {summaryBots.map(({ key, label, ctx, accent, ring, serverOnly }) => {
+            const invested = ctx.config.initialAmount || 10_000;
+            const pnl = ctx.equity - invested;
+            const pnlPct = invested ? (pnl / invested) * 100 : 0;
+            const noData = serverOnly && !ctx.hasServerData;
+            const openCount = ctx.positions.length;
+            const futCount = ctx.positions.filter((p) => p.type === 'FUTURES').length;
+            const up = pnl >= 0;
+            return (
+              <Card key={key} className={`bg-card/50 backdrop-blur ${ring}`}>
+                <CardContent className="p-3 font-mono space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-sm font-bold ${accent}`}>{label}</span>
+                    <span
+                      className={`w-2 h-2 rounded-full ${ctx.isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}
+                      title={ctx.isRunning ? 'פעיל' : 'מושבת'}
+                    />
+                  </div>
+                  {noData ? (
+                    <div className="text-xs text-muted-foreground py-3">אין נתוני שרת</div>
+                  ) : (
+                    <>
+                      <div className="text-xl font-bold tabular-nums">
+                        ${ctx.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </div>
+                      <div className={`text-xs font-bold tabular-nums ${up ? 'text-green-400' : 'text-red-400'}`}>
+                        {up ? '+' : ''}${pnl.toFixed(2)} ({up ? '+' : ''}{pnlPct.toFixed(2)}%)
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-1.5 border-t border-border/30">
+                        <span>{openCount} פוז׳{futCount ? ` · ${futCount}F` : ''}</span>
+                        <span>הצלחה {ctx.winRate.toFixed(0)}%</span>
+                        <span>{ctx.closedTrades} נסגרו</span>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
 
         {/* Combined risk overview */}
         <PortfolioRiskMeter

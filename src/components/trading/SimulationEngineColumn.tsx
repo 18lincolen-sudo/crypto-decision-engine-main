@@ -489,8 +489,10 @@ export default function SimulationEngineColumn({
         />
       </div>
 
-      {/* Positions & Trades — fixed height section */}
-      <Card className="border-border/40 bg-card/50 backdrop-blur">
+      {/* Positions & Trades — pinned to the BOTTOM of the column (mt-auto) with a
+          fixed-height inner scroll area, so a bot holding 12 positions is the
+          same height as one holding none and the four columns stay aligned. */}
+      <Card className="border-border/40 bg-card/50 backdrop-blur mt-auto">
         <CardContent className="p-3">
           <Tabs defaultValue="positions">
             <TabsList className="grid grid-cols-2 w-full mb-3">
@@ -500,11 +502,11 @@ export default function SimulationEngineColumn({
 
             <TabsContent value="positions">
               {positions.length === 0 ? (
-                <div className="text-muted-foreground text-xs text-center py-6 font-mono">
+                <div className="text-muted-foreground text-xs text-center font-mono h-[26rem] flex items-center justify-center">
                   {isRunning ? 'ממתין לאיתות מתאים...' : 'הפעל כדי להתחיל'}
                 </div>
               ) : (
-                <div className="space-y-3 max-h-[28rem] overflow-y-auto">
+                <div className="space-y-3 h-[26rem] overflow-y-auto pr-1">
                   {positions.map((pos) => {
                     const isLong = pos.side === 'LONG' || pos.side === 'BUY';
                     const liveAsset = cryptoData?.find((c) => c.symbol.toUpperCase() === pos.symbol.toUpperCase());
@@ -536,9 +538,9 @@ export default function SimulationEngineColumn({
 
             <TabsContent value="trades">
               {trades.length === 0 ? (
-                <div className="text-muted-foreground text-xs text-center py-6 font-mono">אין עסקאות עדיין</div>
+                <div className="text-muted-foreground text-xs text-center font-mono h-[26rem] flex items-center justify-center">אין עסקאות עדיין</div>
               ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto font-mono">
+                <div className="space-y-2 h-[26rem] overflow-y-auto font-mono pr-1">
                   {trades.map((trade) => (
                     <div key={trade.id} className="p-2 border border-border/30 rounded bg-card/30">
                       {(() => {
