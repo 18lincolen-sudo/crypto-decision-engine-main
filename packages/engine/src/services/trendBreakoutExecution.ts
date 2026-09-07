@@ -260,15 +260,24 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
     confidence: number;
     reason: string;
     scaleLabel: string;
+    /** SCALE_1 only: round a sub-$100 first entry UP to the floor (cash
+     *  permitting). Scale-in lots keep the skip — bloating a 30% add to $100
+     *  would break the 50/30/20 proportion. */
+    floorBump?: boolean;
   }): number => {
     const isLong = opts.side === 'LONG';
     const assetUsed = exposureByBase.get(opts.base) ?? 0;
     const assetHeadroom = Math.max(0, perAssetCap - assetUsed);
     const totalHeadroom = Math.max(0, totalCap - totalExposure);
-    const notional = Math.min(opts.desiredNotional, assetHeadroom, totalHeadroom, workingCash);
-    // Operator floor: no sim entry below MIN_SIM_ENTRY_USD. A scale-in lot that
-    // cannot be sized to the floor without breaching a cap is simply skipped.
-    if (!(notional >= MIN_SIM_ENTRY_USD)) return 0;
+    let notional = Math.min(opts.desiredNotional, assetHeadroom, totalHeadroom, workingCash);
+    // Operator floor: no sim entry below MIN_SIM_ENTRY_USD.
+    if (notional < MIN_SIM_ENTRY_USD) {
+      if (opts.floorBump && workingCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD) {
+        notional = MIN_SIM_ENTRY_USD;
+      } else {
+        return 0;
+      }
+    }
 
     exposureByBase.set(opts.base, assetUsed + notional);
     totalExposure += notional;
@@ -374,7 +383,8 @@ export function generateTrendBreakoutOrders(ctx: TrendBreakoutOrderGenContext): 
       takeProfit: plan.takeProfit,
       confidence: ev.confidence,
       reason: `כניסה ראשונית · SL ${plan.stopLoss.toFixed(6)} TP ${plan.takeProfit.toFixed(6)}`,
-      scaleLabel: `scale 1/${p.scaleFractions.length}`
+      scaleLabel: `scale 1/${p.scaleFractions.length}`,
+      floorBump: true
     });
     if (committed > 0) {
       logicalTradeCount++;

@@ -77,10 +77,15 @@ export const SIM_INTRADAY_PARAMS_OVERRIDE: Partial<IntradayParams> = {
  *
  * Applies to every sim bot (intraday / pro / path / bybit) at
  * order-generation time. Larger than the ~$5 exchange-dust floor the fill core
- * still keeps as a last-resort guard — this is the operator's "no entry below
- * $100" rule, so a signal that can only be sized below it is skipped rather
- * than taken small. For intraday specifically, SIM_INTRADAY_PARAMS_OVERRIDE
- * .minOrderUsd lets buildRiskPlan round UP to $100 instead of skipping.
+ * keeps as a last-resort guard.
+ *
+ * The rule is "$100 minimum, always": a signal whose computed budget is below
+ * this is ROUNDED UP to it whenever the bot's free cash can cover $100 — even
+ * if that exceeds the 8%-per-asset / 20%-total exposure caps (an accepted
+ * trade-off, and only reachable on a small account). It is skipped only when
+ * there genuinely is not $100 of free cash behind it. (For intraday,
+ * SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd makes buildRiskPlan do the round-up
+ * first; this is the backstop.)
  */
 export const MIN_SIM_ENTRY_USD = 100;
 
@@ -618,7 +623,7 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
     const riskMult = typeof rawRisk?.sizingMultiplier === 'number' && Number.isFinite(rawRisk.sizingMultiplier)
       ? Math.max(0, Math.min(1, rawRisk.sizingMultiplier))
       : 1;
-    const budget = resolveEntryBudget({
+    const rawBudget = resolveEntryBudget({
       kellyBetSizeUsd: ev.betSizeUsd,
       cash: workingCash,
       tradeType: ev.tradeType === 'FUTURES' ? 'FUTURES' : 'SPOT',
@@ -626,10 +631,15 @@ export function generateNewOrders(ctx: OrderGenContext): PendingOrder[] {
       riskLevel: ctx.riskLevel,
       sizingMultiplier: riskMult
     });
-    // Operator floor: no sim entry below MIN_SIM_ENTRY_USD. For intraday the
-    // budget has usually already been rounded up to it in buildRiskPlan
-    // (SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd); anything still under it here
-    // could not be sized to the floor without breaching a cap, so it is skipped.
+    // Operator floor: the sim bots never open a position below MIN_SIM_ENTRY_USD.
+    // Round a small budget UP to the floor when free cash covers it (for
+    // intraday the RiskPlan has usually already done this via
+    // SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd); skip only when the cash is not
+    // there.
+    const canBump = workingCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD;
+    const budget = rawBudget >= MIN_SIM_ENTRY_USD
+      ? rawBudget
+      : canBump ? MIN_SIM_ENTRY_USD : rawBudget;
     if (budget < MIN_SIM_ENTRY_USD) continue;
 
     const evDirection = toPositionDirection(ev.tradeSide as string);

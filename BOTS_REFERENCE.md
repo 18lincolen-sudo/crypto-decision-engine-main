@@ -71,8 +71,8 @@ p.weeklyDrawdownPercent >= 15  → NO_SIGNAL (נעילה)
   ב-`intradayParams.ts` (משותף גם ל-Pro/Path, ראה שם). **לא חל על SPOT.**
 - **הזמנה מינימלית:** בסימולציה **$100** — `SIM_INTRADAY_PARAMS_OVERRIDE.minOrderUsd`
   ב-`simExecution.ts` (בקשת מפעיל). `buildRiskPlan` מעגל פוזיציה קטנה מ-$100
-  כלפי מעלה לסף, או דוחה אם זה חורג מתקרת התיק. (לבוט האמיתי הסף נשאר $5 —
-  `DEFAULT_INTRADAY_PARAMS.minOrderUsd`.)
+  כלפי מעלה לסף; `generateNewOrders` הוא backstop שמעגל שוב אם צריך (מזומן +
+  equity ≥ $100). (לבוט האמיתי הסף נשאר $5 — `DEFAULT_INTRADAY_PARAMS.minOrderUsd`.)
 
 ### יציאה (Stop/Target קבועים)
 ```
@@ -138,8 +138,10 @@ budget = min(
 )
 ```
 טבלת `PRO_ALLOCATION_BY_RISK` **הוסרה** (הייתה קוד מת — אף gate לא קרא לה).
-מינימום הזמנה בסימולציה: **$100** (`MIN_SIM_ENTRY_USD`) — budget מתחת לזה →
-`NO_SIGNAL [NO_BUDGET]`. חל על כל ארבעת בוטי הסימולציה.
+מינימום הזמנה בסימולציה: **$100** (`MIN_SIM_ENTRY_USD`) — budget מתחת לזה
+**מעוגל כלפי מעלה ל-$100** אם יש מזומן פנוי ו-equity ≥ $100 (עלול לחרוג
+מתקרת ה-8% לנכס בודד — פשרה מקובלת ל"מינימום $100 תמיד"); `NO_SIGNAL
+[NO_BUDGET]` רק כשאין $100 מזומן פנוי. חל על כל ארבעת בוטי הסימולציה.
 
 ### כניסה — Market או Limit (§6, `proSimEngine.ts` config `proLimitEntries`)
 - **Market (ברירת מחדל §6):** מילוי מיידי ב-`executeAt`, במחיר שוק + slippage.
@@ -293,8 +295,9 @@ H1 Supertrend 25 · H1 EMA 20 · פריצת M15 25 · אישור נפח 15 · א
 עסקה לוגית אחת = כל ה-lots עם אותו נכס-בסיס + כיוון, אותו SL/TP לוגי, נסגרים
 יחד. לוטים 50/30/20% מ-`fullNotional`. SCALE_2 רק מעל +0.5R + מגמה תקפה;
 SCALE_3 רק מעל +1.0R + Supertrend עדיין בכיוון. אף פעם לא מוסיפים בהפסד
-(אין מרטינגייל / averaging-down). כל lot חייב להיות ≥ `MIN_SIM_ENTRY_USD`
-($100) — לוט שנחתך מתחת לזה ע"י התקרות פשוט לא נפתח.
+(אין מרטינגייל / averaging-down). SCALE_1 מעוגל כלפי מעלה ל-`MIN_SIM_ENTRY_USD`
+($100) אם צריך; SCALE_2/3 שנחתכים מתחת ל-$100 פשוט מדולגים (עיגול היה שובר
+את יחס ה-50/30/20).
 
 ### ניהול סטופ (§12) — מחושב מחדש בכל tick
 מ-entry קבוע + ה-highest/lowest ש-factory כבר עוקב אחריו (הקוד אף פעם לא

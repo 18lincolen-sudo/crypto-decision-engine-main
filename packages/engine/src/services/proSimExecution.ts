@@ -245,9 +245,19 @@ export function applyProEntryGates(
       // already refuses a symbol that is currently held, so this is always a
       // fresh position's entire exposure to that asset.
       const perAssetCap = ctx.equity * (PER_ASSET_EXPOSURE_CAP_PERCENT / 100);
-      const budget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash, perAssetCap);                            // 7
+      const rawBudget = Math.min(ctx.initialAmount * confidenceAllocation, projectedCash, perAssetCap);                          // 7
+      // Operator floor: the sim bots never open a position below
+      // MIN_SIM_ENTRY_USD. Rather than reject a small allocation, round it UP to
+      // the floor whenever the free cash can cover it (this can exceed the
+      // 8%-per-asset cap on a small account — an accepted trade-off for the
+      // "$100 minimum, always" rule). Only refuse when even $100 has no cash
+      // behind it.
+      const canBump = projectedCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD;
+      const budget = rawBudget >= MIN_SIM_ENTRY_USD
+        ? rawBudget
+        : canBump ? MIN_SIM_ENTRY_USD : rawBudget;
       if (budget < MIN_SIM_ENTRY_USD) {
-        return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין תקציב ($${budget.toFixed(2)} < $${MIN_SIM_ENTRY_USD})`, false, minConfidence);
+        return gateResult(ev, 'NO_SIGNAL [NO_BUDGET]', `אין מספיק מזומן פנוי ($${projectedCash.toFixed(2)} < $${MIN_SIM_ENTRY_USD})`, false, minConfidence);
       }
       occupiedSlots++;                                                                                                          // 8
       projectedCash -= budget;

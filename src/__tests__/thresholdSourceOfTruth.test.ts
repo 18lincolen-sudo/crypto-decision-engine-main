@@ -184,11 +184,20 @@ describe('§4 — the gate sequence runs in the doc\'s order, on the evaluation'
   });
 
   it('low cash below the $100 sim floor refuses even with healthy equity', () => {
-    // $50 cash but $10,000 equity → budget = min(1000, 50) = 50 < $100 sim
-    // floor (MIN_SIM_ENTRY_USD) → NO_BUDGET. The sim bots do not open dust.
-    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 10_000 }));
+    // $50 cash and only $50 equity → cannot round up to $100 → NO_BUDGET.
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ cash: 50, equity: 50 }));
     expect(ev.status).toBe('NO_SIGNAL [NO_BUDGET]');
     expect(ev.willExecute).toBe(false);
+  });
+
+  it('rounds a small allocation UP to the $100 sim floor when cash and equity allow', () => {
+    // initialAmount $500 → 10% allocation = $50, below MIN_SIM_ENTRY_USD. With
+    // $10k cash and equity behind it, the gate bumps the entry to exactly $100
+    // rather than refusing it ("$100 minimum, always").
+    const [ev] = applyProEntryGates([buyEval('LA', 80)], gateCtx({ initialAmount: 500, cash: 10_000, equity: 10_000 }));
+    expect(ev.status).toBe('SIGNAL SPOT BUY');
+    expect(ev.willExecute).toBe(true);
+    expect(ev.budgetUsd).toBeCloseTo(100, 6);
   });
 
   it('every gate passed → willExecute, "מבצע קנייה", and the allocated budget', () => {

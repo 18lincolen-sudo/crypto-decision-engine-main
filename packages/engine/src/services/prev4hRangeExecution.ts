@@ -167,13 +167,20 @@ export function generatePrev4hRangeOrders(ctx: Prev4hRangeOrderGenContext): Pend
     const desiredNotional = (ctx.equity * p.riskPerTrade) / rFraction;
 
     const assetUsed = exposureByBase.get(ev.symbol) ?? 0;
-    const notional = Math.min(
+    let notional = Math.min(
       desiredNotional,
       Math.max(0, perAssetCap - assetUsed),
       Math.max(0, totalCap - totalExposure),
       workingCash
     );
-    if (!(notional >= MIN_SIM_ENTRY_USD)) continue;
+    if (notional < MIN_SIM_ENTRY_USD) {
+      // Operator floor: round a small entry UP to $100 when free cash covers
+      // it (may exceed the per-asset / total caps — accepted for the
+      // "$100 minimum, always" rule). Skip only when the cash / equity is not
+      // there.
+      if (workingCash >= MIN_SIM_ENTRY_USD && ctx.equity >= MIN_SIM_ENTRY_USD) notional = MIN_SIM_ENTRY_USD;
+      else continue;
+    }
 
     exposureByBase.set(ev.symbol, assetUsed + notional);
     totalExposure += notional;
